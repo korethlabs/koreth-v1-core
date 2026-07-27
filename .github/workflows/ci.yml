@@ -28,10 +28,13 @@ jobs:
       # runner OOMs without extra headroom. Add swap so solc doesn't get killed.
       - name: Add swap space
         run: |
-          sudo fallocate -l 10G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          # The runner already has a /swapfile; add a second, larger one on the
+          # big /mnt scratch disk rather than colliding with the existing file.
+          sudo fallocate -l 12G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          swapon --show
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
