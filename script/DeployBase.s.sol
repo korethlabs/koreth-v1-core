@@ -1,0 +1,353 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.26;
+
+import "forge-std/Script.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {ACLManager} from "../src/core/ACLManager.sol";
+import {ProtocolCore} from "../src/core/ProtocolCore.sol";
+import {PositionManager} from "../src/core/PositionManager.sol";
+import {LendingEngine} from "../src/core/LendingEngine.sol";
+import {LiquidationEngine} from "../src/core/LiquidationEngine.sol";
+import {FeeCollector} from "../src/core/FeeCollector.sol";
+import {LPOracleHub} from "../src/oracle/LPOracleHub.sol";
+import {UniswapV3Oracle} from "../src/oracle/UniswapV3Oracle.sol";
+import {UniswapV2Oracle} from "../src/oracle/UniswapV2Oracle.sol";
+import {PriceFeedRegistry} from "../src/oracle/PriceFeedRegistry.sol";
+import {PriceValidator} from "../src/oracle/PriceValidator.sol";
+import {UniswapV3Adapter} from "../src/adapters/UniswapV3Adapter.sol";
+import {UniswapV2Adapter} from "../src/adapters/UniswapV2Adapter.sol";
+import {InterestRateModel} from "../src/markets/InterestRateModel.sol";
+import {Market} from "../src/markets/Market.sol";
+import {MarketFactory} from "../src/markets/MarketFactory.sol";
+import {MarketRegistry} from "../src/markets/MarketRegistry.sol";
+import {CircuitBreaker} from "../src/security/CircuitBreaker.sol";
+import {RiskManager} from "../src/security/RiskManager.sol";
+import {PoolHealthMonitor} from "../src/security/PoolHealthMonitor.sol";
+import {ILPAdapter} from "../src/interfaces/ILPAdapter.sol";
+import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
+
+/// @title DeployBase
+/// @notice Shared deployment logic for all chains. Subclass sets chain-specific config.
+/// @dev Usage: forge script script/deploy/Sepolia.s.sol --rpc-url $RPC --broadcast --verify
+abstract contract DeployBase is Script {
+    // --- Chain Config (set by subclass) ---
+
+    struct ChainConfig {
+        // Roles
+        address deployer;
+        address guardian;
+        address riskAdmin;
+        // V2 DEX (address(0) = skip)
+        address v2Factory;
+        address v2Router;
+        // V3 DEX (address(0) = skip)
+        address v3Factory;
+        address v3NftManager;
+        // Tokens
+        address weth; // native wrapped token (WETH, WBNB, etc.)
+        address stablecoin; // primary borrow asset (USDC, BUSD, etc.)
+        // Chainlink feeds
+        address clNativeUsd; // ETH/USD, BNB/USD, etc.
+        address clStablecoinUsd; // USDC/USD, BUSD/USD, etc.
+        // Pools to whitelist
+        address v2Pool; // V2 pair to whitelist (address(0) = skip)
+        address v3Pool; // V3 pool to whitelist (address(0) = skip)
+        // Market params
+        uint256 maxLtv; // bps (e.g., 6500 = 65%)
+        uint256 liquidationThreshold; // bps
+        uint256 liquidationBonus; // bps
+        uint256 borrowCap; // in stablecoin decimals
+        // Governance
+        address multisig; // proposer/executor for timelock (deployer on testnet)
+        uint256 timelockDelay; // 172800 (48h) for mainnet, 60 for testnet
+    }
+
+    // --- Deployed Contracts ---
+    ACLManager public aclManager;
+    ProtocolCore public core;
+    LPOracleHub public oracleHub;
+    PositionManager public positionManager;
+    LendingEngine public lendingEngine;
+    LiquidationEngine public liquidationEngine;
+    FeeCollector public feeCollector;
+    CircuitBreaker public circuitBreaker;
+    RiskManager public riskManager;
+    PriceFeedRegistry public priceFeedRegistry;
+    PriceValidator public priceValidator;
+    PoolHealthMonitor public poolHealthMonitor;
+    MarketFactory public marketFactory;
+    MarketRegistry public marketRegistry;
+    TimelockController public timelock;
+
+    // --- Abstract: subclass provides config ---
+    function _config() internal virtual returns (ChainConfig memory);
+
+    // --- Entry Point ---
+    function run() external {
+        ChainConfig memory cfg = _config();
+
+        uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
+        require(vm.addr(deployerKey) == cfg.deployer, "DEPLOYER_KEY_MISMATCH");
+
+        vm.startBroadcast(deployerKey);
+
+        _deployCore(cfg);
+        _deployProxies();
+        _deploySecurity(cfg);
+        _deployOracles(cfg);
+        _deployAdapters(cfg);
+        _deployMarkets(cfg);
+        _configureRoles(cfg);
+        _createMarket(cfg);
+        _beforeGovernance(cfg);
+        _deployTimelock(cfg);
+
+        vm.stopBroadcast();
+
+        _logAddresses(cfg);
+        _afterRun(cfg);
+    }
+
+    /// @notice Optional post-deploy hook (default no-op). Subclasses may override to
+    ///         persist deployed addresses (e.g. Local writes a deployments JSON for tooling).
+    function _afterRun(ChainConfig memory cfg) internal virtual {}
+
+    /// @notice Optional hook run AFTER market creation but BEFORE governance handoff, while the
+    ///         deployer still holds POOL_ADMIN (default no-op). Local uses it to relax oracle
+    ///         staleness for the fork (real feeds can lag well past the 1h default).
+    function _beforeGovernance(ChainConfig memory cfg) internal virtual {}
+
+    /// @notice Optional hook run at the end of _deployOracles (default no-op). Local registers
+    ///         extra stablecoin price feeds (USDT/DAI) here so their markets can be valued.
+    function _afterOracles(ChainConfig memory cfg) internal virtual {}
+
+    /// @notice Optional hook run at the end of _createMarket (default no-op). Local creates the
+    ///         extra borrow-asset markets (V2->USDT, V2->DAI) here.
+    function _afterMarkets(ChainConfig memory cfg) internal virtual {}
+
+    // --- Deploy Steps ---
+
+    function _deployCore(ChainConfig memory cfg) internal {
+        // TODO: Post-deploy, transfer ACLManager and ProtocolCore ownership from the
+        // deployer EOA to a multisig. The deployer should not retain admin privileges.
+        aclManager = new ACLManager(cfg.deployer);
+        core = new ProtocolCore(cfg.deployer, address(aclManager));
+
+        LPOracleHub ohImpl = new LPOracleHub();
+        oracleHub = LPOracleHub(
+            address(new ERC1967Proxy(address(ohImpl), abi.encodeCall(LPOracleHub.initialize, (address(core)))))
+        );
+    }
+
+    function _deployProxies() internal {
+        PositionManager pmImpl = new PositionManager();
+        positionManager = PositionManager(
+            address(
+                new ERC1967Proxy(
+                    address(pmImpl), abi.encodeCall(PositionManager.initialize, (address(core), address(oracleHub)))
+                )
+            )
+        );
+
+        LendingEngine leImpl = new LendingEngine();
+        lendingEngine = LendingEngine(
+            address(
+                new ERC1967Proxy(
+                    address(leImpl), abi.encodeCall(LendingEngine.initialize, (address(core), address(positionManager)))
+                )
+            )
+        );
+
+        LiquidationEngine liqImpl = new LiquidationEngine();
+        liquidationEngine = LiquidationEngine(
+            address(
+                new ERC1967Proxy(
+                    address(liqImpl),
+                    abi.encodeCall(
+                        LiquidationEngine.initialize, (address(core), address(positionManager), address(lendingEngine))
+                    )
+                )
+            )
+        );
+    }
+
+    function _deploySecurity(ChainConfig memory cfg) internal {
+        feeCollector = new FeeCollector(address(core), cfg.deployer, cfg.deployer);
+        circuitBreaker = new CircuitBreaker(address(core));
+        riskManager = new RiskManager(address(core));
+        poolHealthMonitor = new PoolHealthMonitor(address(core), address(circuitBreaker));
+        priceFeedRegistry = new PriceFeedRegistry(address(core));
+        priceValidator = new PriceValidator(address(core), address(circuitBreaker));
+    }
+
+    function _deployOracles(ChainConfig memory cfg) internal {
+        // V3 Oracle
+        if (cfg.v3NftManager != address(0)) {
+            UniswapV3Oracle v3Oracle = new UniswapV3Oracle(address(core), cfg.v3NftManager, address(priceFeedRegistry));
+            core.registerOracle(ILPAdapter.LPType.UniswapV3, address(v3Oracle));
+        }
+
+        // V2 Oracle
+        if (cfg.v2Factory != address(0)) {
+            UniswapV2Oracle v2Oracle = new UniswapV2Oracle(address(core), address(priceFeedRegistry));
+            core.registerOracle(ILPAdapter.LPType.UniswapV2, address(v2Oracle));
+        }
+
+        // PriceFeedRegistry (for cross-decimal HF/LTV)
+        priceFeedRegistry.setPriceFeed(cfg.stablecoin, cfg.clStablecoinUsd);
+        priceFeedRegistry.setPriceFeed(cfg.weth, cfg.clNativeUsd);
+
+        _afterOracles(cfg);
+    }
+
+    function _deployAdapters(ChainConfig memory cfg) internal {
+        if (cfg.v3NftManager != address(0)) {
+            UniswapV3Adapter v3Adapter = new UniswapV3Adapter(cfg.v3NftManager, cfg.v3Factory, address(core));
+            core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(v3Adapter));
+        }
+
+        if (cfg.v2Factory != address(0)) {
+            UniswapV2Adapter v2Adapter = new UniswapV2Adapter(cfg.v2Factory, cfg.v2Router, address(core));
+            core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(v2Adapter));
+        }
+    }
+
+    function _deployMarkets(ChainConfig memory cfg) internal {
+        InterestRateModel stableModel = new InterestRateModel(100, 400, 7500, 8500);
+        InterestRateModel volatileModel = new InterestRateModel(200, 600, 10_000, 8000);
+
+        Market marketImpl = new Market();
+        marketFactory = new MarketFactory(address(core), address(marketImpl));
+        marketRegistry = new MarketRegistry(address(core));
+
+        marketFactory.setInterestRateModel("stable", address(stableModel));
+        marketFactory.setInterestRateModel("volatile", address(volatileModel));
+
+        core.setMarketFactory(address(marketFactory));
+    }
+
+    function _configureRoles(ChainConfig memory cfg) internal {
+        // Contract roles
+        aclManager.addLendingEngine(address(lendingEngine));
+        aclManager.addLiquidationEngine(address(liquidationEngine));
+        aclManager.addPositionManager(address(positionManager));
+
+        // Human roles
+        if (cfg.guardian != address(0)) {
+            aclManager.addEmergencyAdmin(cfg.guardian);
+        }
+        if (cfg.riskAdmin != address(0)) {
+            aclManager.addRiskAdmin(cfg.riskAdmin);
+        }
+
+        // Wire references
+        positionManager.setLendingEngine(address(lendingEngine));
+        positionManager.setCircuitBreaker(address(circuitBreaker));
+        core.setPriceFeedRegistry(address(priceFeedRegistry));
+        core.setRiskManager(address(riskManager));
+
+        // No swap router needed — liquidation sends underlying tokens directly to liquidator.
+        // FlashloanLiquidator (periphery) handles swaps outside the core protocol.
+
+        // Grant KEEPER to security contracts so they can trigger CircuitBreaker.pausePool()
+        aclManager.addKeeper(address(priceValidator));
+        aclManager.addKeeper(address(poolHealthMonitor));
+    }
+
+    function _createMarket(ChainConfig memory cfg) internal {
+        // Whitelist pools
+        if (cfg.v3Pool != address(0)) core.whitelistPool(cfg.v3Pool);
+        if (cfg.v2Pool != address(0)) core.whitelistPool(cfg.v2Pool);
+
+        // Create V3 market if V3 is configured
+        if (cfg.v3NftManager != address(0)) {
+            _createAndWireMarket(ILPAdapter.LPType.UniswapV3, cfg);
+        }
+
+        // Create V2 market if V2 is configured
+        if (cfg.v2Factory != address(0)) {
+            _createAndWireMarket(ILPAdapter.LPType.UniswapV2, cfg);
+        }
+
+        _afterMarkets(cfg);
+    }
+
+    function _createAndWireMarket(ILPAdapter.LPType lpType, ChainConfig memory cfg) internal {
+        _createAndWireMarketFor(lpType, cfg.stablecoin, cfg);
+    }
+
+    /// @notice Create a market for a specific (lpType, borrowAsset) and wire the FeeCollector.
+    /// @dev Subclasses (e.g. Local) use this from _afterMarkets to add extra borrow-asset markets.
+    function _createAndWireMarketFor(
+        ILPAdapter.LPType lpType,
+        address borrowAsset,
+        ChainConfig memory cfg
+    )
+        internal
+        returns (uint256 marketId)
+    {
+        (marketId,) = marketFactory.createMarket(
+            lpType,
+            borrowAsset,
+            cfg.maxLtv,
+            cfg.liquidationThreshold,
+            cfg.liquidationBonus,
+            cfg.borrowCap,
+            0, // minPoolTvl (0 for testnet)
+            0, // minPoolAge (0 for testnet)
+            "volatile"
+        );
+
+        // Wire FeeCollector into the newly created market
+        address marketAddr = core.markets(marketId);
+        Market(marketAddr).setFeeCollector(address(feeCollector));
+    }
+
+    function _deployTimelock(ChainConfig memory cfg) internal virtual {
+        require(cfg.multisig != address(0), "ZERO_MULTISIG");
+
+        address[] memory proposers = new address[](1);
+        proposers[0] = cfg.multisig;
+        address[] memory executors = new address[](1);
+        executors[0] = cfg.multisig;
+
+        // admin = deployer temporarily (so deployer can renounce its own timelock admin after setup)
+        timelock = new TimelockController(cfg.timelockDelay, proposers, executors, cfg.deployer);
+
+        // Grant timelock admin authority
+        aclManager.grantRole(aclManager.DEFAULT_ADMIN_ROLE(), address(timelock));
+        aclManager.grantRole(aclManager.POOL_ADMIN(), address(timelock));
+
+        // Revoke deployer privileges (timelock is now sole admin)
+        aclManager.revokeRole(aclManager.POOL_ADMIN(), cfg.deployer);
+        aclManager.revokeRole(aclManager.DEFAULT_ADMIN_ROLE(), cfg.deployer);
+
+        // Transfer ProtocolCore ownership to timelock (two-step transfer).
+        // acceptOwnership must be called by the timelock as its first scheduled operation.
+        // Until then, deployer retains onlyOwner (only used for setACLManager — nuclear op).
+        core.transferOwnership(address(timelock));
+
+        // Renounce deployer's admin role on the TimelockController itself
+        timelock.renounceRole(timelock.DEFAULT_ADMIN_ROLE(), cfg.deployer);
+    }
+
+    function _logAddresses(ChainConfig memory) internal view {
+        console.log("=== Koreth Protocol Deployed ===");
+        console.log("");
+        console.log("ACLManager:             ", address(aclManager));
+        console.log("ProtocolCore:           ", address(core));
+        console.log("PositionManager:        ", address(positionManager));
+        console.log("LendingEngine:          ", address(lendingEngine));
+        console.log("LiquidationEngine:      ", address(liquidationEngine));
+        console.log("LPOracleHub:            ", address(oracleHub));
+        console.log("FeeCollector:           ", address(feeCollector));
+        console.log("CircuitBreaker:         ", address(circuitBreaker));
+        console.log("RiskManager:            ", address(riskManager));
+        console.log("PriceFeedRegistry:      ", address(priceFeedRegistry));
+        console.log("PriceValidator:         ", address(priceValidator));
+        console.log("PoolHealthMonitor:      ", address(poolHealthMonitor));
+        console.log("MarketFactory:          ", address(marketFactory));
+        console.log("TimelockController:     ", address(timelock));
+        console.log("MarketRegistry:         ", address(marketRegistry));
+    }
+}

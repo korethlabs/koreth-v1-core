@@ -1,0 +1,20 @@
+# Foundry
+out/
+cache/
+broadcast/
+
+# Deployments (local dev artifacts)
+deployments/
+
+# Env / secrets — NEVER commit keys or mnemonics
+.env
+.env.local
+
+# Docs build
+docs/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
