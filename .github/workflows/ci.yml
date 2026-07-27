@@ -24,10 +24,29 @@ jobs:
         with:
           submodules: recursive
 
+      # via-IR compilation of this codebase is memory-hungry; the 2-core/7GB
+      # runner OOMs without extra headroom. Add swap so solc doesn't get killed.
+      - name: Add swap space
+        run: |
+          sudo fallocate -l 10G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
+
+      # Cache the Foundry build so only the first run pays the full via-IR cost.
+      - name: Cache forge build
+        uses: actions/cache@v4
+        with:
+          path: |
+            out
+            cache
+          key: forge-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'foundry.toml', 'remappings.txt') }}
+          restore-keys: forge-${{ runner.os }}-
 
       - name: Check formatting
         run: forge fmt --check
