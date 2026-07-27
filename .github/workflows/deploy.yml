@@ -1,0 +1,22 @@
+name: Deploy
+
+# Contract changes require a full redeploy (fresh fork + contracts + subgraph +
+# interface). Runs on the self-hosted runner on spartakus after merge to main.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: koreth-deploy-all
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, spartakus]
+    steps:
+      - name: Full redeploy (deploy-all)
+        run: |
+          set -e
+          cd "$HOME/koreth"
+          git pull --ff-only
+          ./scripts/deploy-all.sh
