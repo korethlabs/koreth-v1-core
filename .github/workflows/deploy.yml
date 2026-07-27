@@ -5,6 +5,11 @@ name: Deploy
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'script/**'
+      - 'foundry.toml'
+      - 'remappings.txt'
 
 concurrency:
   group: koreth-deploy-all
