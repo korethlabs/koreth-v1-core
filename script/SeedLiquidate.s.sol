@@ -41,18 +41,17 @@ contract SeedLiquidate is Script {
 
         // 1. Deployer drops the V2 collateral threshold so the position is deeply underwater
         //    (full-liquidation zone). Risk params are per-lpType in the shared-pool model.
+        //    Snapshot the live config and override only LTV/threshold — re-typing the whole struct
+        //    here would silently drift from what DeployLocal actually set (and get the units wrong:
+        //    borrowCap is 18-dec USD, not borrow-asset decimals).
+        RiskManager.CollateralConfig memory originalV2 = riskManager.getCollateralConfig(ILPAdapter.LPType.UniswapV2);
+
+        RiskManager.CollateralConfig memory underwaterV2 = originalV2;
+        underwaterV2.maxLtv = 50;
+        underwaterV2.liquidationThreshold = 100;
+
         vm.startBroadcast(deployerKey);
-        riskManager.setCollateralConfig(
-            ILPAdapter.LPType.UniswapV2,
-            RiskManager.CollateralConfig({
-                maxLtv: 50,
-                liquidationThreshold: 100,
-                liquidationBonus: 500,
-                haircut: 0,
-                borrowCap: 100_000e6,
-                enabled: true
-            })
-        );
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, underwaterV2);
         vm.stopBroadcast();
 
         (bool canLiq, uint256 maxRepay) = liqEngine.isLiquidatable(POSITION_ID);
@@ -70,19 +69,9 @@ contract SeedLiquidate is Script {
         liqEngine.liquidate(POSITION_ID, maxRepay, block.timestamp + 3600, 0, 0);
         vm.stopBroadcast();
 
-        // 3. Deployer restores the normal V2 collateral config (protects the other positions).
+        // 3. Deployer restores the exact V2 collateral config (protects the other positions).
         vm.startBroadcast(deployerKey);
-        riskManager.setCollateralConfig(
-            ILPAdapter.LPType.UniswapV2,
-            RiskManager.CollateralConfig({
-                maxLtv: 6500,
-                liquidationThreshold: 7500,
-                liquidationBonus: 500,
-                haircut: 0,
-                borrowCap: 100_000e6,
-                enabled: true
-            })
-        );
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, originalV2);
         vm.stopBroadcast();
 
         console.log("=== Liquidation complete ===");
