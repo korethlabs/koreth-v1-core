@@ -31,9 +31,9 @@ interface ILendingEngine {
     /// @return maxBorrow Maximum borrow amount in borrow asset
     function getMaxBorrow(uint256 positionId) external view returns (uint256 maxBorrow);
 
-    /// @notice Accrue interest for a market
-    /// @param marketId The market to accrue interest for
-    function accrueInterest(uint256 marketId) external;
+    /// @notice Accrue interest for a shared pool
+    /// @param borrowAsset The borrow asset (pool key) to accrue interest for
+    function accrueInterest(address borrowAsset) external;
 
     /// @notice Repay debt on behalf of a borrower (used by LiquidationEngine)
     function repayOnBehalf(uint256 positionId, uint256 repayAmount) external;

@@ -8,7 +8,7 @@ import {IPositionManager} from "../interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../interfaces/ILPAdapter.sol";
 import {ILPOracleHub} from "../interfaces/ILPOracleHub.sol";
 import {ILendingEngine} from "../interfaces/ILendingEngine.sol";
-import {IMarket} from "../interfaces/IMarket.sol";
+import {ILendingPool} from "../interfaces/ILendingPool.sol";
 import {IERC20} from "../interfaces/IERC20.sol";
 import {IERC20 as OZIERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -71,7 +71,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     // --- Events ---
     event CollateralAdded(uint256 indexed positionId, uint256 addedLiquidity, uint256 used0, uint256 used1);
     event CollateralRemoved(uint256 indexed positionId, uint128 liquidityRemoved, uint256 amount0, uint256 amount1);
-    event CircuitBreakerNotConfigured(uint256 indexed marketId, address pool);
+    event CircuitBreakerNotConfigured(address indexed borrowAsset, address pool);
     event PositionAmountReduced(uint256 indexed positionId, uint256 amountRemoved, uint256 newAmount);
     event LendingEngineUpdated(address indexed oldEngine, address indexed newEngine);
     event CircuitBreakerUpdated(address indexed oldBreaker, address indexed newBreaker);
@@ -159,7 +159,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         address lpToken,
         uint256 tokenId,
         uint256 amount,
-        uint256 marketId
+        address borrowAsset
     )
         external
         whenNotPaused
@@ -168,15 +168,19 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     {
         require(lpToken != address(0), "ZERO_LP_TOKEN");
         require(amount > 0 || tokenId > 0, "ZERO_AMOUNT");
-        address marketAddr = core.markets(marketId);
-        require(marketAddr != address(0), "INVALID_MARKET");
+        address poolAddr = core.pools(borrowAsset);
+        require(poolAddr != address(0), "INVALID_POOL");
 
         // Auto-detect LP type by querying each registered adapter
         ILPAdapter.LPType lpType = _detectLPType(lpToken);
 
-        // Validate LP type matches market's configured LP type
-        IMarket.MarketConfig memory mConfig = IMarket(marketAddr).getConfig();
-        require(lpType == mConfig.lpType, "LP_TYPE_MISMATCH");
+        // Validate this collateral type is enabled in the shared-pool risk registry
+        {
+            address rmAddr = core.riskManagerAddr();
+            if (rmAddr != address(0)) {
+                require(RiskManager(rmAddr).getCollateralConfig(lpType).enabled, "COLLATERAL_NOT_ENABLED");
+            }
+        }
 
         // Validate oracle is healthy before accepting deposit
         require(oracleHub.isOracleHealthy(lpType), "ORACLE_UNHEALTHY");
@@ -193,9 +197,9 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         require(core.isPoolSupported(info.pool), "POOL_NOT_SUPPORTED");
         if (address(circuitBreaker) != address(0)) {
             require(!circuitBreaker.poolPaused(info.pool), "POOL_CIRCUIT_BREAKER");
-            require(!circuitBreaker.marketFrozen(marketId), "MARKET_FROZEN");
+            require(!circuitBreaker.collateralFrozen(lpType), "COLLATERAL_FROZEN");
         } else {
-            emit CircuitBreakerNotConfigured(marketId, info.pool);
+            emit CircuitBreakerNotConfigured(borrowAsset, info.pool);
         }
 
         // Get oracle price to validate position has value
@@ -210,9 +214,9 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
             if (rmAddr != address(0)) {
                 RiskManager rm = RiskManager(rmAddr);
                 (bool valid, string memory reason) =
-                    rm.validateDeposit(price.totalValue, marketId, activePositionCount[msg.sender]);
+                    rm.validateDeposit(price.totalValue, borrowAsset, activePositionCount[msg.sender]);
                 require(valid, reason);
-                rm.recordDeposit(price.totalValue, marketId);
+                rm.recordDeposit(price.totalValue, borrowAsset);
             }
         }
 
@@ -228,7 +232,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
             pool: info.pool,
             token0: info.token0,
             token1: info.token1,
-            marketId: marketId,
+            borrowAsset: borrowAsset,
             status: PositionStatus.Active,
             depositTimestamp: block.timestamp,
             depositBlock: block.number
@@ -260,7 +264,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
             address rmAddr = core.riskManagerAddr();
             if (rmAddr != address(0)) {
                 uint256 posValue = getPositionValue(positionId);
-                RiskManager(rmAddr).recordWithdraw(posValue, pos.marketId);
+                RiskManager(rmAddr).recordWithdraw(posValue, pos.borrowAsset);
             }
         }
 
@@ -297,9 +301,9 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         require(pos.status == PositionStatus.Active || pos.status == PositionStatus.Borrowed, "POSITION_NOT_BORROWABLE");
         require(amount0 > 0 || amount1 > 0, "ZERO_AMOUNTS");
 
-        // Frozen markets block new collateral (risk-taking)
+        // Frozen collateral types block new collateral (risk-taking)
         if (address(circuitBreaker) != address(0)) {
-            require(!circuitBreaker.marketFrozen(pos.marketId), "MARKET_FROZEN");
+            require(!circuitBreaker.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
         }
 
         address adapterAddr = core.adapters(pos.lpType);
@@ -347,7 +351,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
                 require(valueAfter <= rm.maxPositionValue(), "POSITION_TOO_LARGE");
                 uint256 delta = valueAfter > valueBefore ? valueAfter - valueBefore : 0;
                 if (delta > 0) {
-                    rm.recordDeposit(delta, pos.marketId);
+                    rm.recordDeposit(delta, pos.borrowAsset);
                 }
             }
         }
@@ -386,9 +390,9 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         address adapterAddr = core.adapters(pos.lpType);
         require(adapterAddr != address(0), "ADAPTER_NOT_FOUND");
 
-        // Circuit breaker: block collateral removal on frozen markets (oracle may be manipulated)
+        // Circuit breaker: block collateral removal on frozen collateral types (oracle may be manipulated)
         if (address(circuitBreaker) != address(0)) {
-            require(!circuitBreaker.marketFrozen(pos.marketId), "MARKET_FROZEN");
+            require(!circuitBreaker.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
         }
 
         // Validate liquidity bounds before calling adapter
@@ -422,7 +426,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
             uint256 valueAfter = getPositionValue(positionId);
             uint256 delta = valueBefore > valueAfter ? valueBefore - valueAfter : 0;
             if (delta > 0) {
-                RiskManager(rmAddr).recordWithdraw(delta, pos.marketId);
+                RiskManager(rmAddr).recordWithdraw(delta, pos.borrowAsset);
             }
         }
 
@@ -570,7 +574,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         if (valueUsd == 0) return;
         address rmAddr = core.riskManagerAddr();
         if (rmAddr != address(0)) {
-            RiskManager(rmAddr).recordWithdraw(valueUsd, _positions[positionId].marketId);
+            RiskManager(rmAddr).recordWithdraw(valueUsd, _positions[positionId].borrowAsset);
         }
     }
 
@@ -629,16 +633,23 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         if (collateralValue == 0) return 0;
 
         Position memory pos = _positions[positionId];
-        address marketAddr = core.markets(pos.marketId);
-        require(marketAddr != address(0), "MARKET_NOT_FOUND");
-        IMarket.MarketConfig memory config = IMarket(marketAddr).getConfig();
+        address borrowAsset = pos.borrowAsset;
+
+        // Read collateral risk params (liquidationThreshold + haircut) from RiskManager by lpType.
+        RiskManager.CollateralConfig memory cc = _collateralConfig(pos.lpType);
+
+        // Apply haircut to collateral value (discount applied in bps; 0 = none)
+        if (cc.haircut > 0) {
+            collateralValue = Math.mulDiv(collateralValue, 10_000 - cc.haircut, 10_000);
+            if (collateralValue == 0) return 0;
+        }
 
         // Convert debt from borrow asset decimals to 18-dec USD value (Aave-style)
         uint256 debtUsd;
-        uint8 borrowDecimals = TokenUtils.safeDecimals(config.borrowAsset);
+        uint8 borrowDecimals = TokenUtils.safeDecimals(borrowAsset);
         address registryAddr = core.priceFeedRegistryAddr();
         if (registryAddr != address(0)) {
-            debtUsd = PriceFeedRegistry(registryAddr).getUsdValue(config.borrowAsset, debt, borrowDecimals);
+            debtUsd = PriceFeedRegistry(registryAddr).getUsdValue(borrowAsset, debt, borrowDecimals);
         } else {
             if (borrowDecimals < 18) {
                 debtUsd = Math.mulDiv(debt, 10 ** (18 - borrowDecimals), 1);
@@ -650,7 +661,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         }
 
         if (debtUsd == 0) return type(uint256).max;
-        uint256 numerator = Math.mulDiv(collateralValue, config.liquidationThreshold, 10_000);
+        uint256 numerator = Math.mulDiv(collateralValue, cc.liquidationThreshold, 10_000);
         return Math.mulDiv(numerator, 1e18, debtUsd);
     }
 
@@ -729,7 +740,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
             if (rmAddr != address(0)) {
                 uint256 valueAfter = getPositionValue(params.positionId);
                 uint256 delta = valueAfter > valueBefore ? valueAfter - valueBefore : 0;
-                if (delta > 0) RiskManager(rmAddr).recordCompoundReinvest(delta, pos.marketId);
+                if (delta > 0) RiskManager(rmAddr).recordCompoundReinvest(delta, pos.borrowAsset);
             }
         }
 
@@ -808,6 +819,13 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     uint256[44] private __gap;
 
     // --- Internal ---
+
+    /// @dev Read the collateral-risk config for an LP type from RiskManager (source of truth).
+    function _collateralConfig(ILPAdapter.LPType lpType) internal view returns (RiskManager.CollateralConfig memory) {
+        address rmAddr = core.riskManagerAddr();
+        require(rmAddr != address(0), "RISK_MANAGER_NOT_SET");
+        return RiskManager(rmAddr).getCollateralConfig(lpType);
+    }
 
     function _detectLPType(address lpToken) internal view returns (ILPAdapter.LPType) {
         uint8 maxType = core.maxRegisteredLPType();

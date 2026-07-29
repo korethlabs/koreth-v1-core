@@ -8,7 +8,7 @@ import {IERC20 as OZIERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ILiquidationEngine} from "../interfaces/ILiquidationEngine.sol";
 import {ILPAdapter} from "../interfaces/ILPAdapter.sol";
-import {IMarket} from "../interfaces/IMarket.sol";
+import {ILendingPool} from "../interfaces/ILendingPool.sol";
 import {IERC20} from "../interfaces/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ProtocolCore} from "./ProtocolCore.sol";
@@ -18,6 +18,7 @@ import {ILendingEngine} from "../interfaces/ILendingEngine.sol";
 import {TokenUtils} from "../libraries/TokenUtils.sol";
 import {FeeCollector} from "./FeeCollector.sol";
 import {PriceFeedRegistry} from "../oracle/PriceFeedRegistry.sol";
+import {RiskManager} from "../security/RiskManager.sol";
 
 /// @title LiquidationEngine
 /// @notice Atomic liquidation: seize LP → unwind → send underlying tokens to liquidator
@@ -162,21 +163,20 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
                 || pos.status == IPositionManager.PositionStatus.Borrowed,
             "POSITION_NOT_ACTIVE"
         );
-        lendingEngine.accrueInterest(pos.marketId);
+        lendingEngine.accrueInterest(pos.borrowAsset);
 
         // Step 2: Verify position is liquidatable (with fresh interest)
         (bool canLiquidate, uint256 maxRepay) = isLiquidatable(positionId);
         require(canLiquidate, "NOT_LIQUIDATABLE");
         require(repayAmount <= maxRepay, "EXCEEDS_MAX_REPAY");
 
-        // Step 3: Get market config
-        address marketAddr = core.markets(pos.marketId);
-        require(marketAddr != address(0), "MARKET_NOT_FOUND");
-        IMarket.MarketConfig memory config = IMarket(marketAddr).getConfig();
-        address borrowAsset = config.borrowAsset;
+        // Step 3: Resolve shared pool + collateral risk config (liquidationBonus from RiskManager)
+        address poolAddr = core.pools(pos.borrowAsset);
+        require(poolAddr != address(0), "POOL_NOT_FOUND");
+        address borrowAsset = pos.borrowAsset;
 
         // Step 4: Calculate collateral to seize in USD (18 decimals)
-        uint256 bonus = config.liquidationBonus;
+        uint256 bonus = _liquidationBonus(pos.lpType);
         uint8 borrowDecimals = TokenUtils.safeDecimals(borrowAsset);
         uint256 collateralToSeizeNormalized;
         {
@@ -192,7 +192,7 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             uint256 balAfter = IERC20(borrowAsset).balanceOf(address(this));
             require(balAfter >= balBefore && balAfter - balBefore == repayAmount, "FEE_ON_TRANSFER_UNSUPPORTED");
         }
-        OZIERC20(borrowAsset).forceApprove(marketAddr, repayAmount);
+        OZIERC20(borrowAsset).forceApprove(poolAddr, repayAmount);
         lendingEngine.repayOnBehalf(positionId, repayAmount);
 
         // Step 6: Calculate liquidity to remove proportional to collateral seized
@@ -407,8 +407,14 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     /// @inheritdoc ILiquidationEngine
     function getLiquidationBonus(uint256 positionId) public view returns (uint256) {
         IPositionManager.Position memory pos = positionManager.getPosition(positionId);
-        address marketAddr = core.markets(pos.marketId);
-        return IMarket(marketAddr).getConfig().liquidationBonus;
+        return _liquidationBonus(pos.lpType);
+    }
+
+    /// @dev Read the liquidation bonus for an LP collateral type from RiskManager (source of truth).
+    function _liquidationBonus(ILPAdapter.LPType lpType) internal view returns (uint256) {
+        address rmAddr = core.riskManagerAddr();
+        require(rmAddr != address(0), "RISK_MANAGER_NOT_SET");
+        return RiskManager(rmAddr).getCollateralConfig(lpType).liquidationBonus;
     }
 
     // --- Rescue ---

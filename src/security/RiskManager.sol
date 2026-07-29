@@ -36,9 +36,10 @@ contract RiskManager {
 
     mapping(ILPAdapter.LPType => CollateralConfig) public collateralConfig;
 
-    // --- Supply Caps (per-market collateral cap, 18-dec USD) ---
-    mapping(uint256 => uint256) public marketSupplyCap; // marketId → max collateral value
-    mapping(uint256 => uint256) public marketCurrentSupply; // marketId → current collateral value
+    // --- Supply Caps (per-pool collateral cap, 18-dec USD) ---
+    // Keyed by the shared pool's borrow-asset address in the unified-pool model.
+    mapping(address => uint256) public poolSupplyCap; // borrowAsset → max collateral value
+    mapping(address => uint256) public poolCurrentSupply; // borrowAsset → current collateral value
 
     // --- Events ---
     event GlobalBorrowCapUpdated(uint256 oldValue, uint256 newValue);
@@ -46,12 +47,12 @@ contract RiskManager {
     event CollateralConfigSet(ILPAdapter.LPType indexed lpType);
     event MaxPositionValueUpdated(uint256 oldValue, uint256 newValue);
     event MaxPositionsPerUserUpdated(uint256 oldValue, uint256 newValue);
-    event MarketSupplyCapUpdated(uint256 indexed marketId, uint256 oldValue, uint256 newValue);
+    event PoolSupplyCapUpdated(address indexed pool, uint256 oldValue, uint256 newValue);
     event BorrowTrackingDrift(uint256 tracked, uint256 repaid, bool isGlobal);
     event BorrowRecorded(uint256 amountUsd, uint256 newGlobalBorrows);
     event RepayRecorded(uint256 amountUsd, uint256 newGlobalBorrows);
-    event DepositRecorded(uint256 valueUsd, uint256 indexed marketId, uint256 newMarketSupply);
-    event WithdrawRecorded(uint256 valueUsd, uint256 indexed marketId, uint256 newMarketSupply);
+    event DepositRecorded(uint256 valueUsd, address indexed pool, uint256 newPoolSupply);
+    event WithdrawRecorded(uint256 valueUsd, address indexed pool, uint256 newPoolSupply);
 
     // --- ACL ---
     function _acl() internal view returns (ACLManager) {
@@ -149,11 +150,11 @@ contract RiskManager {
 
     /// @notice Validate a deposit against risk limits
     /// @param positionValue Position value in 18-dec USD
-    /// @param marketId Market ID for supply cap
+    /// @param pool The shared pool (borrow-asset address) for supply cap
     /// @param userPositionCount Current number of positions the user has
     function validateDeposit(
         uint256 positionValue,
-        uint256 marketId,
+        address pool,
         uint256 userPositionCount
     )
         external
@@ -170,9 +171,9 @@ contract RiskManager {
             return (false, "POSITION_TOO_LARGE");
         }
 
-        // Check 3: Market supply cap
-        uint256 cap = marketSupplyCap[marketId];
-        if (cap > 0 && marketCurrentSupply[marketId] + positionValue > cap) {
+        // Check 3: Pool supply cap
+        uint256 cap = poolSupplyCap[pool];
+        if (cap > 0 && poolCurrentSupply[pool] + positionValue > cap) {
             return (false, "SUPPLY_CAP_REACHED");
         }
 
@@ -190,12 +191,12 @@ contract RiskManager {
     ///      its liquidatable-exposure budget; letting a single position grow past it via
     ///      addCollateral would reintroduce unbounded exposure. A borrower needing to restore
     ///      health in an at-cap market can always repay() (never blocked), so this is not a trap.
-    function recordDeposit(uint256 valueUsd, uint256 marketId) external onlyPositionManager {
-        uint256 cap = marketSupplyCap[marketId];
-        uint256 newSupply = marketCurrentSupply[marketId] + valueUsd;
+    function recordDeposit(uint256 valueUsd, address pool) external onlyPositionManager {
+        uint256 cap = poolSupplyCap[pool];
+        uint256 newSupply = poolCurrentSupply[pool] + valueUsd;
         require(cap == 0 || newSupply <= cap, "SUPPLY_CAP_REACHED");
-        marketCurrentSupply[marketId] = newSupply;
-        emit DepositRecorded(valueUsd, marketId, newSupply);
+        poolCurrentSupply[pool] = newSupply;
+        emit DepositRecorded(valueUsd, pool, newSupply);
     }
 
     /// @notice Track supply added by compounding a position's own fees into principal (18-dec USD).
@@ -204,12 +205,12 @@ contract RiskManager {
     ///      of existing exposure, not new external capital, so it is tracked for accounting accuracy
     ///      but never blocked at the cap (blocking would strand fees and let anyone grief keepers by
     ///      pinning a market at its cap). Analogous to interest accrual pushing borrows past borrowCap.
-    function recordCompoundReinvest(uint256 valueUsd, uint256 marketId) external onlyPositionManager {
-        marketCurrentSupply[marketId] += valueUsd;
-        emit DepositRecorded(valueUsd, marketId, marketCurrentSupply[marketId]);
+    function recordCompoundReinvest(uint256 valueUsd, address pool) external onlyPositionManager {
+        poolCurrentSupply[pool] += valueUsd;
+        emit DepositRecorded(valueUsd, pool, poolCurrentSupply[pool]);
     }
 
-    event SupplyTrackingDrift(uint256 tracked, uint256 withdrawn, uint256 indexed marketId);
+    event SupplyTrackingDrift(uint256 tracked, uint256 withdrawn, address indexed pool);
 
     /// @notice Record a withdrawal for supply cap tracking (18-dec USD)
     /// @dev ACCEPTED TRADEOFF (drift): deposits/withdrawals are recorded at the LIVE oracle USD
@@ -219,14 +220,14 @@ contract RiskManager {
     ///      cap — never user funds — and self-corrects as positions fully close. A drift-free
     ///      design would require per-position recorded-value bookkeeping (deferred; not worth the
     ///      added storage/complexity for a soft limit).
-    function recordWithdraw(uint256 valueUsd, uint256 marketId) external onlyPositionManager {
-        if (valueUsd > marketCurrentSupply[marketId]) {
-            emit SupplyTrackingDrift(marketCurrentSupply[marketId], valueUsd, marketId);
-            marketCurrentSupply[marketId] = 0;
+    function recordWithdraw(uint256 valueUsd, address pool) external onlyPositionManager {
+        if (valueUsd > poolCurrentSupply[pool]) {
+            emit SupplyTrackingDrift(poolCurrentSupply[pool], valueUsd, pool);
+            poolCurrentSupply[pool] = 0;
         } else {
-            marketCurrentSupply[marketId] -= valueUsd;
+            poolCurrentSupply[pool] -= valueUsd;
         }
-        emit WithdrawRecorded(valueUsd, marketId, marketCurrentSupply[marketId]);
+        emit WithdrawRecorded(valueUsd, pool, poolCurrentSupply[pool]);
     }
 
     // --- Admin (RISK_ADMIN) ---
@@ -274,8 +275,9 @@ contract RiskManager {
         maxPositionsPerUser = max;
     }
 
-    function setMarketSupplyCap(uint256 marketId, uint256 cap) external onlyRiskAdmin {
-        emit MarketSupplyCapUpdated(marketId, marketSupplyCap[marketId], cap);
-        marketSupplyCap[marketId] = cap;
+    function setPoolSupplyCap(address pool, uint256 cap) external onlyRiskAdmin {
+        require(pool != address(0), "ZERO_POOL");
+        emit PoolSupplyCapUpdated(pool, poolSupplyCap[pool], cap);
+        poolSupplyCap[pool] = cap;
     }
 }

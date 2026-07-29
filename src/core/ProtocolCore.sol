@@ -18,10 +18,10 @@ contract ProtocolCore {
     // --- Registry ---
     mapping(ILPAdapter.LPType => address) public adapters;
     mapping(ILPAdapter.LPType => address) public oracles;
-    mapping(uint256 => address) public markets;
-    mapping(address => bool) public registeredMarkets;
-    uint256 public nextMarketId;
-    address public marketFactory;
+    /// @notice One shared lending pool per borrow asset (the pool key IS the borrow-asset address).
+    mapping(address => address) public pools;
+    mapping(address => bool) public registeredPools;
+    address public poolFactory;
 
     /// @notice Highest LP type index with a registered adapter
     /// @dev Only increases — sparse enum slots with no adapter are handled downstream.
@@ -41,8 +41,8 @@ contract ProtocolCore {
     event RiskManagerUpdated(address indexed oldManager, address indexed newManager);
     event AdapterRegistered(ILPAdapter.LPType indexed lpType, address indexed adapter);
     event OracleRegistered(ILPAdapter.LPType indexed lpType, address indexed oracle);
-    event MarketRegistered(uint256 indexed marketId, address indexed market);
-    event MarketFactoryUpdated(address indexed oldFactory, address indexed newFactory);
+    event PoolRegistered(address indexed borrowAsset, address indexed pool);
+    event PoolFactoryUpdated(address indexed oldFactory, address indexed newFactory);
     event PoolWhitelisted(address indexed pool);
     event PoolRemoved(address indexed pool);
     event Paused(address indexed by);
@@ -108,25 +108,35 @@ contract ProtocolCore {
         emit OracleRegistered(lpType, oracle);
     }
 
-    function setMarketFactory(address _factory) external onlyPoolAdmin {
+    function setPoolFactory(address _factory) external onlyPoolAdmin {
         require(_factory != address(0), "ZERO_ADDRESS");
         require(_factory.code.length > 0, "NOT_CONTRACT");
-        emit MarketFactoryUpdated(marketFactory, _factory);
-        marketFactory = _factory;
+        emit PoolFactoryUpdated(poolFactory, _factory);
+        poolFactory = _factory;
     }
 
-    function registerMarket(address market) external returns (uint256 marketId) {
+    /// @notice Register a shared lending pool, keyed by its borrow asset.
+    /// @dev One pool per borrow asset. The pool key IS the borrow-asset address.
+    function registerPool(address borrowAsset, address pool) external {
         require(
-            (address(aclManager) != address(0) && aclManager.isPoolAdmin(msg.sender)) || msg.sender == marketFactory,
+            (address(aclManager) != address(0) && aclManager.isPoolAdmin(msg.sender)) || msg.sender == poolFactory,
             "NOT_AUTHORIZED"
         );
-        require(market != address(0), "ZERO_ADDRESS");
-        require(market.code.length > 0, "NOT_CONTRACT");
-        require(!registeredMarkets[market], "MARKET_ALREADY_REGISTERED");
-        registeredMarkets[market] = true;
-        marketId = nextMarketId++;
-        markets[marketId] = market;
-        emit MarketRegistered(marketId, market);
+        require(borrowAsset != address(0), "ZERO_BORROW_ASSET");
+        require(pool != address(0), "ZERO_ADDRESS");
+        require(pool.code.length > 0, "NOT_CONTRACT");
+        require(pools[borrowAsset] == address(0), "POOL_ALREADY_REGISTERED");
+        require(!registeredPools[pool], "POOL_ALREADY_REGISTERED");
+        registeredPools[pool] = true;
+        pools[borrowAsset] = pool;
+        emit PoolRegistered(borrowAsset, pool);
+    }
+
+    /// @notice Resolve the shared pool for a borrow asset (reverts if none registered).
+    function getPool(address borrowAsset) external view returns (address) {
+        address pool = pools[borrowAsset];
+        require(pool != address(0), "POOL_NOT_FOUND");
+        return pool;
     }
 
     // --- Pool Management ---
