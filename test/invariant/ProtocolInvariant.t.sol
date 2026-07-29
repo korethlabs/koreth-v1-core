@@ -7,12 +7,14 @@ import {ProtocolCore} from "../../src/core/ProtocolCore.sol";
 import {ACLManager} from "../../src/core/ACLManager.sol";
 import {PositionManager} from "../../src/core/PositionManager.sol";
 import {LendingEngine} from "../../src/core/LendingEngine.sol";
-import {Market} from "../../src/markets/Market.sol";
+import {LendingPool} from "../../src/markets/LendingPool.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {LPOracleHub} from "../../src/oracle/LPOracleHub.sol";
 import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
-import {IMarket} from "../../src/interfaces/IMarket.sol";
+import {ILendingPool} from "../../src/interfaces/ILendingPool.sol";
+import {RiskManager} from "../../src/security/RiskManager.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {FeeCollector} from "../../src/core/FeeCollector.sol";
@@ -26,7 +28,8 @@ contract ProtocolInvariantTest is Test {
     ACLManager public aclManager;
     PositionManager public pm;
     LendingEngine public le;
-    Market public market;
+    LendingPool public market;
+    RiskManager public riskManager;
     LPOracleHub public oracleHub;
     FeeCollector public fc;
     MockLPAdapter public adapter;
@@ -37,7 +40,7 @@ contract ProtocolInvariantTest is Test {
     address public owner = makeAddr("owner");
     address public guardian = makeAddr("guardian");
     address public lpToken = makeAddr("lpToken");
-    uint256 public marketId;
+    address public borrowAsset;
 
     function setUp() public {
         usdc = new MockERC20("USDC", "USDC", 18);
@@ -68,20 +71,11 @@ contract ProtocolInvariantTest is Test {
             )
         );
 
-        IMarket.MarketConfig memory mConfig = IMarket.MarketConfig({
-            lpType: ILPAdapter.LPType.UniswapV3,
-            borrowAsset: address(usdc),
-            maxLtv: 6500,
-            liquidationThreshold: 7500,
-            liquidationBonus: 500,
-            borrowCap: 100_000_000e18,
-            minPoolTvl: 0,
-            minPoolAge: 0
-        });
-        market = Market(
+        ILendingPool.PoolConfig memory mConfig = ILendingPool.PoolConfig({borrowAsset: address(usdc)});
+        market = LendingPool(
             address(
                 new ERC1967Proxy(
-                    address(new Market()), abi.encodeCall(Market.initialize, (mConfig, address(irm), address(core)))
+                    address(new LendingPool()), abi.encodeCall(LendingPool.initialize, (mConfig, address(irm), address(core)))
                 )
             )
         );
@@ -93,6 +87,7 @@ contract ProtocolInvariantTest is Test {
         adapter = new MockLPAdapter(ILPAdapter.LPType.UniswapV3);
         adapter.setSupportedToken(lpToken, true);
         oracle = new MockLPOracle();
+        riskManager = new RiskManager(address(core));
 
         vm.startPrank(owner);
         aclManager.addEmergencyAdmin(guardian);
@@ -101,7 +96,11 @@ contract ProtocolInvariantTest is Test {
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.whitelistPool(lpToken);
-        marketId = core.registerMarket(address(market));
+        borrowAsset = address(usdc);
+        core.registerPool(address(usdc), address(market));
+        core.setRiskManager(address(riskManager));
+        aclManager.addRiskAdmin(owner);
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         pm.setLendingEngine(address(le));
         vm.stopPrank();
 
@@ -126,7 +125,7 @@ contract ProtocolInvariantTest is Test {
         // Deposit
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         // Borrow within LTV
@@ -143,7 +142,7 @@ contract ProtocolInvariantTest is Test {
 
         // INVARIANT: individual debt <= market totalBorrow
         uint256 posDebt = le.getDebt(posId);
-        IMarket.MarketState memory mState = market.getMarketState();
+        ILendingPool.PoolState memory mState = market.getPoolState();
 
         assertLe(posDebt, mState.totalBorrow + 1, "Position debt must not exceed market totalBorrow");
     }
@@ -158,7 +157,7 @@ contract ProtocolInvariantTest is Test {
         // Create a borrow so interest accrues
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
         vm.prank(user);
         le.borrow(posId, 30_000e18);
@@ -187,7 +186,7 @@ contract ProtocolInvariantTest is Test {
 
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         // First borrow
@@ -213,7 +212,7 @@ contract ProtocolInvariantTest is Test {
 
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         vm.prank(user);
@@ -250,7 +249,7 @@ contract ProtocolInvariantTest is Test {
         uint256 maxBorrow = 65_000e18;
         borrowAmt = bound(borrowAmt, 1e18, maxBorrow);
         // Make sure we don't borrow more than available
-        IMarket.MarketState memory stateBefore = market.getMarketState();
+        ILendingPool.PoolState memory stateBefore = market.getPoolState();
         if (borrowAmt > stateBefore.totalSupply - stateBefore.totalBorrow) {
             borrowAmt = (stateBefore.totalSupply - stateBefore.totalBorrow) / 2;
         }
@@ -258,7 +257,7 @@ contract ProtocolInvariantTest is Test {
 
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
         vm.prank(user);
         le.borrow(posId, borrowAmt);
@@ -269,7 +268,7 @@ contract ProtocolInvariantTest is Test {
         market.accrueInterest();
 
         // INVARIANT
-        IMarket.MarketState memory stateAfter = market.getMarketState();
+        ILendingPool.PoolState memory stateAfter = market.getPoolState();
         assertGe(stateAfter.totalSupply, stateAfter.totalBorrow, "totalSupply must always be >= totalBorrow");
     }
 
@@ -284,21 +283,21 @@ contract ProtocolInvariantTest is Test {
 
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         vm.prank(user);
         le.borrow(posId, borrowAmt);
 
         uint256 indexAtBorrow = market.borrowIndex();
-        IMarket.MarketState memory stateAtBorrow = market.getMarketState();
+        ILendingPool.PoolState memory stateAtBorrow = market.getPoolState();
 
         timeElapsed = bound(timeElapsed, 1 days, 365 days);
         vm.warp(block.timestamp + timeElapsed);
         market.accrueInterest();
 
         uint256 indexAfter = market.borrowIndex();
-        IMarket.MarketState memory stateAfter = market.getMarketState();
+        ILendingPool.PoolState memory stateAfter = market.getPoolState();
 
         // Debt via borrowIndex
         uint256 debtViaIndex = (borrowAmt * indexAfter) / indexAtBorrow;
@@ -323,7 +322,7 @@ contract ProtocolInvariantTest is Test {
 
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, depositAmt, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, depositAmt, borrowAsset);
 
         uint256 amountAfterDeposit = pm.getPosition(posId).amount;
         assertEq(amountAfterDeposit, depositAmt);
@@ -343,7 +342,7 @@ contract ProtocolInvariantTest is Test {
 
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         vm.prank(user);
@@ -404,7 +403,7 @@ contract ProtocolInvariantTest is Test {
         uint256 firstPosId;
         for (uint256 i = 0; i < numPositions; i++) {
             vm.prank(user);
-            uint256 posId = pm.deposit(lpToken, i + 1, 100e18, marketId);
+            uint256 posId = pm.deposit(lpToken, i + 1, 100e18, borrowAsset);
             if (i == 0) firstPosId = posId;
         }
 
@@ -429,7 +428,7 @@ contract ProtocolInvariantTest is Test {
 
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         // After deposit: Active, zero debt
@@ -463,7 +462,7 @@ contract ProtocolInvariantTest is Test {
 
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
         vm.prank(user);
         le.borrow(posId, borrowAmt);
@@ -472,7 +471,7 @@ contract ProtocolInvariantTest is Test {
         vm.warp(block.timestamp + timeElapsed);
         market.accrueInterest();
 
-        IMarket.MarketState memory s = market.getMarketState();
+        ILendingPool.PoolState memory s = market.getPoolState();
         uint256 marketBalance = usdc.balanceOf(address(market));
 
         // Available liquidity = balance in market
