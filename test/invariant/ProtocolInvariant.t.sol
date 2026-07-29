@@ -661,9 +661,7 @@ contract ProtocolInvariantTest is Test {
         // Each position owes exactly what it borrowed, and the shared pool owes the sum.
         assertEq(le.getDebt(v3Pos), v3Borrow, "V3 debt must be independent of V2");
         assertEq(le.getDebt(v2Pos), v2Borrow, "V2 debt must be independent of V3");
-        assertEq(
-            market.getPoolState().totalBorrow, v3Borrow + v2Borrow, "shared pool must owe the sum of both types"
-        );
+        assertEq(market.getPoolState().totalBorrow, v3Borrow + v2Borrow, "shared pool must owe the sum of both types");
 
         // Per-type exposure is tracked separately and reconciles with the pool total.
         uint256 v3Tracked = riskManager.lpTypeCurrentBorrows(ILPAdapter.LPType.UniswapV3);
@@ -686,9 +684,7 @@ contract ProtocolInvariantTest is Test {
 
         assertEq(le.getDebt(v3Pos), 0, "V3 fully repaid");
         assertEq(le.getDebt(v2Pos), v2DebtBefore, "V2 debt must survive V3's full repayment");
-        assertEq(
-            riskManager.lpTypeCurrentBorrows(ILPAdapter.LPType.UniswapV3), 0, "V3 exposure released on full repay"
-        );
+        assertEq(riskManager.lpTypeCurrentBorrows(ILPAdapter.LPType.UniswapV3), 0, "V3 exposure released on full repay");
         assertGe(riskManager.lpTypeCurrentBorrows(ILPAdapter.LPType.UniswapV2), v2Borrow, "V2 exposure retained");
     }
 
