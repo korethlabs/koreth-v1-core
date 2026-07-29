@@ -19,7 +19,7 @@ contract ProtocolCoreTest is Test {
     // Events — must redeclare to test with vm.expectEmit
     event AdapterRegistered(ILPAdapter.LPType indexed lpType, address indexed adapter);
     event OracleRegistered(ILPAdapter.LPType indexed lpType, address indexed oracle);
-    event MarketRegistered(uint256 indexed marketId, address indexed market);
+    event PoolRegistered(address indexed borrowAsset, address indexed pool);
     event PoolWhitelisted(address indexed pool);
     event PoolRemoved(address indexed pool);
     event Paused(address indexed by);
@@ -46,7 +46,7 @@ contract ProtocolCoreTest is Test {
         assertEq(core.owner(), owner);
         assertEq(address(core.aclManager()), address(aclManager));
         assertFalse(core.paused());
-        assertEq(core.nextMarketId(), 0);
+        assertEq(core.poolFactory(), address(0));
     }
 
     function test_constructor_revertsZeroOwner() public {
@@ -175,60 +175,67 @@ contract ProtocolCoreTest is Test {
         vm.stopPrank();
     }
 
-    // ========== registerMarket ==========
+    // ========== registerPool ==========
 
-    function test_registerMarket_success() public {
-        address market = _stub();
+    function test_registerPool_success() public {
+        address pool = _stub();
+        address borrowAsset = makeAddr("usdc");
 
         vm.expectEmit(true, true, false, false);
-        emit MarketRegistered(0, market);
+        emit PoolRegistered(borrowAsset, pool);
 
         vm.prank(owner);
-        uint256 id = core.registerMarket(market);
+        core.registerPool(borrowAsset, pool);
 
-        assertEq(id, 0);
-        assertEq(core.markets(0), market);
-        assertEq(core.nextMarketId(), 1);
+        assertEq(core.pools(borrowAsset), pool);
+        assertTrue(core.registeredPools(pool));
     }
 
-    function test_registerMarket_incrementsId() public {
+    function test_registerPool_multipleAssets() public {
         vm.startPrank(owner);
-        uint256 id1 = core.registerMarket(_stub());
-        uint256 id2 = core.registerMarket(_stub());
-        uint256 id3 = core.registerMarket(_stub());
+        address p1 = _stub();
+        address p2 = _stub();
+        address a1 = makeAddr("usdc");
+        address a2 = makeAddr("usdt");
+        core.registerPool(a1, p1);
+        core.registerPool(a2, p2);
         vm.stopPrank();
 
-        assertEq(id1, 0);
-        assertEq(id2, 1);
-        assertEq(id3, 2);
-        assertEq(core.nextMarketId(), 3);
+        assertEq(core.pools(a1), p1);
+        assertEq(core.pools(a2), p2);
     }
 
-    function test_registerMarket_revertsDuplicate() public {
-        address market = _stub();
+    function test_registerPool_revertsDuplicateAsset() public {
+        address borrowAsset = makeAddr("usdc");
         vm.startPrank(owner);
-        core.registerMarket(market);
-        vm.expectRevert("MARKET_ALREADY_REGISTERED");
-        core.registerMarket(market);
+        core.registerPool(borrowAsset, _stub());
+        vm.expectRevert("POOL_ALREADY_REGISTERED");
+        core.registerPool(borrowAsset, _stub());
         vm.stopPrank();
     }
 
-    function test_registerMarket_revertsZeroAddress() public {
+    function test_registerPool_revertsZeroAddress() public {
         vm.prank(owner);
         vm.expectRevert("ZERO_ADDRESS");
-        core.registerMarket(address(0));
+        core.registerPool(makeAddr("usdc"), address(0));
     }
 
-    function test_registerMarket_revertsNotContract() public {
+    function test_registerPool_revertsZeroBorrowAsset() public {
+        vm.prank(owner);
+        vm.expectRevert("ZERO_BORROW_ASSET");
+        core.registerPool(address(0), _stub());
+    }
+
+    function test_registerPool_revertsNotContract() public {
         vm.prank(owner);
         vm.expectRevert("NOT_CONTRACT");
-        core.registerMarket(makeAddr("eoa"));
+        core.registerPool(makeAddr("usdc"), makeAddr("eoa"));
     }
 
-    function test_registerMarket_revertsNotAuthorized() public {
+    function test_registerPool_revertsNotAuthorized() public {
         vm.prank(user);
         vm.expectRevert("NOT_AUTHORIZED");
-        core.registerMarket(makeAddr("market"));
+        core.registerPool(makeAddr("usdc"), makeAddr("pool"));
     }
 
     // ========== whitelistPool ==========
@@ -703,17 +710,16 @@ contract ProtocolCoreTest is Test {
 
     // ========== Fuzz tests ==========
 
-    function testFuzz_registerMarket_incrementsCorrectly(uint8 count) public {
+    function testFuzz_registerPool_distinctAssets(uint8 count) public {
         count = uint8(bound(count, 1, 10));
         vm.startPrank(owner);
         for (uint8 i = 0; i < count; i++) {
-            address market = address(new Stub());
-            uint256 id = core.registerMarket(market);
-            assertEq(id, i);
-            assertEq(core.markets(id), market);
+            address pool = address(new Stub());
+            address borrowAsset = address(uint160(uint256(keccak256(abi.encode("asset", i)))));
+            core.registerPool(borrowAsset, pool);
+            assertEq(core.pools(borrowAsset), pool);
         }
         vm.stopPrank();
-        assertEq(core.nextMarketId(), count);
     }
 
     function testFuzz_whitelistPool_anyAddress(address pool) public {

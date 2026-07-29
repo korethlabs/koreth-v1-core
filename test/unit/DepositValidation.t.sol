@@ -14,8 +14,9 @@ import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
-import {MockMarket} from "../mocks/MockMarket.sol";
+import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 
 /// @title DepositValidationTest
 /// @notice Tests for deposit-time validations: circuit breaker warning, oracle health check
@@ -27,17 +28,19 @@ contract DepositValidationTest is Test {
     CircuitBreaker public circuitBreaker;
     MockLPAdapter public adapter;
     MockLPOracle public oracle;
-    MockMarket public market;
+    MockLendingPool public market;
+    RiskManager public riskManager;
 
     address public owner = makeAddr("owner");
     address public alice = makeAddr("alice");
     address public lpToken = makeAddr("lpToken");
-    uint256 public marketId;
+    address public borrowAsset;
 
-    event CircuitBreakerNotConfigured(uint256 indexed marketId, address pool);
+    event CircuitBreakerNotConfigured(address indexed borrowAsset, address pool);
 
     function setUp() public {
         MockERC20 usdc = new MockERC20("USDC", "USDC", 18);
+        borrowAsset = address(usdc);
         InterestRateModel irm = new InterestRateModel(200, 600, 10_000, 8000);
 
         aclManager = new ACLManager(owner);
@@ -69,34 +72,39 @@ contract DepositValidationTest is Test {
         adapter = new MockLPAdapter(ILPAdapter.LPType.UniswapV2);
         adapter.setSupportedToken(lpToken, true);
         oracle = new MockLPOracle();
-        market = new MockMarket(address(usdc), address(irm));
-        market.setLpType(ILPAdapter.LPType.UniswapV2);
+        market = new MockLendingPool(address(usdc), address(irm));
         circuitBreaker = new CircuitBreaker(address(core));
+        riskManager = new RiskManager(address(core));
 
         vm.startPrank(owner);
         aclManager.addLendingEngine(address(le));
         aclManager.addPositionManager(address(pm));
+        aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
         core.whitelistPool(lpToken);
-        marketId = core.registerMarket(address(market));
+        core.registerPool(address(usdc), address(market));
+        core.setRiskManager(address(riskManager));
+        // Enable UniswapV2 collateral (the type the mock adapter detects)
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
         pm.setLendingEngine(address(le));
         vm.stopPrank();
     }
 
-    // ========== LP Type Mismatch ==========
+    // ========== Collateral Not Enabled ==========
 
-    /// @notice Depositing an LP whose detected type differs from the market's configured type reverts.
-    function test_deposit_revertsLpTypeMismatch() public {
-        // lpToken is detected as UniswapV2 (adapter). Register a market configured for UniswapV3.
-        MockMarket v3Market = new MockMarket(makeAddr("borrowAsset"), makeAddr("irm2"));
-        v3Market.setLpType(ILPAdapter.LPType.UniswapV3);
+    /// @notice Depositing an LP whose collateral type is not enabled in RiskManager reverts.
+    /// @dev Replaces the legacy per-market LP_TYPE_MISMATCH check (risk config is now per lpType).
+    function test_deposit_revertsCollateralNotEnabled() public {
+        // Disable the UniswapV2 collateral type in the registry.
         vm.prank(owner);
-        uint256 v3MarketId = core.registerMarket(address(v3Market));
+        riskManager.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV2, RiskConfig.config(6500, 7500, 500, 0, 0, false)
+        );
 
         vm.prank(alice);
-        vm.expectRevert("LP_TYPE_MISMATCH");
-        pm.deposit(lpToken, 0, 100e18, v3MarketId);
+        vm.expectRevert("COLLATERAL_NOT_ENABLED");
+        pm.deposit(lpToken, 0, 100e18, borrowAsset);
     }
 
     // ========== Zero-value deposit rejection ==========
@@ -110,7 +118,7 @@ contract DepositValidationTest is Test {
 
         vm.prank(alice);
         vm.expectRevert("ZERO_VALUE");
-        pm.deposit(lpToken, 0, 100e18, marketId);
+        pm.deposit(lpToken, 0, 100e18, borrowAsset);
     }
 
     /// @notice A normal position (principal > 0) deposits fine.
@@ -118,17 +126,17 @@ contract DepositValidationTest is Test {
         oracle.setPrice(100e18);
 
         vm.prank(alice);
-        pm.deposit(lpToken, 0, 100e18, marketId);
+        pm.deposit(lpToken, 0, 100e18, borrowAsset);
     }
 
     // ========== CircuitBreaker Warning ==========
 
     function test_deposit_emitsCircuitBreakerNotConfigured() public {
         vm.expectEmit(true, false, false, true);
-        emit CircuitBreakerNotConfigured(marketId, lpToken);
+        emit CircuitBreakerNotConfigured(borrowAsset, lpToken);
 
         vm.prank(alice);
-        pm.deposit(lpToken, 0, 100e18, marketId);
+        pm.deposit(lpToken, 0, 100e18, borrowAsset);
     }
 
     function test_deposit_noEventWhenCircuitBreakerSet() public {
@@ -137,11 +145,11 @@ contract DepositValidationTest is Test {
 
         vm.recordLogs();
         vm.prank(alice);
-        pm.deposit(lpToken, 0, 100e18, marketId);
+        pm.deposit(lpToken, 0, 100e18, borrowAsset);
 
         // Verify CircuitBreakerNotConfigured was NOT emitted
         Vm.Log[] memory logs = vm.getRecordedLogs();
-        bytes32 cbEventSig = keccak256("CircuitBreakerNotConfigured(uint256,address)");
+        bytes32 cbEventSig = keccak256("CircuitBreakerNotConfigured(address,address)");
         for (uint256 i = 0; i < logs.length; i++) {
             if (logs[i].topics.length > 0) {
                 assertFalse(logs[i].topics[0] == cbEventSig, "Should not emit CircuitBreakerNotConfigured");
@@ -159,7 +167,7 @@ contract DepositValidationTest is Test {
 
         vm.prank(alice);
         vm.expectRevert("ORACLE_UNHEALTHY");
-        pm.deposit(lpToken, 0, 100e18, marketId);
+        pm.deposit(lpToken, 0, 100e18, borrowAsset);
     }
 
     function test_deposit_worksWhenOracleHealthy() public {
@@ -169,6 +177,6 @@ contract DepositValidationTest is Test {
         oracle.setHealthy(true);
 
         vm.prank(alice);
-        pm.deposit(lpToken, 0, 100e18, marketId);
+        pm.deposit(lpToken, 0, 100e18, borrowAsset);
     }
 }

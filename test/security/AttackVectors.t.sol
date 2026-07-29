@@ -14,8 +14,10 @@ import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
-import {MockMarket} from "../mocks/MockMarket.sol";
+import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {RiskManager} from "../../src/security/RiskManager.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 
 /// @title AttackVectorTests
 /// @notice Security tests covering the 10 Tier 2 attack vectors from docs/security/attack-vectors.md
@@ -30,7 +32,8 @@ contract AttackVectorTests is Test {
     CircuitBreaker public circuitBreaker;
     MockLPAdapter public adapter;
     MockLPOracle public oracle;
-    MockMarket public market;
+    MockLendingPool public market;
+    RiskManager public riskManager;
     MockERC20 public usdc;
     MockERC20 public weth;
 
@@ -41,7 +44,7 @@ contract AttackVectorTests is Test {
     address public liquidator = makeAddr("liquidator");
     address public lpToken = makeAddr("lpToken");
 
-    uint256 public marketId;
+    address public borrowAsset;
 
     function setUp() public {
         usdc = new MockERC20("USDC", "USDC", 18);
@@ -91,18 +94,23 @@ contract AttackVectorTests is Test {
 
         oracle = new MockLPOracle();
         oracle.setPrice(50_000e18);
-        market = new MockMarket(address(usdc), address(irm));
+        market = new MockLendingPool(address(usdc), address(irm));
+        borrowAsset = address(usdc);
         circuitBreaker = new CircuitBreaker(address(core));
+        riskManager = new RiskManager(address(core));
 
         vm.startPrank(owner);
         aclManager.addEmergencyAdmin(guardian);
         aclManager.addLendingEngine(address(le));
         aclManager.addLiquidationEngine(address(liq));
         aclManager.addPositionManager(address(pm));
+        aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.whitelistPool(lpToken);
-        marketId = core.registerMarket(address(market));
+        core.registerPool(address(usdc), address(market));
+        core.setRiskManager(address(riskManager));
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         pm.setLendingEngine(address(le));
         pm.setCircuitBreaker(address(circuitBreaker));
         vm.stopPrank();
@@ -119,7 +127,7 @@ contract AttackVectorTests is Test {
 
     function _deposit(address user) internal returns (uint256 posId) {
         vm.prank(user);
-        posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
     }
 
     function _depositAndBorrow(address user, uint256 borrowAmount) internal returns (uint256 posId) {
@@ -213,13 +221,13 @@ contract AttackVectorTests is Test {
     function test_attack_doubleDeposit_separatePositions() public {
         // First deposit succeeds
         vm.prank(alice);
-        uint256 posId1 = pm.deposit(lpToken, 42, 100e18, marketId);
+        uint256 posId1 = pm.deposit(lpToken, 42, 100e18, borrowAsset);
 
         // Second deposit of same tokenId — mock adapter allows it (no NFT custody check)
         // Real V3 adapter would revert with TRANSFER_FAILED (NFT already transferred)
         // With mock, we verify positions are tracked separately
         vm.prank(alice);
-        uint256 posId2 = pm.deposit(lpToken, 42, 100e18, marketId);
+        uint256 posId2 = pm.deposit(lpToken, 42, 100e18, borrowAsset);
 
         assertFalse(posId1 == posId2, "Must create separate position IDs");
         // NOTE: Real V3Adapter enforces NFT custody — second deposit would revert.
@@ -318,19 +326,19 @@ contract AttackVectorTests is Test {
         assertLt(debt, type(uint256).max, "Must not overflow");
     }
 
-    // ========== 10. Frozen Market State ==========
+    // ========== 10. Frozen Collateral State ==========
 
     function test_attack_frozenMarket_depositsBlocked() public {
         // Guardian freezes market
         vm.prank(guardian);
-        circuitBreaker.freezeMarket(marketId, "USDC depeg detected");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "USDC depeg detected");
 
-        assertTrue(circuitBreaker.marketFrozen(marketId), "Market should be frozen");
+        assertTrue(circuitBreaker.collateralFrozen(ILPAdapter.LPType.UniswapV3), "Market should be frozen");
 
         // Deposit should fail
         vm.prank(alice);
-        vm.expectRevert("MARKET_FROZEN");
-        pm.deposit(lpToken, 1, 0, marketId);
+        vm.expectRevert("COLLATERAL_FROZEN");
+        pm.deposit(lpToken, 1, 0, borrowAsset);
     }
 
     function test_attack_frozenMarket_borrowsBlocked() public {
@@ -339,11 +347,11 @@ contract AttackVectorTests is Test {
 
         // Freeze market
         vm.prank(guardian);
-        circuitBreaker.freezeMarket(marketId, "Oracle anomaly");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "Oracle anomaly");
 
         // Borrow should fail
         vm.prank(alice);
-        vm.expectRevert("MARKET_FROZEN");
+        vm.expectRevert("COLLATERAL_FROZEN");
         le.borrow(posId, 10_000e18);
     }
 
@@ -352,7 +360,7 @@ contract AttackVectorTests is Test {
 
         // Freeze market
         vm.prank(guardian);
-        circuitBreaker.freezeMarket(marketId, "Emergency");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "Emergency");
 
         // Withdraw should still work (risk-reducing)
         vm.prank(alice);
@@ -367,7 +375,7 @@ contract AttackVectorTests is Test {
 
         // Freeze market
         vm.prank(guardian);
-        circuitBreaker.freezeMarket(marketId, "Emergency");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "Emergency");
 
         // Repay should still work (risk-reducing)
         usdc.mint(alice, 10_000e18);
@@ -386,7 +394,7 @@ contract AttackVectorTests is Test {
         // Price drops + freeze
         oracle.setPrice(35_000e18);
         vm.prank(guardian);
-        circuitBreaker.freezeMarket(marketId, "Depeg response");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "Depeg response");
 
         (bool canLiq, uint256 maxRepay) = liq.isLiquidatable(posId);
         assertTrue(canLiq, "Should be liquidatable even when frozen");
@@ -404,17 +412,17 @@ contract AttackVectorTests is Test {
 
     function test_attack_frozenMarket_unfreezeRequiresPoolAdmin() public {
         vm.prank(guardian);
-        circuitBreaker.freezeMarket(marketId, "Test");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "Test");
 
         // Guardian cannot unfreeze
         vm.prank(guardian);
         vm.expectRevert("NOT_POOL_ADMIN");
-        circuitBreaker.unfreezeMarket(marketId);
+        circuitBreaker.unfreezeCollateral(ILPAdapter.LPType.UniswapV3);
 
         // Only PoolAdmin can unfreeze
         vm.prank(owner);
-        circuitBreaker.unfreezeMarket(marketId);
-        assertFalse(circuitBreaker.marketFrozen(marketId));
+        circuitBreaker.unfreezeCollateral(ILPAdapter.LPType.UniswapV3);
+        assertFalse(circuitBreaker.collateralFrozen(ILPAdapter.LPType.UniswapV3));
     }
 
     // ========== Interest Rate Cap ==========

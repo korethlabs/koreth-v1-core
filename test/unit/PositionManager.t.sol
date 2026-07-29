@@ -12,10 +12,12 @@ import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
-import {MockMarket} from "../mocks/MockMarket.sol";
+import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {MockPriceFeedRegistry} from "../mocks/MockPriceFeedRegistry.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
+import {RiskManager} from "../../src/security/RiskManager.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 
 contract PositionManagerTest is Test {
     ProtocolCore public core;
@@ -24,7 +26,10 @@ contract PositionManagerTest is Test {
     LPOracleHub public oracleHub;
     MockLPAdapter public adapter;
     MockLPOracle public oracle;
-    MockMarket public market;
+    MockLendingPool public market;
+    RiskManager public riskManager;
+    MockERC20 public usdc;
+    address public borrowAsset;
 
     address public owner = makeAddr("owner");
     address public guardian = makeAddr("guardian");
@@ -34,8 +39,6 @@ contract PositionManagerTest is Test {
     address public lendingEngine; // Set in setUp to le proxy address
     address public liquidationEngine = makeAddr("liquidationEngine");
     address public lpToken = makeAddr("lpToken");
-
-    uint256 public marketId;
 
     // Events
     event PositionCreated(
@@ -85,9 +88,11 @@ contract PositionManagerTest is Test {
         adapter = new MockLPAdapter(ILPAdapter.LPType.UniswapV3);
         adapter.setSupportedToken(lpToken, true);
         oracle = new MockLPOracle();
-        MockERC20 usdc = new MockERC20("USDC", "USDC", 6);
+        usdc = new MockERC20("USDC", "USDC", 6);
+        borrowAsset = address(usdc);
         InterestRateModel irm = new InterestRateModel(200, 600, 10_000, 8000);
-        market = new MockMarket(address(usdc), address(irm));
+        market = new MockLendingPool(address(usdc), address(irm));
+        riskManager = new RiskManager(address(core));
 
         // Register everything and grant roles via ACLManager
         vm.startPrank(owner);
@@ -95,10 +100,13 @@ contract PositionManagerTest is Test {
         aclManager.addLendingEngine(lendingEngine);
         aclManager.addLiquidationEngine(liquidationEngine);
         aclManager.addPositionManager(address(pm));
+        aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.whitelistPool(lpToken);
-        marketId = core.registerMarket(address(market));
+        core.registerPool(address(usdc), address(market));
+        core.setRiskManager(address(riskManager));
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         pm.setLendingEngine(lendingEngine);
         vm.stopPrank();
     }
@@ -150,7 +158,7 @@ contract PositionManagerTest is Test {
         emit PositionCreated(1, alice, lpToken, 1, ILPAdapter.LPType.UniswapV3, 50_000e18);
 
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         assertEq(posId, 1);
         assertEq(pm.nextPositionId(), 2);
@@ -169,8 +177,8 @@ contract PositionManagerTest is Test {
 
     function test_deposit_multiplePositions() public {
         vm.startPrank(alice);
-        uint256 id1 = pm.deposit(lpToken, 1, 100e18, marketId);
-        uint256 id2 = pm.deposit(lpToken, 2, 200e18, marketId);
+        uint256 id1 = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        uint256 id2 = pm.deposit(lpToken, 2, 200e18, borrowAsset);
         vm.stopPrank();
 
         assertEq(id1, 1);
@@ -185,10 +193,10 @@ contract PositionManagerTest is Test {
 
     function test_deposit_differentUsers() public {
         vm.prank(alice);
-        pm.deposit(lpToken, 1, 100e18, marketId);
+        pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(bob);
-        pm.deposit(lpToken, 2, 200e18, marketId);
+        pm.deposit(lpToken, 2, 200e18, borrowAsset);
 
         assertEq(pm.getPositionsByOwner(alice).length, 1);
         assertEq(pm.getPositionsByOwner(bob).length, 1);
@@ -197,7 +205,7 @@ contract PositionManagerTest is Test {
     function test_deposit_recordsDepositBlock() public {
         vm.roll(12_345);
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         assertEq(pm.getDepositBlock(posId), 12_345);
     }
@@ -205,20 +213,20 @@ contract PositionManagerTest is Test {
     function test_deposit_revertsZeroLpToken() public {
         vm.prank(alice);
         vm.expectRevert("ZERO_LP_TOKEN");
-        pm.deposit(address(0), 1, 100e18, marketId);
+        pm.deposit(address(0), 1, 100e18, borrowAsset);
     }
 
-    function test_deposit_revertsInvalidMarket() public {
+    function test_deposit_revertsInvalidPool() public {
         vm.prank(alice);
-        vm.expectRevert("INVALID_MARKET");
-        pm.deposit(lpToken, 1, 100e18, 999);
+        vm.expectRevert("INVALID_POOL");
+        pm.deposit(lpToken, 1, 100e18, makeAddr("unregisteredAsset"));
     }
 
     function test_deposit_revertsUnsupportedLP() public {
         address unknownToken = makeAddr("unknownLP");
         vm.prank(alice);
         vm.expectRevert("UNSUPPORTED_LP");
-        pm.deposit(unknownToken, 1, 100e18, marketId);
+        pm.deposit(unknownToken, 1, 100e18, borrowAsset);
     }
 
     function test_deposit_revertsPoolNotSupported() public {
@@ -229,7 +237,7 @@ contract PositionManagerTest is Test {
 
         vm.prank(alice);
         vm.expectRevert("POOL_NOT_SUPPORTED");
-        pm.deposit(newLP, 1, 100e18, marketId);
+        pm.deposit(newLP, 1, 100e18, borrowAsset);
     }
 
     function test_deposit_revertsZeroValue() public {
@@ -237,7 +245,7 @@ contract PositionManagerTest is Test {
 
         vm.prank(alice);
         vm.expectRevert("ZERO_VALUE");
-        pm.deposit(lpToken, 1, 100e18, marketId);
+        pm.deposit(lpToken, 1, 100e18, borrowAsset);
     }
 
     function test_deposit_revertsWhenPaused() public {
@@ -246,14 +254,14 @@ contract PositionManagerTest is Test {
 
         vm.prank(alice);
         vm.expectRevert("PAUSED");
-        pm.deposit(lpToken, 1, 100e18, marketId);
+        pm.deposit(lpToken, 1, 100e18, borrowAsset);
     }
 
     // ========== withdraw ==========
 
     function test_withdraw_success() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.expectEmit(true, true, false, false);
         emit PositionClosed(posId, alice);
@@ -268,7 +276,7 @@ contract PositionManagerTest is Test {
 
     function test_withdraw_revertsNotOwner() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(bob);
         vm.expectRevert("NOT_POSITION_OWNER");
@@ -277,7 +285,7 @@ contract PositionManagerTest is Test {
 
     function test_withdraw_revertsHasDebt() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         // Simulate debt
         vm.prank(lendingEngine);
@@ -290,7 +298,7 @@ contract PositionManagerTest is Test {
 
     function test_withdraw_revertsAlreadyClosed() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(alice);
         pm.withdraw(posId);
@@ -302,7 +310,7 @@ contract PositionManagerTest is Test {
 
     function test_withdraw_revertsLiquidatedPosition() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(liquidationEngine);
         pm.markLiquidated(posId, makeAddr("liq"), 5000e18);
@@ -320,7 +328,7 @@ contract PositionManagerTest is Test {
 
     function test_withdraw_revertsWhenPaused() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(guardian);
         core.pause();
@@ -334,7 +342,7 @@ contract PositionManagerTest is Test {
 
     function test_updateDebt_setsDebtAndStatus() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(lendingEngine);
         pm.updateDebt(posId, 10_000e18);
@@ -346,7 +354,7 @@ contract PositionManagerTest is Test {
 
     function test_updateDebt_clearsDebtResetsStatus() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.startPrank(lendingEngine);
         pm.updateDebt(posId, 10_000e18);
@@ -360,7 +368,7 @@ contract PositionManagerTest is Test {
 
     function test_updateDebt_revertsNotLendingEngine() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(alice);
         vm.expectRevert("NOT_LENDING_ENGINE");
@@ -369,7 +377,7 @@ contract PositionManagerTest is Test {
 
     function test_updateDebt_revertsClosedPosition() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(alice);
         pm.withdraw(posId);
@@ -381,7 +389,7 @@ contract PositionManagerTest is Test {
 
     function test_updateDebt_revertsLiquidatedPosition() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(liquidationEngine);
         pm.markLiquidated(posId, makeAddr("liq"), 5000e18);
@@ -393,7 +401,7 @@ contract PositionManagerTest is Test {
 
     function test_updateDebt_ownerCannotCallDirectly() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         // Owner does NOT bypass LendingEngine role check
         vm.prank(owner);
@@ -407,7 +415,7 @@ contract PositionManagerTest is Test {
 
     function test_reducePositionAmount_success() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.expectEmit(true, false, false, true);
         emit PositionAmountReduced(posId, 30e18, 70e18);
@@ -421,7 +429,7 @@ contract PositionManagerTest is Test {
 
     function test_reducePositionAmount_multipleReductions() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.startPrank(liquidationEngine);
         pm.reducePositionAmount(posId, 20e18);
@@ -435,7 +443,7 @@ contract PositionManagerTest is Test {
 
     function test_reducePositionAmount_toZero() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(liquidationEngine);
         pm.reducePositionAmount(posId, 100e18);
@@ -446,7 +454,7 @@ contract PositionManagerTest is Test {
 
     function test_reducePositionAmount_revertsExceedsAmount() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(liquidationEngine);
         vm.expectRevert("EXCEEDS_POSITION_AMOUNT");
@@ -455,7 +463,7 @@ contract PositionManagerTest is Test {
 
     function test_reducePositionAmount_revertsZeroAmount() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(liquidationEngine);
         vm.expectRevert("ZERO_AMOUNT");
@@ -464,7 +472,7 @@ contract PositionManagerTest is Test {
 
     function test_reducePositionAmount_revertsNotLiquidationEngine() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(alice);
         vm.expectRevert("NOT_LIQUIDATION_ENGINE");
@@ -481,7 +489,7 @@ contract PositionManagerTest is Test {
 
     function test_markLiquidated_success() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(lendingEngine);
         pm.updateDebt(posId, 10_000e18);
@@ -499,7 +507,7 @@ contract PositionManagerTest is Test {
 
     function test_markLiquidated_revertsNotLiquidationEngine() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(alice);
         vm.expectRevert("NOT_LIQUIDATION_ENGINE");
@@ -508,7 +516,7 @@ contract PositionManagerTest is Test {
 
     function test_markLiquidated_revertsZeroLiquidator() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(liquidationEngine);
         vm.expectRevert("ZERO_LIQUIDATOR");
@@ -521,7 +529,7 @@ contract PositionManagerTest is Test {
         oracle.setPrice(75_000e18);
 
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         assertEq(pm.getPositionValue(posId), 75_000e18);
     }
@@ -532,7 +540,7 @@ contract PositionManagerTest is Test {
 
     function test_getHealthFactor_maxWithNoDebt() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         assertEq(pm.getHealthFactor(posId), type(uint256).max);
     }
@@ -541,7 +549,7 @@ contract PositionManagerTest is Test {
         oracle.setPrice(10_000e18); // $10,000 collateral
 
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         // Mock LendingEngine.getDebt to return $5,000 in 6-dec USDC (market's borrow asset)
         vm.mockCall(
@@ -558,7 +566,7 @@ contract PositionManagerTest is Test {
 
     function test_getHealthFactor_zeroWhenCollateralZero() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         // Mock LendingEngine.getDebt to return $5,000 in 6-dec USDC
         vm.mockCall(
@@ -575,12 +583,12 @@ contract PositionManagerTest is Test {
     function test_getDepositBlock() public {
         vm.roll(100);
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         assertEq(pm.getDepositBlock(posId), 100);
 
         vm.roll(200);
         vm.prank(alice);
-        uint256 posId2 = pm.deposit(lpToken, 2, 50e18, marketId);
+        uint256 posId2 = pm.deposit(lpToken, 2, 50e18, borrowAsset);
         assertEq(pm.getDepositBlock(posId2), 200);
     }
 
@@ -601,7 +609,7 @@ contract PositionManagerTest is Test {
     function test_upgrade_preservesState() public {
         // Deposit a position
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         // Upgrade
         PositionManager newImpl = new PositionManager();
@@ -620,7 +628,7 @@ contract PositionManagerTest is Test {
     function test_storageGap_upgradeWithNewStateVar() public {
         // Deposit a position before upgrade
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         // Deploy V2 implementation (simulated — same contract, just proves upgrade works)
         PositionManager newImpl = new PositionManager();
@@ -641,7 +649,7 @@ contract PositionManagerTest is Test {
 
     function testFuzz_deposit_anyTokenId(uint256 tokenId) public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, tokenId, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, tokenId, 100e18, borrowAsset);
 
         IPositionManager.Position memory pos = pm.getPosition(posId);
         assertEq(pos.tokenId, tokenId);
@@ -651,7 +659,7 @@ contract PositionManagerTest is Test {
         amount = bound(amount, 1, type(uint128).max);
 
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, amount, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, amount, borrowAsset);
 
         IPositionManager.Position memory pos = pm.getPosition(posId);
         assertEq(pos.amount, amount);
@@ -662,7 +670,7 @@ contract PositionManagerTest is Test {
         oracle.setPrice(100_000e18); // $100K collateral
 
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(lendingEngine);
         pm.updateDebt(posId, debt);
@@ -677,7 +685,7 @@ contract PositionManagerTest is Test {
     function test_fullLifecycle_depositBorrowRepayWithdraw() public {
         // 1. Deposit
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         assertEq(uint8(pm.getPosition(posId).status), uint8(IPositionManager.PositionStatus.Active));
 
         // 2. Borrow (simulated by LendingEngine)
@@ -699,7 +707,7 @@ contract PositionManagerTest is Test {
     function test_fullLifecycle_depositBorrowLiquidate() public {
         // 1. Deposit
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         // 2. Borrow
         vm.prank(lendingEngine);
@@ -727,16 +735,16 @@ contract PositionManagerTest is Test {
 
         // Create a market with 6-decimal USDC
         InterestRateModel irm6 = new InterestRateModel(200, 600, 10_000, 8000);
-        MockMarket market6 = new MockMarket(address(usdc6), address(irm6));
+        MockLendingPool market6 = new MockLendingPool(address(usdc6), address(irm6));
         vm.startPrank(owner);
-        uint256 marketId6 = core.registerMarket(address(market6));
+        core.registerPool(address(usdc6), address(market6));
         core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 
         oracle.setPrice(10_000e18); // $10K collateral
 
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId6);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, address(usdc6));
 
         // Mock debt: 5000 USDC in 6 decimals
         vm.mockCall(
@@ -758,16 +766,16 @@ contract PositionManagerTest is Test {
         registry.setPrice(address(wbtc), 60_000e18); // $60K per BTC
 
         InterestRateModel irm8 = new InterestRateModel(200, 600, 10_000, 8000);
-        MockMarket market8 = new MockMarket(address(wbtc), address(irm8));
+        MockLendingPool market8 = new MockLendingPool(address(wbtc), address(irm8));
         vm.startPrank(owner);
-        uint256 marketId8 = core.registerMarket(address(market8));
+        core.registerPool(address(wbtc), address(market8));
         core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 
         oracle.setPrice(100_000e18); // $100K collateral
 
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId8);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, address(wbtc));
 
         // Mock debt: 0.5 WBTC = $30K
         vm.mockCall(
@@ -787,7 +795,7 @@ contract PositionManagerTest is Test {
         oracle.setPrice(10_000e18);
 
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         // Market uses 6-dec USDC, so mock debt in 6 decimals
         vm.mockCall(
@@ -826,9 +834,9 @@ contract PositionManagerTest is Test {
     function test_getActivePositionsByOwner_filtersClosedAndLiquidated() public {
         // Create 3 positions
         vm.startPrank(alice);
-        uint256 pos1 = pm.deposit(lpToken, 1, 100e18, marketId);
-        uint256 pos2 = pm.deposit(lpToken, 2, 100e18, marketId);
-        uint256 pos3 = pm.deposit(lpToken, 3, 100e18, marketId);
+        uint256 pos1 = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        uint256 pos2 = pm.deposit(lpToken, 2, 100e18, borrowAsset);
+        uint256 pos3 = pm.deposit(lpToken, 3, 100e18, borrowAsset);
         vm.stopPrank();
 
         // All 3 should appear in both views

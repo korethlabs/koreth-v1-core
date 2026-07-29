@@ -64,11 +64,10 @@ abstract contract E2EBase is ForkTestBase {
         _fundUsdc(bob, BOB_USDC);
         _fundUsdc(liquidator, LIQUIDATOR_USDC);
 
-        // Bob supplies USDC to the market (provides borrowable liquidity)
-        address marketAddr = core.markets(ethUsdcMarketId);
+        // Bob supplies USDC to the shared pool (provides borrowable liquidity)
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(marketAddr, BOB_USDC);
-        IMarket(marketAddr).supply(BOB_USDC);
+        IERC20(Constants.USDC).approve(address(usdcPool), BOB_USDC);
+        usdcPool.supply(BOB_USDC);
         vm.stopPrank();
     }
 
@@ -130,8 +129,8 @@ abstract contract E2EBase is ForkTestBase {
         // Approve NFT transfer to PositionManager (via adapter)
         nftManager.approve(address(v3Adapter), tokenId);
 
-        // Deposit into protocol
-        positionId = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, ethUsdcMarketId);
+        // Deposit into protocol (borrow against the shared USDC pool)
+        positionId = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, usdcBorrowAsset);
 
         vm.stopPrank();
     }
@@ -161,15 +160,14 @@ abstract contract E2EBase is ForkTestBase {
         vm.stopPrank();
     }
 
-    /// @notice Deposit V2 LP tokens into the protocol
-    /// @param marketId The market to deposit into (caller must pass the correct V2 market)
-    function _depositV2(address user, uint256 lpAmount, uint256 marketId) internal returns (uint256 positionId) {
+    /// @notice Deposit V2 LP tokens into the protocol (against the shared USDC pool)
+    function _depositV2(address user, uint256 lpAmount) internal returns (uint256 positionId) {
         vm.startPrank(user);
 
         IUniswapV2Pair pair = IUniswapV2Pair(Constants.UNI_V2_WETH_USDC);
         pair.approve(address(v2Adapter), lpAmount);
 
-        positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, marketId);
+        positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
 
         vm.stopPrank();
     }

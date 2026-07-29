@@ -13,8 +13,10 @@ import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
-import {MockMarket} from "../mocks/MockMarket.sol";
+import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {RiskManager} from "../../src/security/RiskManager.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 
 contract LendingEngineTest is Test {
     ProtocolCore public core;
@@ -24,9 +26,10 @@ contract LendingEngineTest is Test {
     LPOracleHub public oracleHub;
     MockLPAdapter public adapter;
     MockLPOracle public oracle;
-    MockMarket public market;
+    MockLendingPool public market;
     MockERC20 public usdc;
     InterestRateModel public irm;
+    RiskManager public riskManager;
 
     address public owner = makeAddr("owner");
     address public guardian = makeAddr("guardian");
@@ -35,7 +38,7 @@ contract LendingEngineTest is Test {
     address public liquidationEngine = makeAddr("liquidationEngine");
     address public lpToken = makeAddr("lpToken");
 
-    uint256 public marketId;
+    address public borrowAsset;
 
     // Events
     event Borrowed(uint256 indexed positionId, address indexed borrower, uint256 amount, uint256 totalDebt);
@@ -82,7 +85,8 @@ contract LendingEngineTest is Test {
         adapter.setSupportedToken(lpToken, true);
         oracle = new MockLPOracle();
         oracle.setPrice(50_000e18); // $50K collateral
-        market = new MockMarket(address(usdc), address(irm));
+        market = new MockLendingPool(address(usdc), address(irm));
+        riskManager = new RiskManager(address(core));
 
         // Register everything and grant roles via ACLManager
         vm.startPrank(owner);
@@ -90,11 +94,15 @@ contract LendingEngineTest is Test {
         aclManager.addLendingEngine(address(le));
         aclManager.addLiquidationEngine(liquidationEngine);
         aclManager.addPositionManager(address(pm));
+        aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.whitelistPool(lpToken);
-        marketId = core.registerMarket(address(market));
+        core.registerPool(address(usdc), address(market));
+        core.setRiskManager(address(riskManager));
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         vm.stopPrank();
+        borrowAsset = address(usdc);
 
         // Fund market with USDC (use 18 decimals to match oracle/debt accounting)
         // In production, decimals conversion would be handled. For testing, use same scale.
@@ -105,7 +113,7 @@ contract LendingEngineTest is Test {
 
     function _depositPosition(address user) internal returns (uint256 posId) {
         vm.prank(user);
-        posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2); // Advance past borrow cooldown
     }
 
@@ -325,7 +333,7 @@ contract LendingEngineTest is Test {
     function test_borrow_revertsSameBlock() public {
         // Deposit WITHOUT advancing block (bypass helper)
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         // DO NOT advance block — same block as deposit
 
         vm.prank(alice);
@@ -335,7 +343,7 @@ contract LendingEngineTest is Test {
 
     function test_borrow_revertsOneBlockLater() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         // Advance only 1 block — still within cooldown (need > depositBlock + 1)
         vm.roll(block.number + 1);
@@ -347,7 +355,7 @@ contract LendingEngineTest is Test {
 
     function test_borrow_succeedsAfterCooldown() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         // Advance 2 blocks — past cooldown (block.number > depositBlock + 1)
         vm.roll(block.number + 2);
@@ -364,7 +372,7 @@ contract LendingEngineTest is Test {
 
         vm.roll(100); // Start at known block
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         // pos.depositBlock = 100
 
         // Block 103 — still within cooldown (need > 100 + 5 = 105)
@@ -420,7 +428,7 @@ contract LendingEngineTest is Test {
     function test_accrueInterest_delegatesToMarket() public {
         // accrueInterest on LendingEngine just calls Market.accrueInterest()
         // Since MockMarket's accrueInterest is a no-op, index stays at RAY
-        le.accrueInterest(marketId);
+        le.accrueInterest(borrowAsset);
         assertEq(market.borrowIndex(), 1e27);
     }
 

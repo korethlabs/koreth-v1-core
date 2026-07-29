@@ -14,8 +14,9 @@ import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
-import {MockMarket} from "../mocks/MockMarket.sol";
+import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 
 contract RiskManagerIntegrationTest is Test {
     ACLManager public aclManager;
@@ -26,7 +27,7 @@ contract RiskManagerIntegrationTest is Test {
     RiskManager public rm;
     MockLPAdapter public adapter;
     MockLPOracle public oracle;
-    MockMarket public market;
+    MockLendingPool public market;
     MockERC20 public usdc;
     InterestRateModel public irm;
 
@@ -35,7 +36,7 @@ contract RiskManagerIntegrationTest is Test {
     address public bob = makeAddr("bob");
     address public lpToken = makeAddr("lpToken");
 
-    uint256 public marketId;
+    address public borrowAsset;
 
     function setUp() public {
         usdc = new MockERC20("USDC", "USDC", 18);
@@ -71,18 +72,21 @@ contract RiskManagerIntegrationTest is Test {
         adapter.setSupportedToken(lpToken, true);
         oracle = new MockLPOracle();
         oracle.setPrice(50_000e18);
-        market = new MockMarket(address(usdc), address(irm));
+        market = new MockLendingPool(address(usdc), address(irm));
+        borrowAsset = address(usdc);
         rm = new RiskManager(address(core));
 
         vm.startPrank(owner);
         aclManager.addLendingEngine(address(le));
         aclManager.addPositionManager(address(pm));
+        aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.whitelistPool(lpToken);
-        marketId = core.registerMarket(address(market));
+        core.registerPool(address(usdc), address(market));
         pm.setLendingEngine(address(le));
         core.setRiskManager(address(rm));
+        rm.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         vm.stopPrank();
 
         usdc.mint(address(market), 200_000_000e18);
@@ -93,22 +97,22 @@ contract RiskManagerIntegrationTest is Test {
     function test_deposit_enforces_maxPositionsPerUser() public {
         for (uint256 i = 0; i < 20; i++) {
             vm.prank(alice);
-            pm.deposit(lpToken, i + 1, 100e18, marketId);
+            pm.deposit(lpToken, i + 1, 100e18, borrowAsset);
         }
 
         vm.prank(alice);
         vm.expectRevert("MAX_POSITIONS_REACHED");
-        pm.deposit(lpToken, 21, 100e18, marketId);
+        pm.deposit(lpToken, 21, 100e18, borrowAsset);
     }
 
     function test_deposit_differentUsersIndependent() public {
         for (uint256 i = 0; i < 20; i++) {
             vm.prank(alice);
-            pm.deposit(lpToken, i + 1, 100e18, marketId);
+            pm.deposit(lpToken, i + 1, 100e18, borrowAsset);
         }
 
         vm.prank(bob);
-        pm.deposit(lpToken, 100, 100e18, marketId);
+        pm.deposit(lpToken, 100, 100e18, borrowAsset);
     }
 
     function test_deposit_adminCanChangeLimit() public {
@@ -117,120 +121,120 @@ contract RiskManagerIntegrationTest is Test {
 
         for (uint256 i = 0; i < 5; i++) {
             vm.prank(alice);
-            pm.deposit(lpToken, i + 1, 100e18, marketId);
+            pm.deposit(lpToken, i + 1, 100e18, borrowAsset);
         }
 
         vm.prank(alice);
         vm.expectRevert("MAX_POSITIONS_REACHED");
-        pm.deposit(lpToken, 6, 100e18, marketId);
+        pm.deposit(lpToken, 6, 100e18, borrowAsset);
 
         vm.prank(owner);
         rm.setMaxPositionsPerUser(10);
 
         vm.prank(alice);
-        pm.deposit(lpToken, 6, 100e18, marketId);
+        pm.deposit(lpToken, 6, 100e18, borrowAsset);
     }
 
     // ========== Max Position Value ==========
 
     function test_deposit_enforces_maxPositionValue() public {
         vm.prank(alice);
-        pm.deposit(lpToken, 1, 100e18, marketId); // $50K OK
+        pm.deposit(lpToken, 1, 100e18, borrowAsset); // $50K OK
 
         oracle.setPrice(11_000_000e18); // $11M > $10M cap
 
         vm.prank(alice);
         vm.expectRevert("POSITION_TOO_LARGE");
-        pm.deposit(lpToken, 2, 100e18, marketId);
+        pm.deposit(lpToken, 2, 100e18, borrowAsset);
     }
 
     // ========== Supply Cap ==========
 
     function test_deposit_enforces_supplyCap() public {
         vm.prank(owner);
-        rm.setMarketSupplyCap(marketId, 100_000e18); // $100K cap
+        rm.setPoolSupplyCap(borrowAsset, 100_000e18); // $100K cap
 
         // $50K deposit OK
         vm.prank(alice);
-        pm.deposit(lpToken, 1, 100e18, marketId);
+        pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         // Second $50K deposit OK (total = $100K)
         vm.prank(alice);
-        pm.deposit(lpToken, 2, 100e18, marketId);
+        pm.deposit(lpToken, 2, 100e18, borrowAsset);
 
         // Third would exceed $100K cap
         vm.prank(alice);
         vm.expectRevert("SUPPLY_CAP_REACHED");
-        pm.deposit(lpToken, 3, 100e18, marketId);
+        pm.deposit(lpToken, 3, 100e18, borrowAsset);
     }
 
     /// @notice recordDeposit itself enforces the cap (choke point) — protects EVERY value-in path.
     function test_recordDeposit_enforcesSupplyCapAtChokePoint() public {
         vm.prank(owner);
-        rm.setMarketSupplyCap(marketId, 10_000e18);
+        rm.setPoolSupplyCap(borrowAsset, 10_000e18);
 
         vm.prank(address(pm));
-        rm.recordDeposit(6000e18, marketId);
+        rm.recordDeposit(6000e18, borrowAsset);
 
         // Exceeding the cap reverts...
         vm.prank(address(pm));
         vm.expectRevert("SUPPLY_CAP_REACHED");
-        rm.recordDeposit(5000e18, marketId);
+        rm.recordDeposit(5000e18, borrowAsset);
 
         // ...but filling exactly to the cap is allowed.
         vm.prank(address(pm));
-        rm.recordDeposit(4000e18, marketId);
-        assertEq(rm.marketCurrentSupply(marketId), 10_000e18);
+        rm.recordDeposit(4000e18, borrowAsset);
+        assertEq(rm.poolCurrentSupply(borrowAsset), 10_000e18);
     }
 
     /// @notice cap == 0 means uncapped (Aave-style default) — recordDeposit never reverts.
     function test_recordDeposit_uncappedWhenCapZero() public {
         vm.prank(address(pm));
-        rm.recordDeposit(1_000_000_000e18, marketId);
-        assertEq(rm.marketCurrentSupply(marketId), 1_000_000_000e18);
+        rm.recordDeposit(1_000_000_000e18, borrowAsset);
+        assertEq(rm.poolCurrentSupply(borrowAsset), 1_000_000_000e18);
     }
 
     /// @notice Compounding a position's own fees is TRACKED but NOT cap-blocked (organic growth).
     ///         recordDeposit reverts at the cap; recordCompoundReinvest does not.
     function test_recordCompoundReinvest_tracksWithoutCap() public {
         vm.prank(owner);
-        rm.setMarketSupplyCap(marketId, 10_000e18);
+        rm.setPoolSupplyCap(borrowAsset, 10_000e18);
 
         // Fill the market to its cap.
         vm.prank(address(pm));
-        rm.recordDeposit(10_000e18, marketId);
+        rm.recordDeposit(10_000e18, borrowAsset);
 
         // A further deposit is blocked by the cap...
         vm.prank(address(pm));
         vm.expectRevert("SUPPLY_CAP_REACHED");
-        rm.recordDeposit(1, marketId);
+        rm.recordDeposit(1, borrowAsset);
 
         // ...but compounding is tracked past the cap without reverting (fees aren't new capital).
         vm.prank(address(pm));
-        rm.recordCompoundReinvest(500e18, marketId);
-        assertEq(rm.marketCurrentSupply(marketId), 10_500e18, "compound reinvest tracked past cap");
+        rm.recordCompoundReinvest(500e18, borrowAsset);
+        assertEq(rm.poolCurrentSupply(borrowAsset), 10_500e18, "compound reinvest tracked past cap");
     }
 
     function test_recordCompoundReinvest_onlyPositionManager() public {
         vm.prank(alice);
         vm.expectRevert("NOT_POSITION_MANAGER");
-        rm.recordCompoundReinvest(1, marketId);
+        rm.recordCompoundReinvest(1, borrowAsset);
     }
 
     function test_withdraw_freesSupplyCapacity() public {
         vm.prank(owner);
-        rm.setMarketSupplyCap(marketId, 100_000e18);
+        rm.setPoolSupplyCap(borrowAsset, 100_000e18);
 
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(alice);
-        pm.deposit(lpToken, 2, 100e18, marketId);
+        pm.deposit(lpToken, 2, 100e18, borrowAsset);
 
         // At cap, can't deposit more
         vm.prank(alice);
         vm.expectRevert("SUPPLY_CAP_REACHED");
-        pm.deposit(lpToken, 3, 100e18, marketId);
+        pm.deposit(lpToken, 3, 100e18, borrowAsset);
 
         // Withdraw first position → frees capacity
         vm.prank(alice);
@@ -238,7 +242,7 @@ contract RiskManagerIntegrationTest is Test {
 
         // Now can deposit again
         vm.prank(alice);
-        pm.deposit(lpToken, 3, 100e18, marketId);
+        pm.deposit(lpToken, 3, 100e18, borrowAsset);
     }
 
     // ========== Global Borrow Cap ==========
@@ -249,7 +253,7 @@ contract RiskManagerIntegrationTest is Test {
 
         oracle.setPrice(100_000e18);
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         vm.prank(alice);
@@ -266,7 +270,7 @@ contract RiskManagerIntegrationTest is Test {
 
         oracle.setPrice(100_000e18);
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         vm.prank(alice);
@@ -291,7 +295,7 @@ contract RiskManagerIntegrationTest is Test {
 
         oracle.setPrice(100_000e18);
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         vm.prank(alice);
@@ -307,7 +311,7 @@ contract RiskManagerIntegrationTest is Test {
     function test_borrow_enforces_positionValueCap() public {
         oracle.setPrice(50_000e18);
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         vm.prank(owner);
@@ -320,19 +324,22 @@ contract RiskManagerIntegrationTest is Test {
 
     // ========== Without RiskManager ==========
 
-    function test_worksWithoutRiskManager() public {
+    /// @dev In the shared-pool model RiskManager is the source of truth for collateral risk params.
+    ///      With no RiskManager, maxLtv defaults to 0, so no borrow is possible (deposit still works).
+    function test_depositWorksButBorrowBlockedWithoutRiskManager() public {
         vm.startPrank(owner);
         core.setRiskManager(address(0));
         vm.stopPrank();
 
         oracle.setPrice(50_000e18);
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
+        // maxLtv == 0 without a RiskManager → any borrow exceeds max LTV
         vm.prank(alice);
+        vm.expectRevert("EXCEEDS_MAX_LTV");
         le.borrow(posId, 30_000e18);
-        assertEq(le.getDebt(posId), 30_000e18);
     }
 
     // ========== Admin ==========
@@ -359,8 +366,8 @@ contract RiskManagerIntegrationTest is Test {
 
     event BorrowRecorded(uint256 amountUsd, uint256 newGlobalBorrows);
     event RepayRecorded(uint256 amountUsd, uint256 newGlobalBorrows);
-    event DepositRecorded(uint256 valueUsd, uint256 indexed marketId, uint256 newMarketSupply);
-    event WithdrawRecorded(uint256 valueUsd, uint256 indexed marketId, uint256 newMarketSupply);
+    event DepositRecorded(uint256 valueUsd, address indexed pool, uint256 newPoolSupply);
+    event WithdrawRecorded(uint256 valueUsd, address indexed pool, uint256 newPoolSupply);
     event BorrowTrackingDrift(uint256 tracked, uint256 repaid, bool isGlobal);
 
     function test_validateAndRecordBorrow_emitsEvent() public {
@@ -391,17 +398,17 @@ contract RiskManagerIntegrationTest is Test {
 
     function test_recordDeposit_emitsEvent() public {
         vm.expectEmit(true, false, false, true);
-        emit DepositRecorded(5000e18, marketId, 5000e18);
+        emit DepositRecorded(5000e18, borrowAsset, 5000e18);
         vm.prank(address(pm));
-        rm.recordDeposit(5000e18, marketId);
+        rm.recordDeposit(5000e18, borrowAsset);
     }
 
     function test_recordWithdraw_emitsEvent() public {
         vm.prank(address(pm));
-        rm.recordDeposit(5000e18, marketId);
+        rm.recordDeposit(5000e18, borrowAsset);
         vm.expectEmit(true, false, false, true);
-        emit WithdrawRecorded(3000e18, marketId, 2000e18);
+        emit WithdrawRecorded(3000e18, borrowAsset, 2000e18);
         vm.prank(address(pm));
-        rm.recordWithdraw(3000e18, marketId);
+        rm.recordWithdraw(3000e18, borrowAsset);
     }
 }
