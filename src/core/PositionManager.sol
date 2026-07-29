@@ -174,13 +174,11 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         // Auto-detect LP type by querying each registered adapter
         ILPAdapter.LPType lpType = _detectLPType(lpToken);
 
-        // Validate this collateral type is enabled in the shared-pool risk registry
-        {
-            address rmAddr = core.riskManagerAddr();
-            if (rmAddr != address(0)) {
-                require(RiskManager(rmAddr).getCollateralConfig(lpType).enabled, "COLLATERAL_NOT_ENABLED");
-            }
-        }
+        // Validate this collateral type is enabled in the shared-pool risk registry.
+        // RiskManager is mandatory here: it is the source of truth for collateral risk, and the
+        // health-factor / liquidation-bonus paths hard-require it. Accepting a deposit without it
+        // would create a position that cannot later be valued or liquidated correctly.
+        require(_collateralConfig(lpType).enabled, "COLLATERAL_NOT_ENABLED");
 
         // Validate oracle is healthy before accepting deposit
         require(oracleHub.isOracleHealthy(lpType), "ORACLE_UNHEALTHY");

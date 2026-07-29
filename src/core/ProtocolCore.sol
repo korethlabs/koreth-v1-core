@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {ILPAdapter} from "../interfaces/ILPAdapter.sol";
+import {ILendingPool} from "../interfaces/ILendingPool.sol";
 import {ACLManager} from "./ACLManager.sol";
 
 /// @title ProtocolCore
@@ -127,6 +128,9 @@ contract ProtocolCore {
         require(pool.code.length > 0, "NOT_CONTRACT");
         require(pools[borrowAsset] == address(0), "POOL_ALREADY_REGISTERED");
         require(!registeredPools[pool], "POOL_ALREADY_REGISTERED");
+        // The key must match the pool's own borrow asset, otherwise every downstream
+        // `pools[asset]` lookup would resolve to a pool that lends a different token.
+        require(ILendingPool(pool).borrowAsset() == borrowAsset, "BORROW_ASSET_MISMATCH");
         registeredPools[pool] = true;
         pools[borrowAsset] = pool;
         emit PoolRegistered(borrowAsset, pool);

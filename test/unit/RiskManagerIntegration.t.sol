@@ -325,21 +325,17 @@ contract RiskManagerIntegrationTest is Test {
     // ========== Without RiskManager ==========
 
     /// @dev In the shared-pool model RiskManager is the source of truth for collateral risk params.
-    ///      With no RiskManager, maxLtv defaults to 0, so no borrow is possible (deposit still works).
-    function test_depositWorksButBorrowBlockedWithoutRiskManager() public {
-        vm.startPrank(owner);
+    ///      Deposits must be refused outright when it is unset: the health-factor and
+    ///      liquidation-bonus paths hard-require it, so a position created without it could
+    ///      never be valued or liquidated.
+    function test_depositBlockedWithoutRiskManager() public {
+        vm.prank(owner);
         core.setRiskManager(address(0));
-        vm.stopPrank();
 
         oracle.setPrice(50_000e18);
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
-        vm.roll(block.number + 2);
-
-        // maxLtv == 0 without a RiskManager → any borrow exceeds max LTV
-        vm.prank(alice);
-        vm.expectRevert("EXCEEDS_MAX_LTV");
-        le.borrow(posId, 30_000e18);
+        vm.expectRevert("RISK_MANAGER_NOT_SET");
+        pm.deposit(lpToken, 1, 100e18, borrowAsset);
     }
 
     // ========== Admin ==========

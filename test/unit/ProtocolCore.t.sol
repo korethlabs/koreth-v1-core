@@ -9,6 +9,15 @@ import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 /// @notice Minimal contract used to satisfy code.length > 0 checks in ProtocolCore
 contract Stub {}
 
+/// @notice Minimal lending-pool stub — `registerPool` cross-checks `borrowAsset()` against the key
+contract PoolStub {
+    address public borrowAsset;
+
+    constructor(address _borrowAsset) {
+        borrowAsset = _borrowAsset;
+    }
+}
+
 contract ProtocolCoreTest is Test {
     ProtocolCore public core;
     ACLManager public aclManager;
@@ -38,6 +47,11 @@ contract ProtocolCoreTest is Test {
     /// @dev Deploy a Stub contract to use where code.length > 0 is required
     function _stub() internal returns (address) {
         return address(new Stub());
+    }
+
+    /// @dev Deploy a pool stub that reports `borrowAsset` as its own borrow asset
+    function _poolStub(address borrowAsset) internal returns (address) {
+        return address(new PoolStub(borrowAsset));
     }
 
     // ========== Constructor ==========
@@ -178,8 +192,8 @@ contract ProtocolCoreTest is Test {
     // ========== registerPool ==========
 
     function test_registerPool_success() public {
-        address pool = _stub();
         address borrowAsset = makeAddr("usdc");
+        address pool = _poolStub(borrowAsset);
 
         vm.expectEmit(true, true, false, false);
         emit PoolRegistered(borrowAsset, pool);
@@ -193,10 +207,10 @@ contract ProtocolCoreTest is Test {
 
     function test_registerPool_multipleAssets() public {
         vm.startPrank(owner);
-        address p1 = _stub();
-        address p2 = _stub();
         address a1 = makeAddr("usdc");
         address a2 = makeAddr("usdt");
+        address p1 = _poolStub(a1);
+        address p2 = _poolStub(a2);
         core.registerPool(a1, p1);
         core.registerPool(a2, p2);
         vm.stopPrank();
@@ -207,12 +221,21 @@ contract ProtocolCoreTest is Test {
 
     function test_registerPool_revertsDuplicateAsset() public {
         address borrowAsset = makeAddr("usdc");
-        address stub2 = _stub();
+        address stub2 = _poolStub(borrowAsset);
         vm.startPrank(owner);
-        core.registerPool(borrowAsset, _stub());
+        core.registerPool(borrowAsset, _poolStub(borrowAsset));
         vm.expectRevert("POOL_ALREADY_REGISTERED");
         core.registerPool(borrowAsset, stub2);
         vm.stopPrank();
+    }
+
+    /// @dev The key must match the pool's own borrow asset, or every `pools[asset]` lookup
+    ///      would resolve to a pool that lends a different token.
+    function test_registerPool_revertsBorrowAssetMismatch() public {
+        address pool = _poolStub(makeAddr("usdt"));
+        vm.prank(owner);
+        vm.expectRevert("BORROW_ASSET_MISMATCH");
+        core.registerPool(makeAddr("usdc"), pool);
     }
 
     function test_registerPool_revertsZeroAddress() public {
@@ -716,8 +739,8 @@ contract ProtocolCoreTest is Test {
         count = uint8(bound(count, 1, 10));
         vm.startPrank(owner);
         for (uint8 i = 0; i < count; i++) {
-            address pool = address(new Stub());
             address borrowAsset = address(uint160(uint256(keccak256(abi.encode("asset", i)))));
+            address pool = address(new PoolStub(borrowAsset));
             core.registerPool(borrowAsset, pool);
             assertEq(core.pools(borrowAsset), pool);
         }

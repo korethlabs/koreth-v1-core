@@ -29,7 +29,8 @@ contract SeedUsers is Script {
         ProtocolCore core = ProtocolCore(json.readAddress(".core"));
         address positionManager = json.readAddress(".positionManager");
         // Shared-pool model: collateral borrows against the USDC pool (asset is the pool key).
-        require(core.getPool(USDC) != address(0), "NO_USDC_POOL");
+        // Read the mapping directly — getPool() reverts on a missing pool, which would mask NO_USDC_POOL.
+        require(core.pools(USDC) != address(0), "NO_USDC_POOL");
         address adapter = core.adapters(ILPAdapter.LPType.UniswapV2);
         require(adapter != address(0), "NO_V2_ADAPTER");
 

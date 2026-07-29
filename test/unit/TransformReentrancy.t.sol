@@ -16,6 +16,8 @@ import {ILendingPool} from "../../src/interfaces/ILendingPool.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {RiskManager} from "../../src/security/RiskManager.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 
 /// @notice Transformer that re-enters PositionManager.transform() while a transform is in progress.
 ///         It owns its OWN position so the nested call passes the owner check and reaches the
@@ -135,6 +137,10 @@ contract TransformReentrancyTest is Test {
         core.whitelistPool(lpToken);
         core.registerPool(address(usdc), address(market));
         pm.setLendingEngine(address(le));
+        // RiskManager is the collateral registry in the shared-pool model; deposits require it.
+        RiskManager rm = new RiskManager(address(core));
+        rm.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
+        core.setRiskManager(address(rm));
         vm.stopPrank();
     }
 
