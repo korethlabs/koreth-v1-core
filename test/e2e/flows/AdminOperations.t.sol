@@ -35,9 +35,12 @@ contract AdminOperations is E2EBase {
         uint256 hfBefore = _getHealthFactor(positionId);
         console.log("HF before config change: %s", hfBefore / 1e16);
 
-        // Admin reduces LTV from 65% to 50% and liq threshold 75% -> 60% (via RiskManager)
+        // Admin reduces LTV from 65% to 50% and liq threshold 75% -> 60% (via RiskManager).
+        // An enabled type must state a cap — 0 means "blocked", so it would revert ZERO_BORROW_CAP.
         vm.prank(deployer);
-        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.config(5000, 6000, 500, 0, 0, true));
+        riskManager.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(5000, 6000, 500, 0, riskManager.NO_BORROW_CAP(), true)
+        );
 
         // HF should change (liquidation threshold changed from 75% to 60%)
         uint256 hfAfter = _getHealthFactor(positionId);
@@ -52,20 +55,26 @@ contract AdminOperations is E2EBase {
 
     /// @notice setCollateralConfig reverts with invalid params
     function test_revert_updateConfig_invalidParams() public {
-        // LTV > liquidation threshold
-        vm.prank(deployer);
-        vm.expectRevert("LTV_GT_THRESHOLD");
-        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.config(8000, 7500, 500, 0, 0, true));
+        // Each case passes NO_BORROW_CAP so the only invalid field is the one under test —
+        // a 0 cap would trip ZERO_BORROW_CAP and mask the check we care about.
+        uint256 noCap = riskManager.NO_BORROW_CAP();
 
-        // Liquidation threshold > 100%
+        // LTV >= liquidation threshold
         vm.prank(deployer);
-        vm.expectRevert("THRESHOLD_GT_100");
-        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.config(9600, 10_001, 500, 0, 0, true));
+        vm.expectRevert("LTV_GE_THRESHOLD");
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.config(8000, 7500, 500, 0, noCap, true));
+
+        // Liquidation threshold above the allowed maximum
+        vm.prank(deployer);
+        vm.expectRevert("THRESHOLD_TOO_HIGH");
+        riskManager.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(9600, 10_001, 500, 0, noCap, true)
+        );
 
         // Non-admin blocked
         vm.prank(alice);
         vm.expectRevert("NOT_RISK_ADMIN");
-        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.config(5000, 6000, 500, 0, 0, true));
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.config(5000, 6000, 500, 0, noCap, true));
     }
 
     // ========== Market.eliminateDeficit ==========
