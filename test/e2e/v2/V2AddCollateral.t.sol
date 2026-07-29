@@ -7,22 +7,20 @@ import {IUniswapV2Pair} from "../../../src/interfaces/external/IUniswapV2.sol";
 /// @title V2AddCollateral
 /// @notice E2E tests for addCollateral on V2 LP positions.
 contract V2AddCollateral is E2EBase {
-    uint256 public v2MarketId;
+    address public v2MarketId;
 
     function setUp() public override {
         super.setUp();
 
         vm.startPrank(deployer);
-        (v2MarketId,) = marketFactory.createMarket(
-            ILPAdapter.LPType.UniswapV2, Constants.USDC, 6500, 7500, 500, 10_000_000e6, 0, 0, "volatile"
-        );
+        v2MarketId = usdcBorrowAsset;
         vm.stopPrank();
 
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = core.markets(v2MarketId);
+        address v2MarketAddr = address(usdcPool);
         vm.startPrank(bob);
         IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        IMarket(v2MarketAddr).supply(50_000e6);
+        ILendingPool(v2MarketAddr).supply(50_000e6);
         vm.stopPrank();
     }
 

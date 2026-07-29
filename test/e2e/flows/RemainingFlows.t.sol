@@ -9,30 +9,28 @@ import {IPositionManager} from "../../../src/interfaces/IPositionManager.sol";
 ///         and remaining coverage gaps.
 /// @dev All tests run against real Uniswap on forked mainnet via Anvil.
 contract RemainingFlows is E2EBase {
-    uint256 public v2MarketId;
+    address public v2MarketId;
 
     function setUp() public override {
         super.setUp();
 
         // Create V2 market
         vm.startPrank(deployer);
-        (v2MarketId,) = marketFactory.createMarket(
-            ILPAdapter.LPType.UniswapV2, Constants.USDC, 6500, 7500, 500, 10_000_000e6, 0, 0, "volatile"
-        );
+        v2MarketId = usdcBorrowAsset;
         // Set reserve factor for deficit tests
-        Market(core.markets(ethUsdcMarketId)).setReserveFactor(2000);
-        Market(core.markets(v2MarketId)).setReserveFactor(2000);
+        LendingPool(address(usdcPool)).setReserveFactor(2000);
+        LendingPool(address(usdcPool)).setReserveFactor(2000);
         // Wire FeeCollector
-        Market(core.markets(ethUsdcMarketId)).setFeeCollector(address(feeCollector));
-        Market(core.markets(v2MarketId)).setFeeCollector(address(feeCollector));
+        LendingPool(address(usdcPool)).setFeeCollector(address(feeCollector));
+        LendingPool(address(usdcPool)).setFeeCollector(address(feeCollector));
         vm.stopPrank();
 
         // Fund V2 market
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = core.markets(v2MarketId);
+        address v2MarketAddr = address(usdcPool);
         vm.startPrank(bob);
         IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        IMarket(v2MarketAddr).supply(50_000e6);
+        ILendingPool(v2MarketAddr).supply(50_000e6);
         vm.stopPrank();
     }
 
@@ -155,10 +153,10 @@ contract RemainingFlows is E2EBase {
         vm.prank(alice);
         lendingEngine.borrow(positionId, borrowAmount);
 
-        address v2MarketAddr = core.markets(v2MarketId);
-        Market market = Market(v2MarketAddr);
+        address v2MarketAddr = address(usdcPool);
+        LendingPool market = LendingPool(v2MarketAddr);
         uint256 deficitBefore = market.deficit();
-        uint256 totalBorrowBefore = market.getMarketState().totalBorrow;
+        uint256 totalBorrowBefore = market.getPoolState().totalBorrow;
 
         // Crash collateral to near zero — position deeply underwater
         PositionManager.Position memory pos = positionManager.getPosition(positionId);
@@ -179,7 +177,7 @@ contract RemainingFlows is E2EBase {
         uint256 remainingDebt = lendingEngine.getDebt(positionId);
         uint256 deficitAfter = market.deficit();
         // Repaying + writing off the remainder must reduce the market's total borrows.
-        uint256 totalBorrowAfter = market.getMarketState().totalBorrow;
+        uint256 totalBorrowAfter = market.getPoolState().totalBorrow;
         assertLt(totalBorrowAfter, totalBorrowBefore, "totalBorrow must decrease after repay + writeoff");
 
         // Position should be liquidated
@@ -204,8 +202,8 @@ contract RemainingFlows is E2EBase {
     // ========================================================================
 
     function test_eliminateDeficit_reservesCoverBadDebt() public {
-        address v2MarketAddr = core.markets(v2MarketId);
-        Market market = Market(v2MarketAddr);
+        address v2MarketAddr = address(usdcPool);
+        LendingPool market = LendingPool(v2MarketAddr);
 
         // First: generate some protocol reserves via interest
         uint256 lpAmount1 = _createV2Position(alice, 0.5 ether, 1000e6);
@@ -360,8 +358,8 @@ contract RemainingFlows is E2EBase {
     // ========================================================================
 
     function test_lenderEarnsProfit_withdrawsMore() public {
-        address marketAddr = core.markets(v2MarketId);
-        Market market = Market(marketAddr);
+        address marketAddr = address(usdcPool);
+        LendingPool market = LendingPool(marketAddr);
 
         // Carol supplies 10K USDC
         address carol = makeAddr("carol");

@@ -85,7 +85,8 @@ contract LiquidationInvariantTest is Test {
         market = LendingPool(
             address(
                 new ERC1967Proxy(
-                    address(new LendingPool()), abi.encodeCall(LendingPool.initialize, (mConfig, address(irm), address(core)))
+                    address(new LendingPool()),
+                    abi.encodeCall(LendingPool.initialize, (mConfig, address(irm), address(core)))
                 )
             )
         );

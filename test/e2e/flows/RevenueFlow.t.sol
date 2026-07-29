@@ -12,18 +12,18 @@ contract RevenueFlow is E2EBase {
         vm.startPrank(deployer);
 
         // Set reserve factor (20% of interest goes to protocol)
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market(marketAddr).setReserveFactor(2000);
+        address marketAddr = address(usdcPool);
+        LendingPool(marketAddr).setReserveFactor(2000);
 
         // Wire FeeCollector to Market
-        Market(marketAddr).setFeeCollector(address(feeCollector));
+        LendingPool(marketAddr).setFeeCollector(address(feeCollector));
 
         vm.stopPrank();
     }
 
     function test_fullRevenueFlow() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address marketAddr = address(usdcPool);
+        LendingPool market = LendingPool(marketAddr);
 
         // 1. Alice borrows
         uint256 tokenId = _createV3Position(alice, 1 ether, 2000e6);
@@ -77,8 +77,8 @@ contract RevenueFlow is E2EBase {
     }
 
     function test_reservesSurviveRepayment() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address marketAddr = address(usdcPool);
+        LendingPool market = LendingPool(marketAddr);
 
         // Borrow
         uint256 tokenId = _createV3Position(alice, 1 ether, 2000e6);

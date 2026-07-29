@@ -69,7 +69,9 @@ contract LendingPoolTest is Test {
         ILendingPool.PoolConfig memory badConfig = ILendingPool.PoolConfig({borrowAsset: address(0)});
         LendingPool impl = new LendingPool();
         vm.expectRevert("ZERO_BORROW_ASSET");
-        new ERC1967Proxy(address(impl), abi.encodeCall(LendingPool.initialize, (badConfig, address(irm), address(core))));
+        new ERC1967Proxy(
+            address(impl), abi.encodeCall(LendingPool.initialize, (badConfig, address(irm), address(core)))
+        );
     }
 
     // ========== First Deposit (dead shares) ==========

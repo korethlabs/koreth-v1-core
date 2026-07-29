@@ -102,7 +102,7 @@ contract ProtocolInvariantE2E is E2EBase {
         // Repay all
         uint256 debt = _getDebt(posId);
         _fundUsdc(alice, debt);
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address marketAddr = address(usdcPool);
         vm.startPrank(alice);
         IERC20(Constants.USDC).approve(marketAddr, debt);
         lendingEngine.repay(posId, type(uint256).max);
@@ -129,10 +129,10 @@ contract ProtocolInvariantE2E is E2EBase {
         // Accrue some interest
         _advanceTime(30 days);
         _refreshChainlinkMocks();
-        address marketAddr = core.markets(ethUsdcMarketId);
-        IMarket(marketAddr).accrueInterest();
+        address marketAddr = address(usdcPool);
+        ILendingPool(marketAddr).accrueInterest();
 
-        IMarket.MarketState memory s = IMarket(marketAddr).getMarketState();
+        ILendingPool.PoolState memory s = ILendingPool(marketAddr).getPoolState();
         uint256 marketBalance = IERC20(Constants.USDC).balanceOf(marketAddr);
 
         assertGe(
@@ -156,11 +156,11 @@ contract ProtocolInvariantE2E is E2EBase {
         // Accrue interest over 6 months
         _advanceTime(180 days);
         _refreshChainlinkMocks();
-        address marketAddr = core.markets(ethUsdcMarketId);
-        IMarket(marketAddr).accrueInterest();
+        address marketAddr = address(usdcPool);
+        ILendingPool(marketAddr).accrueInterest();
 
         uint256 posDebt = _getDebt(posId);
-        IMarket.MarketState memory s = IMarket(marketAddr).getMarketState();
+        ILendingPool.PoolState memory s = ILendingPool(marketAddr).getPoolState();
 
         assertLe(posDebt, s.totalBorrow + 1, "Position debt must not exceed market totalBorrow");
     }
@@ -195,8 +195,8 @@ contract ProtocolInvariantE2E is E2EBase {
         vm.prank(alice);
         lendingEngine.borrow(posId, maxBorrow / 3);
 
-        address marketAddr = core.markets(ethUsdcMarketId);
-        uint256 indexBefore = IMarket(marketAddr).borrowIndex();
+        address marketAddr = address(usdcPool);
+        uint256 indexBefore = ILendingPool(marketAddr).borrowIndex();
 
         // Accrue over multiple intervals
         uint256[] memory intervals = new uint256[](3);
@@ -207,9 +207,9 @@ contract ProtocolInvariantE2E is E2EBase {
         for (uint256 i = 0; i < intervals.length; i++) {
             _advanceTime(intervals[i]);
             _refreshChainlinkMocks();
-            IMarket(marketAddr).accrueInterest();
+            ILendingPool(marketAddr).accrueInterest();
 
-            uint256 indexAfter = IMarket(marketAddr).borrowIndex();
+            uint256 indexAfter = ILendingPool(marketAddr).borrowIndex();
             assertGe(indexAfter, indexBefore, "borrowIndex must never decrease");
             indexBefore = indexAfter;
         }
@@ -231,7 +231,7 @@ contract ProtocolInvariantE2E is E2EBase {
 
         uint256 debt = _getDebt(posId);
         _fundUsdc(alice, debt);
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address marketAddr = address(usdcPool);
         vm.startPrank(alice);
         IERC20(Constants.USDC).approve(marketAddr, debt);
         lendingEngine.repay(posId, type(uint256).max);
@@ -287,7 +287,7 @@ contract ProtocolInvariantE2E is E2EBase {
         uint256 tokenIdC = _createV3Position(charlie, 2 ether, 5000e6);
         vm.startPrank(charlie);
         nftManager.approve(address(v3Adapter), tokenIdC);
-        uint256 posC = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenIdC, 0, ethUsdcMarketId);
+        uint256 posC = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenIdC, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         vm.roll(block.number + 5);

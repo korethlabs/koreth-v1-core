@@ -57,7 +57,8 @@ contract EdgeCasesTest is Test {
         market = LendingPool(
             address(
                 new ERC1967Proxy(
-                    address(new LendingPool()), abi.encodeCall(LendingPool.initialize, (mConfig, address(irm), address(core)))
+                    address(new LendingPool()),
+                    abi.encodeCall(LendingPool.initialize, (mConfig, address(irm), address(core)))
                 )
             )
         );
@@ -129,6 +130,8 @@ contract EdgeCasesTest is Test {
         core.setRiskManager(address(riskManager));
         // V3 collateral: 65% LTV / 75% liq / 5% bonus / no haircut / uncapped
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
+        // Raise the position value cap so the large-amount edge cases aren't capped at $10M default.
+        riskManager.setMaxPositionValue(1_000_000_000e18);
         pm.setLendingEngine(address(le));
         liq.setFeeCollector(address(fc));
         vm.stopPrank();

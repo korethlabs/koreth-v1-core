@@ -37,7 +37,7 @@ contract AdversarialE2E is E2EBase {
         assertTrue(canLiq, "Position must be liquidatable");
 
         // Liquidator1 liquidates successfully
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address marketAddr = address(usdcPool);
         vm.startPrank(liquidator);
         IERC20(Constants.USDC).approve(address(liquidationEngine), maxRepay);
         IERC20(Constants.USDC).approve(marketAddr, maxRepay);
@@ -75,8 +75,8 @@ contract AdversarialE2E is E2EBase {
         vm.roll(block.number + fiftyYears / 12);
 
         // Accrue interest — should not revert (overflow)
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address marketAddr = address(usdcPool);
+        LendingPool market = LendingPool(marketAddr);
         market.accrueInterest();
 
         // borrowIndex should still be a valid number (not overflowed)
@@ -110,14 +110,14 @@ contract AdversarialE2E is E2EBase {
 
         // Advance 1 hour (within 24h staleness window set in E2EBase setUp)
         _advanceTime(1 hours);
-        lendingEngine.accrueInterest(ethUsdcMarketId);
+        lendingEngine.accrueInterest(usdcBorrowAsset);
 
         uint256 debtAfterAccrual = _getDebt(positionId);
         assertGe(debtAfterAccrual, 1, "Debt should still be >= 1 after interest (no rounding to 0)");
 
         // Repay max
         _fundUsdc(alice, 100e6); // extra USDC for safety
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address marketAddr = address(usdcPool);
         vm.startPrank(alice);
         IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);
@@ -148,7 +148,7 @@ contract AdversarialE2E is E2EBase {
         uint256 debtBefore = _getDebt(positionId);
 
         // Repay 1 wei
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address marketAddr = address(usdcPool);
         _fundUsdc(alice, 100e6);
         vm.startPrank(alice);
         IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
@@ -224,7 +224,7 @@ contract AdversarialE2E is E2EBase {
         uint256 aliceUsdcBefore = IERC20(Constants.USDC).balanceOf(alice);
 
         // Alice self-liquidates
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address marketAddr = address(usdcPool);
         vm.startPrank(alice);
         IERC20(Constants.USDC).approve(address(liquidationEngine), maxRepay);
         IERC20(Constants.USDC).approve(marketAddr, maxRepay);
@@ -258,17 +258,15 @@ contract AdversarialE2E is E2EBase {
 
         // Create V2 market
         vm.startPrank(deployer);
-        (uint256 v2MarketId,) = marketFactory.createMarket(
-            ILPAdapter.LPType.UniswapV2, Constants.USDC, 6500, 7500, 500, 10_000_000e6, 0, 0, "volatile"
-        );
+        address v2MarketId = usdcBorrowAsset;
         vm.stopPrank();
 
         // Fund and supply to V2 market
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = core.markets(v2MarketId);
+        address v2MarketAddr = address(usdcPool);
         vm.startPrank(bob);
         IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        IMarket(v2MarketAddr).supply(50_000e6);
+        ILendingPool(v2MarketAddr).supply(50_000e6);
         vm.stopPrank();
 
         // Deposit V2 LP
@@ -351,7 +349,7 @@ contract AdversarialE2E is E2EBase {
 
         // Full liquidation
         _fundUsdc(liquidator, maxRepay);
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address marketAddr = address(usdcPool);
         vm.startPrank(liquidator);
         IERC20(Constants.USDC).approve(address(liquidationEngine), maxRepay);
         IERC20(Constants.USDC).approve(marketAddr, maxRepay);
@@ -404,7 +402,7 @@ contract AdversarialE2E is E2EBase {
         console.log("Inflated max borrow: %s USDC", inflatedMaxBorrow / 1e6);
 
         // Only borrow what the market has liquidity for
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address marketAddr = address(usdcPool);
         uint256 marketLiquidity = IERC20(Constants.USDC).balanceOf(marketAddr);
         uint256 borrowAmount = inflatedMaxBorrow > marketLiquidity ? marketLiquidity : inflatedMaxBorrow;
         // Leave some buffer for repayment needs
@@ -469,7 +467,7 @@ contract AdversarialE2E is E2EBase {
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId);
         vm.expectRevert("STALE_PRICE");
-        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, ethUsdcMarketId);
+        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         console.log("=== Stale Oracle Blocks Deposit: Passed ===");
@@ -480,8 +478,8 @@ contract AdversarialE2E is E2EBase {
     function test_attack_shareInflation_donationAttack() public {
         address attacker = makeAddr("attacker");
         address victim = makeAddr("victim");
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address marketAddr = address(usdcPool);
+        LendingPool market = LendingPool(marketAddr);
 
         // Attacker supplies 1 USDC to market (gets initial shares)
         _fundUsdc(attacker, 10_001e6);
@@ -549,7 +547,7 @@ contract AdversarialE2E is E2EBase {
         (bool canLiq, uint256 maxRepay) = liquidationEngine.isLiquidatable(positionId);
         assertTrue(canLiq, "Position must be liquidatable");
 
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address marketAddr = address(usdcPool);
 
         // Liquidator sets impossibly high minAmount0 — should revert with SLIPPAGE_AMOUNT0
         _fundUsdc(liquidator, maxRepay);
@@ -605,11 +603,11 @@ contract AdversarialE2E is E2EBase {
         uint256 positionId = _depositV3(alice, tokenId);
         vm.roll(block.number + 2);
 
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address marketAddr = address(usdcPool);
+        LendingPool market = LendingPool(marketAddr);
 
         // Check initial utilization
-        IMarket.MarketState memory stateBefore = market.getMarketState();
+        ILendingPool.PoolState memory stateBefore = market.getPoolState();
         console.log("Utilization before borrow: %s bps", stateBefore.utilization);
 
         // Alice borrows near max to spike utilization
@@ -618,7 +616,7 @@ contract AdversarialE2E is E2EBase {
         vm.prank(alice);
         lendingEngine.borrow(positionId, borrowAmount);
 
-        IMarket.MarketState memory stateAfterBorrow = market.getMarketState();
+        ILendingPool.PoolState memory stateAfterBorrow = market.getPoolState();
         console.log("Utilization after borrow: %s bps", stateAfterBorrow.utilization);
         assertGt(stateAfterBorrow.utilization, stateBefore.utilization, "Utilization must increase after borrow");
         assertGt(stateAfterBorrow.borrowRate, 0, "Borrow rate must be > 0");
@@ -630,7 +628,7 @@ contract AdversarialE2E is E2EBase {
         lendingEngine.repay(positionId, type(uint256).max);
         vm.stopPrank();
 
-        IMarket.MarketState memory stateAfterRepay = market.getMarketState();
+        ILendingPool.PoolState memory stateAfterRepay = market.getPoolState();
         console.log("Utilization after repay: %s bps", stateAfterRepay.utilization);
         assertLt(stateAfterRepay.utilization, stateAfterBorrow.utilization, "Utilization must drop after repay");
 
@@ -660,7 +658,7 @@ contract AdversarialE2E is E2EBase {
         (bool canLiq, uint256 maxRepay) = liquidationEngine.isLiquidatable(positionId);
         assertTrue(canLiq, "Position must be liquidatable");
 
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address marketAddr = address(usdcPool);
 
         // Liquidator calls with expired deadline — should revert with EXPIRED
         _fundUsdc(liquidator, maxRepay);

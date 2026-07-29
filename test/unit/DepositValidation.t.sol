@@ -98,9 +98,7 @@ contract DepositValidationTest is Test {
     function test_deposit_revertsCollateralNotEnabled() public {
         // Disable the UniswapV2 collateral type in the registry.
         vm.prank(owner);
-        riskManager.setCollateralConfig(
-            ILPAdapter.LPType.UniswapV2, RiskConfig.config(6500, 7500, 500, 0, 0, false)
-        );
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.config(6500, 7500, 500, 0, 0, false));
 
         vm.prank(alice);
         vm.expectRevert("COLLATERAL_NOT_ENABLED");

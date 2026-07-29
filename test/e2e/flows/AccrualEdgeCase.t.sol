@@ -22,8 +22,8 @@ contract AccrualEdgeCaseE2E is E2EBase {
         vm.roll(block.number + 2);
 
         // 2. Set reserve factor so protocol gets interest share
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address marketAddr = address(usdcPool);
+        LendingPool market = LendingPool(marketAddr);
         vm.prank(deployer);
         market.setReserveFactor(2000); // 20%
 
@@ -35,7 +35,7 @@ contract AccrualEdgeCaseE2E is E2EBase {
 
         // 4. Record state before accrual
         uint256 debtBefore = _getDebt(positionId);
-        IMarket.MarketState memory stateBefore = market.getMarketState();
+        ILendingPool.PoolState memory stateBefore = market.getPoolState();
         uint256 reservesBefore = market.protocolReserves();
         uint256 indexBefore = market.borrowIndex();
 
@@ -53,7 +53,7 @@ contract AccrualEdgeCaseE2E is E2EBase {
 
         // 6. Verify interest accrued
         uint256 debtAfter = _getDebt(positionId);
-        IMarket.MarketState memory stateAfter = market.getMarketState();
+        ILendingPool.PoolState memory stateAfter = market.getPoolState();
         uint256 reservesAfter = market.protocolReserves();
         uint256 indexAfter = market.borrowIndex();
 
@@ -86,8 +86,8 @@ contract AccrualEdgeCaseE2E is E2EBase {
         // 3. Advance 1 hour
         _advanceTime(1 hours);
 
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address marketAddr = address(usdcPool);
+        LendingPool market = LendingPool(marketAddr);
         market.accrueInterest();
 
         // 4. Debt should have grown
@@ -116,8 +116,8 @@ contract AccrualEdgeCaseE2E is E2EBase {
 
     /// @notice Verify accrual with zero borrows is a no-op (no index change)
     function test_accrual_zeroBorrows_noIndexChange() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address marketAddr = address(usdcPool);
+        LendingPool market = LendingPool(marketAddr);
         uint256 indexBefore = market.borrowIndex();
 
         // Advance time with no borrows

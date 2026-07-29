@@ -207,10 +207,11 @@ contract ProtocolCoreTest is Test {
 
     function test_registerPool_revertsDuplicateAsset() public {
         address borrowAsset = makeAddr("usdc");
+        address stub2 = _stub();
         vm.startPrank(owner);
         core.registerPool(borrowAsset, _stub());
         vm.expectRevert("POOL_ALREADY_REGISTERED");
-        core.registerPool(borrowAsset, _stub());
+        core.registerPool(borrowAsset, stub2);
         vm.stopPrank();
     }
 
@@ -221,9 +222,10 @@ contract ProtocolCoreTest is Test {
     }
 
     function test_registerPool_revertsZeroBorrowAsset() public {
+        address stub = _stub();
         vm.prank(owner);
         vm.expectRevert("ZERO_BORROW_ASSET");
-        core.registerPool(address(0), _stub());
+        core.registerPool(address(0), stub);
     }
 
     function test_registerPool_revertsNotContract() public {

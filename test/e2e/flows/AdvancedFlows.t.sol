@@ -9,30 +9,28 @@ import {IPositionManager} from "../../../src/interfaces/IPositionManager.sol";
 ///         protocol fees, addCollateral, long-duration interest, and state transitions.
 /// @dev All tests run against real Uniswap on forked mainnet via Anvil.
 contract AdvancedFlows is E2EBase {
-    uint256 public v2MarketId;
+    address public v2MarketId;
 
     function setUp() public override {
         super.setUp();
 
         // Create V2 market for liquidation tests (V2 has pos.amount > 0)
         vm.startPrank(deployer);
-        (v2MarketId,) = marketFactory.createMarket(
-            ILPAdapter.LPType.UniswapV2, Constants.USDC, 6500, 7500, 500, 10_000_000e6, 0, 0, "volatile"
-        );
+        v2MarketId = usdcBorrowAsset;
         // Set reserve factor for fee tests
-        Market(core.markets(ethUsdcMarketId)).setReserveFactor(2000); // 20%
-        Market(core.markets(v2MarketId)).setReserveFactor(2000);
+        LendingPool(address(usdcPool)).setReserveFactor(2000); // 20%
+        LendingPool(address(usdcPool)).setReserveFactor(2000);
         // Wire FeeCollector
-        Market(core.markets(ethUsdcMarketId)).setFeeCollector(address(feeCollector));
-        Market(core.markets(v2MarketId)).setFeeCollector(address(feeCollector));
+        LendingPool(address(usdcPool)).setFeeCollector(address(feeCollector));
+        LendingPool(address(usdcPool)).setFeeCollector(address(feeCollector));
         vm.stopPrank();
 
         // Fund V2 market with liquidity
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = core.markets(v2MarketId);
+        address v2MarketAddr = address(usdcPool);
         vm.startPrank(bob);
         IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        IMarket(v2MarketAddr).supply(50_000e6);
+        ILendingPool(v2MarketAddr).supply(50_000e6);
         vm.stopPrank();
     }
 
@@ -246,7 +244,7 @@ contract AdvancedFlows is E2EBase {
         // Partial repay — pay back 40%
         uint256 repayAmount = (borrow1 * 40) / 100;
         _fundUsdc(alice, repayAmount);
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address marketAddr = address(usdcPool);
         vm.startPrank(alice);
         IERC20(Constants.USDC).approve(marketAddr, repayAmount);
         lendingEngine.repay(positionId, repayAmount);
@@ -292,7 +290,7 @@ contract AdvancedFlows is E2EBase {
         // Repay all → state: Active
         uint256 debt = _getDebt(positionId);
         _fundUsdc(alice, debt);
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address marketAddr = address(usdcPool);
         vm.startPrank(alice);
         IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);
@@ -330,7 +328,7 @@ contract AdvancedFlows is E2EBase {
         // Advance 1 week (within 24h staleness window — accrue in 12h chunks)
         for (uint256 i = 0; i < 14; i++) {
             _advanceTime(12 hours);
-            lendingEngine.accrueInterest(ethUsdcMarketId);
+            lendingEngine.accrueInterest(usdcBorrowAsset);
         }
 
         uint256 debtAfter = _getDebt(positionId);
@@ -346,8 +344,8 @@ contract AdvancedFlows is E2EBase {
     // ========================================================================
 
     function test_protocolFees_fullFlow() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address marketAddr = address(usdcPool);
+        LendingPool market = LendingPool(marketAddr);
 
         // Alice borrows
         uint256 tokenId = _createV3Position(alice, 1 ether, 2000e6);
@@ -396,8 +394,8 @@ contract AdvancedFlows is E2EBase {
     // ========================================================================
 
     function test_lenderWithdrawal_blockedAtHighUtil() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address marketAddr = address(usdcPool);
+        LendingPool market = LendingPool(marketAddr);
 
         uint256 bobShares = market.shares(bob);
 
@@ -418,7 +416,7 @@ contract AdvancedFlows is E2EBase {
         uint256 marketBalance = IERC20(Constants.USDC).balanceOf(marketAddr);
         if (marketBalance > 100e6) {
             // Calculate shares for partial withdrawal
-            uint256 partialShares = (bobShares * marketBalance) / (market.getMarketState().totalSupply * 2);
+            uint256 partialShares = (bobShares * marketBalance) / (market.getPoolState().totalSupply * 2);
             if (partialShares > 0) {
                 vm.prank(bob);
                 market.withdraw(partialShares);
@@ -451,7 +449,7 @@ contract AdvancedFlows is E2EBase {
         uint256 tokenId2 = _createV3Position(carol, 1 ether, 2000e6);
         vm.startPrank(carol);
         nftManager.approve(address(v3Adapter), tokenId2);
-        uint256 posId2 = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId2, 0, ethUsdcMarketId);
+        uint256 posId2 = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId2, 0, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 3); // extra cooldown
 
@@ -463,7 +461,7 @@ contract AdvancedFlows is E2EBase {
         assertGt(_getDebt(posId1), 0);
         assertGt(_getDebt(posId2), 0);
 
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address marketAddr = address(usdcPool);
         uint256 remaining = IERC20(Constants.USDC).balanceOf(marketAddr);
         console.log("Market remaining after 2 borrowers: %s USDC", remaining / 1e6);
 
@@ -488,7 +486,7 @@ contract AdvancedFlows is E2EBase {
 
         // Freeze market + make liquidatable
         vm.prank(deployer);
-        circuitBreaker.freezeMarket(v2MarketId, "Depeg detected");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV2, "Depeg detected");
 
         PositionManager.Position memory pos = positionManager.getPosition(positionId);
         uint256 originalValue = _getPositionValue(positionId);
@@ -529,7 +527,7 @@ contract AdvancedFlows is E2EBase {
         IERC20(Constants.USDC).transfer(alice, debt);
 
         // Alice repays with Bob's funds
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address marketAddr = address(usdcPool);
         vm.startPrank(alice);
         IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);
@@ -603,10 +601,10 @@ contract AdvancedFlows is E2EBase {
     // ========================================================================
 
     function test_reserveFactor_interestSplit() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address marketAddr = address(usdcPool);
+        LendingPool market = LendingPool(marketAddr);
 
-        uint256 totalSupplyBefore = market.getMarketState().totalSupply;
+        uint256 totalSupplyBefore = market.getPoolState().totalSupply;
         uint256 reservesBefore = market.protocolReserves();
 
         // Fund Alice for this test
@@ -625,7 +623,7 @@ contract AdvancedFlows is E2EBase {
         _advanceTime(1 hours);
         market.accrueInterest();
 
-        uint256 totalSupplyAfter = market.getMarketState().totalSupply;
+        uint256 totalSupplyAfter = market.getPoolState().totalSupply;
         uint256 reservesAfter = market.protocolReserves();
 
         uint256 lenderEarnings = totalSupplyAfter - totalSupplyBefore;

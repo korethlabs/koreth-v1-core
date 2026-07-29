@@ -10,23 +10,21 @@ import {INonfungiblePositionManager} from "../../../src/interfaces/external/IUni
 ///         (not via transform). Also covers V2 removeCollateral, health factor enforcement,
 ///         and circuit breaker blocking.
 contract CollateralManagement is E2EBase {
-    uint256 public v2MarketId;
+    address public v2MarketId;
 
     function setUp() public override {
         super.setUp();
 
         // Create V2 market for V2-specific tests
         vm.startPrank(deployer);
-        (v2MarketId,) = marketFactory.createMarket(
-            ILPAdapter.LPType.UniswapV2, Constants.USDC, 6500, 7500, 500, 10_000_000e6, 0, 0, "volatile"
-        );
+        v2MarketId = usdcBorrowAsset;
         vm.stopPrank();
 
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = core.markets(v2MarketId);
+        address v2MarketAddr = address(usdcPool);
         vm.startPrank(bob);
         IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        IMarket(v2MarketAddr).supply(50_000e6);
+        ILendingPool(v2MarketAddr).supply(50_000e6);
         vm.stopPrank();
     }
 
@@ -204,17 +202,17 @@ contract CollateralManagement is E2EBase {
 
         // Freeze the market
         vm.prank(deployer);
-        circuitBreaker.freezeMarket(ethUsdcMarketId, "test freeze");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "test freeze");
 
         (,,,,,,, uint128 currentLiquidity,,,,) = nftManager.positions(tokenId);
 
         vm.prank(alice);
-        vm.expectRevert("MARKET_FROZEN");
+        vm.expectRevert("COLLATERAL_FROZEN");
         positionManager.removeCollateral(positionId, currentLiquidity / 5, 0, 0);
 
         // Unfreeze
         vm.prank(deployer);
-        circuitBreaker.unfreezeMarket(ethUsdcMarketId);
+        circuitBreaker.unfreezeCollateral(ILPAdapter.LPType.UniswapV3);
     }
 
     // ========== Slippage protection ==========

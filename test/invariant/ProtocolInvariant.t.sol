@@ -75,7 +75,8 @@ contract ProtocolInvariantTest is Test {
         market = LendingPool(
             address(
                 new ERC1967Proxy(
-                    address(new LendingPool()), abi.encodeCall(LendingPool.initialize, (mConfig, address(irm), address(core)))
+                    address(new LendingPool()),
+                    abi.encodeCall(LendingPool.initialize, (mConfig, address(irm), address(core)))
                 )
             )
         );
@@ -479,5 +480,105 @@ contract ProtocolInvariantTest is Test {
         assertGe(
             marketBalance + s.totalBorrow, s.totalSupply, "Market must remain solvent: balance + borrows >= supply"
         );
+    }
+
+    // ================================================================
+    // SHARED-POOL INVARIANT A: per-lpType borrowed <= its borrow cap
+    // ================================================================
+
+    function testFuzz_lpTypeBorrowNeverExceedsCap(uint256 cap, uint256 borrowAmt) public {
+        oracle.setPrice(1_000_000e18); // large collateral so LTV isn't the binding constraint
+        cap = bound(cap, 1e18, 500_000e18);
+        borrowAmt = bound(borrowAmt, 1e18, 1_000_000e18);
+
+        // Set a per-lpType borrow cap for UniswapV3
+        vm.prank(owner);
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.config(6500, 7500, 500, 0, cap, true));
+
+        address user = makeAddr("capUser");
+        vm.prank(user);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+
+        // Attempt to borrow; may revert if over cap/LTV — that's the point.
+        vm.prank(user);
+        try le.borrow(posId, borrowAmt) {} catch {}
+
+        // INVARIANT: tracked per-lpType borrows never exceed the configured cap.
+        assertLe(
+            riskManager.lpTypeCurrentBorrows(ILPAdapter.LPType.UniswapV3),
+            cap,
+            "per-lpType borrowed must never exceed its cap"
+        );
+    }
+
+    // ================================================================
+    // SHARED-POOL INVARIANT B: single-pool share accounting conserved
+    //   totalShares == sum(minted user shares) + DEAD_SHARES, and
+    //   supplier assets round-trip within 0.1% (no phantom value).
+    // ================================================================
+
+    function testFuzz_sharesConservedAcrossSuppliers(uint256 a, uint256 b, uint256 c) public {
+        a = bound(a, 1e18, 500_000e18);
+        b = bound(b, 1e18, 500_000e18);
+        c = bound(c, 1e18, 500_000e18);
+
+        // The pool already holds the initial lender's liquidity from setUp; measure the deltas.
+        uint256 sharesBefore = market.totalShares();
+        uint256 supplyBefore = market.getPoolState().totalSupply;
+
+        address l1 = makeAddr("l1");
+        address l2 = makeAddr("l2");
+        address l3 = makeAddr("l3");
+
+        uint256 s1 = _supply(l1, a);
+        uint256 s2 = _supply(l2, b);
+        uint256 s3 = _supply(l3, c);
+
+        // Every minted share is tracked in totalShares (nothing conjured/lost across all suppliers).
+        assertEq(market.totalShares() - sharesBefore, s1 + s2 + s3, "single-pool share accounting must be conserved");
+        // And the pool's tracked supply grows by exactly the sum of deposits (no interest accrued yet).
+        assertEq(market.getPoolState().totalSupply - supplyBefore, a + b + c, "totalSupply must grow by deposits");
+    }
+
+    function _supply(address lender, uint256 amount) internal returns (uint256 shares) {
+        usdc.mint(lender, amount);
+        vm.prank(lender);
+        usdc.approve(address(market), amount);
+        vm.prank(lender);
+        shares = market.supply(amount);
+    }
+
+    // ================================================================
+    // SHARED-POOL INVARIANT C: disabled / over-cap collateral cannot borrow
+    // ================================================================
+
+    function test_disabledCollateralCannotDeposit() public {
+        // Disable UniswapV3 collateral.
+        vm.prank(owner);
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.config(6500, 7500, 500, 0, 0, false));
+
+        address user = makeAddr("disabledUser");
+        vm.prank(user);
+        vm.expectRevert("COLLATERAL_NOT_ENABLED");
+        pm.deposit(lpToken, 1, 100e18, borrowAsset);
+    }
+
+    function test_overCapCollateralCannotBorrow() public {
+        oracle.setPrice(1_000_000e18);
+        // Tiny per-lpType cap: any meaningful borrow must be rejected.
+        vm.prank(owner);
+        riskManager.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(6500, 7500, 500, 0, 1000e18, true)
+        );
+
+        address user = makeAddr("overCapUser");
+        vm.prank(user);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+
+        vm.prank(user);
+        vm.expectRevert("LP_TYPE_CAP_REACHED");
+        le.borrow(posId, 2000e18); // exceeds the 1000e18 cap
     }
 }

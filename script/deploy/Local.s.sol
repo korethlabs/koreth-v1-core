@@ -110,8 +110,7 @@ contract DeployLocal is DeployBase {
         vm.serializeAddress(obj, "liquidationEngine", address(liquidationEngine));
         vm.serializeAddress(obj, "feeCollector", address(feeCollector));
         vm.serializeAddress(obj, "riskManager", address(riskManager));
-        vm.serializeAddress(obj, "marketFactory", address(marketFactory));
-        vm.serializeAddress(obj, "marketRegistry", address(marketRegistry));
+        vm.serializeAddress(obj, "poolFactory", address(poolFactory));
         vm.serializeAddress(obj, "priceFeedRegistry", address(priceFeedRegistry));
         // Adapters (frontend needs these to approve LP before deposit)
         vm.serializeAddress(obj, "v2Adapter", core.adapters(ILPAdapter.LPType.UniswapV2));

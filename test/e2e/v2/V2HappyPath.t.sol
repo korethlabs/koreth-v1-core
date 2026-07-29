@@ -6,24 +6,18 @@ import "../E2EBase.t.sol";
 /// @title V2HappyPath
 /// @notice Full lifecycle test with real Uniswap V2 on forked mainnet
 contract V2HappyPath is E2EBase {
-    uint256 public v2MarketId;
+    // V2 collateral borrows from the same shared USDC pool (whitelisted in ForkTestBase).
+    address public v2MarketId;
 
     function setUp() public override {
         super.setUp();
+        v2MarketId = usdcBorrowAsset;
 
-        // Create a V2 market (the default ethUsdcMarketId is V3)
-        vm.startPrank(deployer);
-        (v2MarketId,) = marketFactory.createMarket(
-            ILPAdapter.LPType.UniswapV2, Constants.USDC, 6500, 7500, 500, 10_000_000e6, 0, 0, "volatile"
-        );
-        vm.stopPrank();
-
-        // Fund Bob with extra USDC for V2 market (E2EBase already spent his allocation on V3)
+        // Fund Bob with extra USDC and supply into the shared pool
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = core.markets(v2MarketId);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        IMarket(v2MarketAddr).supply(50_000e6);
+        IERC20(Constants.USDC).approve(address(usdcPool), 50_000e6);
+        usdcPool.supply(50_000e6);
         vm.stopPrank();
     }
 
@@ -56,7 +50,7 @@ contract V2HappyPath is E2EBase {
 
         // 4. Repay
         _fundUsdc(alice, borrowAmount);
-        address v2MarketAddr = core.markets(v2MarketId);
+        address v2MarketAddr = address(usdcPool);
         vm.startPrank(alice);
         IERC20(Constants.USDC).approve(v2MarketAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);

@@ -117,7 +117,8 @@ contract LiquidationDecimalTest is Test {
         registry.setPrice(address(usdc6), 1e18); // $1.00
 
         vm.startPrank(owner);
-        address borrowAsset = address(usdc6); core.registerPool(borrowAsset, address(market6));
+        address borrowAsset = address(usdc6);
+        core.registerPool(borrowAsset, address(market6));
         core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 
@@ -189,7 +190,8 @@ contract LiquidationDecimalTest is Test {
         MockLendingPool market6 = new MockLendingPool(address(usdc6), address(irm));
 
         vm.startPrank(owner);
-        address borrowAsset = address(usdc6); core.registerPool(borrowAsset, address(market6));
+        address borrowAsset = address(usdc6);
+        core.registerPool(borrowAsset, address(market6));
         // NO setPriceFeedRegistry — testing fallback path
         vm.stopPrank();
 
@@ -241,7 +243,8 @@ contract LiquidationDecimalTest is Test {
         registry.setPrice(address(wbtc), 60_000e18); // $60K per BTC
 
         vm.startPrank(owner);
-        address borrowAsset = address(wbtc); core.registerPool(borrowAsset, address(marketBtc));
+        address borrowAsset = address(wbtc);
+        core.registerPool(borrowAsset, address(marketBtc));
         core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 
@@ -302,7 +305,8 @@ contract LiquidationDecimalTest is Test {
         registry.setPrice(address(usdc6), 1e18);
 
         vm.startPrank(owner);
-        address borrowAsset = address(usdc6); core.registerPool(borrowAsset, address(market6));
+        address borrowAsset = address(usdc6);
+        core.registerPool(borrowAsset, address(market6));
         core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 
@@ -353,7 +357,8 @@ contract LiquidationDecimalTest is Test {
         registry.setPrice(address(usdc6), 1e18);
 
         vm.startPrank(owner);
-        address borrowAsset = address(usdc6); core.registerPool(borrowAsset, address(market6));
+        address borrowAsset = address(usdc6);
+        core.registerPool(borrowAsset, address(market6));
         core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 
@@ -389,7 +394,8 @@ contract LiquidationDecimalTest is Test {
         registry.setPrice(address(wbtc), 60_000e18);
 
         vm.startPrank(owner);
-        address borrowAsset = address(wbtc); core.registerPool(borrowAsset, address(marketBtc));
+        address borrowAsset = address(wbtc);
+        core.registerPool(borrowAsset, address(marketBtc));
         core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 

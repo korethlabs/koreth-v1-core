@@ -114,7 +114,8 @@ contract FullLifecycleTest is Test {
         market = LendingPool(
             address(
                 new ERC1967Proxy(
-                    address(new LendingPool()), abi.encodeCall(LendingPool.initialize, (mConfig, address(irm), address(core)))
+                    address(new LendingPool()),
+                    abi.encodeCall(LendingPool.initialize, (mConfig, address(irm), address(core)))
                 )
             )
         );
@@ -147,6 +148,8 @@ contract FullLifecycleTest is Test {
         riskManager.setCollateralConfig(
             ILPAdapter.LPType.UniswapV2, RiskConfig.config(6500, 7500, 500, 0, 10_000_000e18, true)
         );
+        // Raise position value cap above the borrow-cap test's $15M collateral.
+        riskManager.setMaxPositionValue(1_000_000_000e18);
         pm.setLendingEngine(address(le));
         liq.setFeeCollector(address(fc));
         vm.stopPrank();
