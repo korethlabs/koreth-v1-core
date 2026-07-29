@@ -192,7 +192,7 @@ contract ProtocolCoreTest is Test {
     // ========== registerPool ==========
 
     function test_registerPool_success() public {
-        address borrowAsset = makeAddr("usdc");
+        address borrowAsset = _stub();
         address pool = _poolStub(borrowAsset);
 
         vm.expectEmit(true, true, false, false);
@@ -207,8 +207,8 @@ contract ProtocolCoreTest is Test {
 
     function test_registerPool_multipleAssets() public {
         vm.startPrank(owner);
-        address a1 = makeAddr("usdc");
-        address a2 = makeAddr("usdt");
+        address a1 = _stub();
+        address a2 = _stub();
         address p1 = _poolStub(a1);
         address p2 = _poolStub(a2);
         core.registerPool(a1, p1);
@@ -220,7 +220,7 @@ contract ProtocolCoreTest is Test {
     }
 
     function test_registerPool_revertsDuplicateAsset() public {
-        address borrowAsset = makeAddr("usdc");
+        address borrowAsset = _stub();
         address stub2 = _poolStub(borrowAsset);
         vm.startPrank(owner);
         core.registerPool(borrowAsset, _poolStub(borrowAsset));
@@ -232,16 +232,28 @@ contract ProtocolCoreTest is Test {
     /// @dev The key must match the pool's own borrow asset, or every `pools[asset]` lookup
     ///      would resolve to a pool that lends a different token.
     function test_registerPool_revertsBorrowAssetMismatch() public {
-        address pool = _poolStub(makeAddr("usdt"));
+        address pool = _poolStub(_stub());
+        address otherAsset = _stub();
         vm.prank(owner);
         vm.expectRevert("BORROW_ASSET_MISMATCH");
-        core.registerPool(makeAddr("usdc"), pool);
+        core.registerPool(otherAsset, pool);
     }
 
     function test_registerPool_revertsZeroAddress() public {
+        address borrowAsset = _stub();
         vm.prank(owner);
         vm.expectRevert("ZERO_ADDRESS");
-        core.registerPool(makeAddr("usdc"), address(0));
+        core.registerPool(borrowAsset, address(0));
+    }
+
+    /// @dev An EOA key would satisfy the borrowAsset() cross-check and only fail later, on the
+    ///      first transfer. PoolFactory screens this too; registerPool is the path that bypasses it.
+    function test_registerPool_revertsBorrowAssetNotContract() public {
+        address borrowAsset = makeAddr("eoa-usdc");
+        address pool = _poolStub(borrowAsset);
+        vm.prank(owner);
+        vm.expectRevert("BORROW_ASSET_NOT_CONTRACT");
+        core.registerPool(borrowAsset, pool);
     }
 
     function test_registerPool_revertsZeroBorrowAsset() public {
@@ -252,9 +264,10 @@ contract ProtocolCoreTest is Test {
     }
 
     function test_registerPool_revertsNotContract() public {
+        address borrowAsset = _stub();
         vm.prank(owner);
         vm.expectRevert("NOT_CONTRACT");
-        core.registerPool(makeAddr("usdc"), makeAddr("eoa"));
+        core.registerPool(borrowAsset, makeAddr("eoa"));
     }
 
     function test_registerPool_revertsNotAuthorized() public {
@@ -739,7 +752,7 @@ contract ProtocolCoreTest is Test {
         count = uint8(bound(count, 1, 10));
         vm.startPrank(owner);
         for (uint8 i = 0; i < count; i++) {
-            address borrowAsset = address(uint160(uint256(keccak256(abi.encode("asset", i)))));
+            address borrowAsset = address(new Stub());
             address pool = address(new PoolStub(borrowAsset));
             core.registerPool(borrowAsset, pool);
             assertEq(core.pools(borrowAsset), pool);

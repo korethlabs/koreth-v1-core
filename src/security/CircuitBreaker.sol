@@ -18,8 +18,9 @@ contract CircuitBreaker {
     // Per-pool pause state
     mapping(address => bool) public poolPaused;
 
-    // Frozen state (Aave V3 pattern): blocks deposits/borrows/supply, allows withdraw/repay/liquidate.
-    // Keyed by LP collateral type in the unified-pool model.
+    // Frozen state (Aave V3 pattern): blocks deposits/borrows against this collateral, allows
+    // withdraw/repay/liquidate. Keyed by LP collateral type in the unified-pool model, so it does
+    // not reach lender-side LendingPool.supply() — that is gated per pool by poolPaused.
     mapping(ILPAdapter.LPType => bool) public collateralFrozen;
 
     // --- Events ---

@@ -124,6 +124,10 @@ contract ProtocolCore {
             "NOT_AUTHORIZED"
         );
         require(borrowAsset != address(0), "ZERO_BORROW_ASSET");
+        // PoolFactory already screens the borrow asset, but a PoolAdmin can register a pool
+        // directly, and this is the chokepoint both paths share. An EOA key would satisfy the
+        // borrowAsset() match below and only fail much later, on the first transfer.
+        require(borrowAsset.code.length > 0, "BORROW_ASSET_NOT_CONTRACT");
         require(pool != address(0), "ZERO_ADDRESS");
         require(pool.code.length > 0, "NOT_CONTRACT");
         require(pools[borrowAsset] == address(0), "POOL_ALREADY_REGISTERED");

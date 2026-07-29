@@ -168,8 +168,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     {
         require(lpToken != address(0), "ZERO_LP_TOKEN");
         require(amount > 0 || tokenId > 0, "ZERO_AMOUNT");
-        address poolAddr = core.pools(borrowAsset);
-        require(poolAddr != address(0), "INVALID_POOL");
+        require(core.pools(borrowAsset) != address(0), "INVALID_POOL");
 
         // Auto-detect LP type by querying each registered adapter
         ILPAdapter.LPType lpType = _detectLPType(lpToken);
