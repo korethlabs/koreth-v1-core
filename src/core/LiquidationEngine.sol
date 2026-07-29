@@ -215,6 +215,10 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             (sweptFee0, sweptFee1) = adapter.collectFees(pos.lpToken, pos.tokenId);
         }
 
+        // Deliberately the raw oracle value, NOT the haircut value used by getMaxBorrow /
+        // getHealthFactor. The haircut is a risk discount on borrowing capacity, not a price: the
+        // liquidator is handed real tokens, so the seize ratio must be taken against market value.
+        // Discounting here would hand out more liquidity than repayUsd + bonus is worth.
         uint256 positionValue = positionManager.getPositionValue(positionId);
         uint256 totalLiquidity = uint256(adapter.getLiquidity(pos.lpToken, pos.tokenId, pos.amount));
 
@@ -381,7 +385,7 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     /// @inheritdoc ILiquidationEngine
     /// @dev WARNING: This is a view function and does NOT call accrueInterest().
     ///      Health factor may be stale. For accurate results, call
-    ///      lendingEngine.accrueInterest(marketId) first, or rely on liquidate()
+    ///      lendingEngine.accrueInterest(borrowAsset) first, or rely on liquidate()
     ///      which accrues automatically before checking.
     function isLiquidatable(uint256 positionId) public view returns (bool liquidatable, uint256 maxRepay) {
         uint256 healthFactor = positionManager.getHealthFactor(positionId);

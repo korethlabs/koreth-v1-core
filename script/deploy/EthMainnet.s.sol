@@ -41,7 +41,8 @@ contract DeployEthMainnet is DeployBase {
             maxLtv: 6500,
             liquidationThreshold: 7500,
             liquidationBonus: 500,
-            borrowCap: 10_000_000e6, // $10M (6-dec USDC)
+            haircut: 500, // 5% discount on collateral value
+            borrowCap: 10_000_000e18, // $10M (18-dec USD, not borrow-asset decimals)
             // Governance — multisig required for mainnet (no fallback to deployer)
             multisig: vm.envAddress("MULTISIG_ADDRESS"),
             timelockDelay: 48 hours

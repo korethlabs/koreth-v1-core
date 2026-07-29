@@ -20,12 +20,12 @@ import {TokenUtils} from "../libraries/TokenUtils.sol";
 /// @title LendingEngine
 /// @notice Handles borrowing against LP positions and repayment with interest
 /// @dev UUPS upgradeable + reentrancy protected.
-///      Interest accrual is delegated to Market (single source of truth).
-///      LendingEngine reads Market.borrowIndex() for per-position debt calculation.
+///      Interest accrual is delegated to LendingPool (single source of truth).
+///      LendingEngine reads LendingPool.borrowIndex() for per-position debt calculation.
 ///
 ///      Important for integrators:
 ///      - getDebt() returns debt as of the last on-chain accrual, NOT real-time.
-///        Call accrueInterest(marketId) first for up-to-date values.
+///        Call accrueInterest(borrowAsset) first for up-to-date values.
 ///      - repay() is permissionless — anyone can repay any position's debt (payer = msg.sender).
 ///        This is intentional (same as Aave/Compound — generous repayment).
 ///      - repayOnBehalf() is restricted to LIQUIDATION_ENGINE role.
@@ -118,7 +118,10 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
             "POSITION_NOT_ACTIVE"
         );
 
-        // Circuit breaker: no new borrows against paused pools or frozen collateral types
+        // Circuit breaker: no new borrows against paused pools or frozen collateral types.
+        // Optional by design (setCircuitBreaker accepts address(0)) — it is the fast emergency
+        // lever, not the offboarding one. Permanently retiring a collateral type goes through
+        // RiskManager's `enabled` flag, which validateAndRecordBorrow enforces unconditionally.
         CircuitBreaker cb = positionManager.circuitBreaker();
         if (address(cb) != address(0)) {
             require(!cb.poolPaused(pos.pool), "POOL_CIRCUIT_BREAKER");
@@ -138,14 +141,14 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
 
         // RiskManager: validate caps (all in 18-dec USD)
         {
-            address rmAddr = core.riskManagerAddr();
-            if (rmAddr != address(0)) {
-                uint256 positionValue = positionManager.getPositionValue(positionId);
-                uint256 amountUsd = _toUsd(amount, pos.borrowAsset);
-                (bool valid, string memory reason) =
-                    RiskManager(rmAddr).validateAndRecordBorrow(amountUsd, positionValue, pos.lpType);
-                require(valid, reason);
-            }
+            RiskManager rm = _riskManager();
+            // Fold in interest accrued since this position was last touched, so the cap counters
+            // move by the same interest-inclusive quantity on the way up as on the way down.
+            rm.recordAccrual(_toUsd(currentDebt - debtInfo[positionId].principal, pos.borrowAsset), pos.lpType);
+            uint256 positionValue = positionManager.getPositionValue(positionId);
+            uint256 amountUsd = _toUsd(amount, pos.borrowAsset);
+            (bool valid, string memory reason) = rm.validateAndRecordBorrow(amountUsd, positionValue, pos.lpType);
+            require(valid, reason);
         }
 
         uint256 currentBorrowIndex = pool.borrowIndex();
@@ -217,19 +220,22 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
 
         uint256 remainingDebt = currentDebt - repayAmount;
 
+        // Interest accrued since this position was last touched, before debtInfo is overwritten.
+        uint256 accrued = currentDebt - debtInfo[positionId].principal;
+
         debtInfo[positionId] = DebtInfo({principal: remainingDebt, borrowIndex: pool.borrowIndex()});
 
         positionManager.updateDebt(positionId, remainingDebt);
 
         pool.transferIn(payer, repayAmount);
 
-        // RiskManager: track repayment (18-dec USD)
+        // RiskManager: track repayment (18-dec USD). Record the accrual first so the counters
+        // shed exactly what they took on — otherwise repaying interest would shrink the tracked
+        // exposure below the real one and hand back cap headroom that was never freed.
         {
-            address rmAddr = core.riskManagerAddr();
-            if (rmAddr != address(0)) {
-                uint256 repayUsd = _toUsd(repayAmount, pos.borrowAsset);
-                RiskManager(rmAddr).recordRepay(repayUsd, pos.lpType);
-            }
+            RiskManager rm = _riskManager();
+            rm.recordAccrual(_toUsd(accrued, pos.borrowAsset), pos.lpType);
+            rm.recordRepay(_toUsd(repayAmount, pos.borrowAsset), pos.lpType);
         }
 
         emit Repaid(positionId, payer, repayAmount, remainingDebt);
@@ -258,22 +264,13 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
     {
         uint256 collateralValue = positionManager.getPositionValue(positionId);
 
-        uint256 maxLtv;
-        uint256 haircut;
-        {
-            address rmAddr = core.riskManagerAddr();
-            if (rmAddr != address(0)) {
-                RiskManager.CollateralConfig memory cc = RiskManager(rmAddr).getCollateralConfig(lpType);
-                maxLtv = cc.maxLtv;
-                haircut = cc.haircut;
-            }
-        }
+        RiskManager.CollateralConfig memory cc = _riskManager().getCollateralConfig(lpType);
 
         // Apply haircut to collateral value (discount in bps; 0 = none)
-        if (haircut > 0) {
-            collateralValue = Math.mulDiv(collateralValue, 10_000 - haircut, 10_000);
+        if (cc.haircut > 0) {
+            collateralValue = Math.mulDiv(collateralValue, 10_000 - cc.haircut, 10_000);
         }
-        uint256 maxBorrowUsd = (collateralValue * maxLtv) / 10_000;
+        uint256 maxBorrowUsd = (collateralValue * cc.maxLtv) / 10_000;
 
         uint8 borrowDecimals = TokenUtils.safeDecimals(borrowAsset);
 
@@ -308,6 +305,15 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
         return amount;
     }
 
+    /// @dev RiskManager is the collateral registry in the shared-pool model — required, not
+    ///      optional. PositionManager refuses deposits without it and ProtocolCore cannot unset
+    ///      it, so this only reverts on a stack that was never fully wired.
+    function _riskManager() internal view returns (RiskManager) {
+        address rmAddr = core.riskManagerAddr();
+        require(rmAddr != address(0), "RISK_MANAGER_NOT_SET");
+        return RiskManager(rmAddr);
+    }
+
     function _getPoolAddr(address borrowAsset) internal view returns (address) {
         address poolAddr = core.pools(borrowAsset);
         require(poolAddr != address(0), "POOL_NOT_FOUND");
@@ -327,6 +333,9 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
         uint256 currentDebt = _getCurrentDebt(positionId, pool);
         require(currentDebt > 0, "NO_DEBT");
 
+        // Interest accrued since this position was last touched, before debtInfo is overwritten.
+        uint256 accrued = currentDebt - debtInfo[positionId].principal;
+
         // Zero out the position's debt tracking
         debtInfo[positionId] = DebtInfo({principal: 0, borrowIndex: pool.borrowIndex()});
         positionManager.updateDebt(positionId, 0);
@@ -336,11 +345,9 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
 
         // Update RiskManager to prevent ghost debt from blocking new borrows
         {
-            address rmAddr = core.riskManagerAddr();
-            if (rmAddr != address(0)) {
-                uint256 debtUsd = _toUsd(currentDebt, pos.borrowAsset);
-                RiskManager(rmAddr).recordRepay(debtUsd, pos.lpType);
-            }
+            RiskManager rm = _riskManager();
+            rm.recordAccrual(_toUsd(accrued, pos.borrowAsset), pos.lpType);
+            rm.recordRepay(_toUsd(currentDebt, pos.borrowAsset), pos.lpType);
         }
 
         emit DebtWrittenOff(positionId, pos.borrowAsset, currentDebt, msg.sender);

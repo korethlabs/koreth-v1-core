@@ -14,7 +14,7 @@ library RiskConfig {
             liquidationThreshold: 7500,
             liquidationBonus: 500,
             haircut: 0,
-            borrowCap: 0, // uncapped by default
+            borrowCap: type(uint256).max, // == RiskManager.NO_BORROW_CAP; 0 would block all borrowing
             enabled: true
         });
     }

@@ -34,12 +34,17 @@ contract ProtocolInvariantTest is Test {
     FeeCollector public fc;
     MockLPAdapter public adapter;
     MockLPOracle public oracle;
+    // Second collateral type against the SAME pool — the whole point of the shared-pool model,
+    // and impossible under the old isolated-market design.
+    MockLPAdapter public adapterV2;
+    MockLPOracle public oracleV2;
     MockERC20 public usdc;
     InterestRateModel public irm;
 
     address public owner = makeAddr("owner");
     address public guardian = makeAddr("guardian");
     address public lpToken = makeAddr("lpToken");
+    address public lpTokenV2 = makeAddr("lpTokenV2");
     address public borrowAsset;
 
     function setUp() public {
@@ -88,6 +93,9 @@ contract ProtocolInvariantTest is Test {
         adapter = new MockLPAdapter(ILPAdapter.LPType.UniswapV3);
         adapter.setSupportedToken(lpToken, true);
         oracle = new MockLPOracle();
+        adapterV2 = new MockLPAdapter(ILPAdapter.LPType.UniswapV2);
+        adapterV2.setSupportedToken(lpTokenV2, true);
+        oracleV2 = new MockLPOracle();
         riskManager = new RiskManager(address(core));
 
         vm.startPrank(owner);
@@ -97,11 +105,15 @@ contract ProtocolInvariantTest is Test {
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.whitelistPool(lpToken);
+        core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapterV2));
+        core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracleV2));
+        core.whitelistPool(lpTokenV2);
         borrowAsset = address(usdc);
         core.registerPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         aclManager.addRiskAdmin(owner);
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
         pm.setLendingEngine(address(le));
         vm.stopPrank();
 
@@ -291,7 +303,6 @@ contract ProtocolInvariantTest is Test {
         le.borrow(posId, borrowAmt);
 
         uint256 indexAtBorrow = market.borrowIndex();
-        ILendingPool.PoolState memory stateAtBorrow = market.getPoolState();
 
         timeElapsed = bound(timeElapsed, 1 days, 365 days);
         vm.warp(block.timestamp + timeElapsed);
@@ -580,5 +591,232 @@ contract ProtocolInvariantTest is Test {
         vm.prank(user);
         vm.expectRevert("LP_TYPE_CAP_REACHED");
         le.borrow(posId, 2000e18); // exceeds the 1000e18 cap
+    }
+
+    /// @dev `enabled: false` must stop EXISTING positions drawing more from the shared pool, not
+    ///      just block new deposits. Otherwise offboarding a compromised collateral type does
+    ///      nothing for the lenders backing every other type — the ADR-001 failure mode.
+    function test_disabledCollateralCannotBorrow() public {
+        oracle.setPrice(1_000_000e18);
+
+        address user = makeAddr("offboardedUser");
+        vm.prank(user);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+
+        // Borrowing works while the type is live.
+        vm.prank(user);
+        le.borrow(posId, 1000e18);
+
+        // Offboard the type, keeping its risk params intact.
+        vm.prank(owner);
+        riskManager.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(6500, 7500, 500, 0, 1_000_000e18, false)
+        );
+
+        vm.prank(user);
+        vm.expectRevert("COLLATERAL_DISABLED");
+        le.borrow(posId, 1000e18);
+
+        // ...but the borrower can still repay their way out.
+        usdc.mint(user, 1000e18);
+        vm.prank(user);
+        usdc.approve(address(market), 1000e18);
+        vm.prank(user);
+        le.repay(posId, 500e18);
+    }
+
+    // ================================================================
+    // SHARED-POOL INVARIANT B: two collateral types, one pool
+    // ================================================================
+
+    /// @dev The core new risk of the shared-pool model: V2 and V3 collateral drawing on the same
+    ///      USDC pool. Isolated markets made this impossible, so nothing used to cover it.
+    ///      Interleaves borrows and repays across both types and asserts neither one's debt nor
+    ///      the pool's own accounting is disturbed by the other's activity.
+    function testFuzz_twoCollateralTypesShareOnePool(uint256 v3Borrow, uint256 v2Borrow) public {
+        oracle.setPrice(1_000_000e18);
+        oracleV2.setPrice(1_000_000e18);
+        v3Borrow = bound(v3Borrow, 1e18, 500_000e18);
+        v2Borrow = bound(v2Borrow, 1e18, 500_000e18);
+
+        address v3User = makeAddr("v3User");
+        address v2User = makeAddr("v2User");
+
+        vm.prank(v3User);
+        uint256 v3Pos = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        vm.prank(v2User);
+        uint256 v2Pos = pm.deposit(lpTokenV2, 0, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+
+        vm.prank(v3User);
+        le.borrow(v3Pos, v3Borrow);
+
+        // V3's borrow must not change what V2 can do, nor V2's (still zero) debt.
+        assertEq(le.getDebt(v2Pos), 0, "V2 debt must be untouched by a V3 borrow");
+
+        vm.prank(v2User);
+        le.borrow(v2Pos, v2Borrow);
+
+        // Each position owes exactly what it borrowed, and the shared pool owes the sum.
+        assertEq(le.getDebt(v3Pos), v3Borrow, "V3 debt must be independent of V2");
+        assertEq(le.getDebt(v2Pos), v2Borrow, "V2 debt must be independent of V3");
+        assertEq(
+            market.getPoolState().totalBorrow, v3Borrow + v2Borrow, "shared pool must owe the sum of both types"
+        );
+
+        // Per-type exposure is tracked separately and reconciles with the pool total.
+        uint256 v3Tracked = riskManager.lpTypeCurrentBorrows(ILPAdapter.LPType.UniswapV3);
+        uint256 v2Tracked = riskManager.lpTypeCurrentBorrows(ILPAdapter.LPType.UniswapV2);
+        assertEq(v3Tracked, v3Borrow, "V3 exposure tracked separately");
+        assertEq(v2Tracked, v2Borrow, "V2 exposure tracked separately");
+        assertEq(v3Tracked + v2Tracked, market.getPoolState().totalBorrow, "per-type exposure must sum to the pool");
+
+        // Accrue, then let V3 repay in full. V2's debt must be unaffected beyond its own interest.
+        vm.warp(block.timestamp + 180 days);
+        market.accrueInterest();
+        uint256 v2DebtBefore = le.getDebt(v2Pos);
+
+        uint256 v3Debt = le.getDebt(v3Pos);
+        usdc.mint(v3User, v3Debt);
+        vm.prank(v3User);
+        usdc.approve(address(market), v3Debt);
+        vm.prank(v3User);
+        le.repay(v3Pos, v3Debt);
+
+        assertEq(le.getDebt(v3Pos), 0, "V3 fully repaid");
+        assertEq(le.getDebt(v2Pos), v2DebtBefore, "V2 debt must survive V3's full repayment");
+        assertEq(
+            riskManager.lpTypeCurrentBorrows(ILPAdapter.LPType.UniswapV3), 0, "V3 exposure released on full repay"
+        );
+        assertGe(riskManager.lpTypeCurrentBorrows(ILPAdapter.LPType.UniswapV2), v2Borrow, "V2 exposure retained");
+    }
+
+    /// @dev One collateral type pinned at its cap must not starve another type that still has
+    ///      headroom — they only share liquidity, not risk budget.
+    function test_capExhaustionIsolatedBetweenCollateralTypes() public {
+        oracle.setPrice(1_000_000e18);
+        oracleV2.setPrice(1_000_000e18);
+
+        vm.prank(owner);
+        riskManager.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(6500, 7500, 500, 0, 10_000e18, true)
+        );
+
+        address v3User = makeAddr("cappedV3");
+        address v2User = makeAddr("uncappedV2");
+
+        vm.prank(v3User);
+        uint256 v3Pos = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        vm.prank(v2User);
+        uint256 v2Pos = pm.deposit(lpTokenV2, 0, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+
+        // Exhaust the V3 cap exactly, then confirm it is closed.
+        vm.prank(v3User);
+        le.borrow(v3Pos, 10_000e18);
+        vm.prank(v3User);
+        vm.expectRevert("LP_TYPE_CAP_REACHED");
+        le.borrow(v3Pos, 1e18);
+
+        // V2 is unaffected and can still borrow far beyond V3's cap.
+        vm.prank(v2User);
+        le.borrow(v2Pos, 100_000e18);
+        assertEq(le.getDebt(v2Pos), 100_000e18, "V2 must borrow freely while V3 is capped");
+    }
+
+    /// @dev Borrows record principal while repays subtract principal + interest. Without an
+    ///      accrual sync the per-type counter ratchets toward zero, so a borrower could repay
+    ///      interest repeatedly to free cap headroom that was never actually released, then
+    ///      re-borrow the full cap. Tracked exposure must never fall below real debt.
+    function test_capAccountingDoesNotDriftOnInterestRepay() public {
+        oracle.setPrice(1_000_000e18);
+
+        address user = makeAddr("interestPayer");
+        vm.prank(user);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+
+        vm.prank(user);
+        le.borrow(posId, 100_000e18);
+
+        usdc.mint(user, 1_000_000e18);
+        vm.prank(user);
+        usdc.approve(address(market), type(uint256).max);
+
+        // Repeatedly let interest accrue and pay off exactly that interest, leaving the real
+        // debt flat at the principal.
+        // NOTE: the target instant is tracked in a local rather than re-read from block.timestamp
+        // each round. solc treats TIMESTAMP as loop-invariant (it genuinely cannot change within
+        // one transaction), so under via_ir the read is hoisted and every warp would land on the
+        // same instant, accruing zero interest after the first pass.
+        uint256 ts = block.timestamp;
+        for (uint256 i = 0; i < 10; i++) {
+            ts += 90 days;
+            vm.warp(ts);
+            market.accrueInterest();
+            uint256 debt = le.getDebt(posId);
+            vm.prank(user);
+            le.repay(posId, debt - 100_000e18);
+
+            assertApproxEqAbs(le.getDebt(posId), 100_000e18, 1, "real debt should stay at principal");
+            assertGe(
+                riskManager.lpTypeCurrentBorrows(ILPAdapter.LPType.UniswapV3),
+                100_000e18,
+                "tracked exposure must never drift below real debt"
+            );
+        }
+    }
+
+    // ================================================================
+    // Haircut: a discount on borrowing capacity, applied consistently
+    // ================================================================
+
+    /// @dev The haircut is net-new in this refactor and must scale getMaxBorrow and the health
+    ///      factor by the SAME factor — if the two diverged, a position could borrow its max and
+    ///      be liquidatable in the same block (or vice versa).
+    function testFuzz_haircutScalesMaxBorrowAndHealthIdentically(uint256 haircut) public {
+        haircut = bound(haircut, 0, riskManager.MAX_HAIRCUT_BPS());
+        oracle.setPrice(1_000_000e18);
+
+        address user = makeAddr("haircutUser");
+        vm.prank(user);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+
+        // Baseline with no haircut: borrow a fixed amount so a health factor exists.
+        uint256 maxBorrowNoHaircut = le.getMaxBorrow(posId);
+        vm.prank(user);
+        le.borrow(posId, 10_000e18);
+        uint256 healthNoHaircut = pm.getHealthFactor(posId);
+
+        vm.prank(owner);
+        riskManager.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(6500, 7500, 500, haircut, type(uint256).max, true)
+        );
+
+        uint256 expectedScale = 10_000 - haircut;
+        assertApproxEqAbs(
+            le.getMaxBorrow(posId),
+            (maxBorrowNoHaircut * expectedScale) / 10_000,
+            1,
+            "max borrow must scale by (1 - haircut)"
+        );
+        assertApproxEqAbs(
+            pm.getHealthFactor(posId),
+            (healthNoHaircut * expectedScale) / 10_000,
+            1,
+            "health factor must scale by the same (1 - haircut)"
+        );
+    }
+
+    /// @dev The haircut is bounded well below 100%: at 10000 it would zero every position's
+    ///      collateral value and mark the whole collateral type liquidatable at once.
+    function test_haircutCannotZeroCollateral() public {
+        vm.prank(owner);
+        vm.expectRevert("HAIRCUT_TOO_HIGH");
+        riskManager.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(6500, 7500, 500, 10_000, type(uint256).max, true)
+        );
     }
 }

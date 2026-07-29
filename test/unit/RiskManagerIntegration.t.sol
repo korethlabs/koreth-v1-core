@@ -87,6 +87,8 @@ contract RiskManagerIntegrationTest is Test {
         pm.setLendingEngine(address(le));
         core.setRiskManager(address(rm));
         rm.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
+        // V2 is configured too so the direct-call cap/event tests below exercise an enabled type.
+        rm.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
         vm.stopPrank();
 
         usdc.mint(address(market), 200_000_000e18);
@@ -324,18 +326,80 @@ contract RiskManagerIntegrationTest is Test {
 
     // ========== Without RiskManager ==========
 
-    /// @dev In the shared-pool model RiskManager is the source of truth for collateral risk params.
-    ///      Deposits must be refused outright when it is unset: the health-factor and
-    ///      liquidation-bonus paths hard-require it, so a position created without it could
-    ///      never be valued or liquidated.
-    function test_depositBlockedWithoutRiskManager() public {
-        vm.prank(owner);
-        core.setRiskManager(address(0));
+    // ========== Collateral config bounds ==========
 
-        oracle.setPrice(50_000e18);
-        vm.prank(alice);
-        vm.expectRevert("RISK_MANAGER_NOT_SET");
-        pm.deposit(lpToken, 1, 100e18, borrowAsset);
+    /// @dev At maxLtv == liquidationThreshold a position is liquidatable the instant it borrows
+    ///      its maximum, with no room to react to a price move.
+    function test_setCollateralConfig_revertsLtvNotBelowThreshold() public {
+        vm.prank(owner);
+        vm.expectRevert("LTV_GE_THRESHOLD");
+        rm.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(7500, 7500, 500, 0, type(uint256).max, true)
+        );
+    }
+
+    function test_setCollateralConfig_revertsLtvAboveCeiling() public {
+        vm.prank(owner);
+        vm.expectRevert("LTV_TOO_HIGH");
+        rm.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(9600, 9700, 500, 0, type(uint256).max, true)
+        );
+    }
+
+    function test_setCollateralConfig_revertsThresholdAboveCeiling() public {
+        vm.prank(owner);
+        vm.expectRevert("THRESHOLD_TOO_HIGH");
+        rm.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(9000, 9900, 500, 0, type(uint256).max, true)
+        );
+    }
+
+    /// @dev An unbounded bonus would let a liquidator seize arbitrarily more than the debt repaid.
+    function test_setCollateralConfig_revertsBonusAboveCeiling() public {
+        vm.prank(owner);
+        vm.expectRevert("BONUS_TOO_HIGH");
+        rm.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(6500, 7500, 1600, 0, type(uint256).max, true)
+        );
+    }
+
+    /// @dev Zero bonus leaves liquidators with no incentive, so underwater positions would just
+    ///      sit there accruing bad debt while the borrower stays stuck below HF 1.
+    function test_setCollateralConfig_revertsEnabledWithZeroBonus() public {
+        vm.prank(owner);
+        vm.expectRevert("ZERO_BONUS");
+        rm.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(6500, 7500, 0, 0, type(uint256).max, true)
+        );
+    }
+
+    /// @dev borrowCap is restrictive-by-default — 0 blocks borrowing rather than meaning
+    ///      "unlimited", so an enabled type must state a cap (or NO_BORROW_CAP) explicitly.
+    function test_setCollateralConfig_revertsEnabledWithZeroBorrowCap() public {
+        vm.prank(owner);
+        vm.expectRevert("ZERO_BORROW_CAP");
+        rm.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.config(6500, 7500, 500, 0, 0, true));
+    }
+
+    /// @dev A zero borrowCap fails CLOSED: the per-collateral cap is the blast-radius control for
+    ///      the shared pool, so a forgotten config must block borrowing, never silently uncap it.
+    function test_zeroBorrowCapBlocksBorrowing() public {
+        vm.prank(owner);
+        rm.setLPTypeBorrowCap(ILPAdapter.LPType.UniswapV3, 0);
+
+        vm.prank(address(le));
+        (bool valid, string memory reason) = rm.validateAndRecordBorrow(1e18, 1000e18, ILPAdapter.LPType.UniswapV3);
+        assertFalse(valid, "zero cap must block borrowing");
+        assertEq(reason, "LP_TYPE_CAP_REACHED");
+    }
+
+    /// @dev The registry cannot be unset once wired. Clearing it would zero liquidationThreshold
+    ///      for every live position (health factor 0 across the board) and wipe the per-type
+    ///      borrow-cap accounting for debt that is still outstanding.
+    function test_setRiskManager_cannotUnset() public {
+        vm.prank(owner);
+        vm.expectRevert("ZERO_ADDRESS");
+        core.setRiskManager(address(0));
     }
 
     // ========== Admin ==========

@@ -51,11 +51,15 @@ abstract contract DeployBase is Script {
         // Pools to whitelist
         address v2Pool; // V2 pair to whitelist (address(0) = skip)
         address v3Pool; // V3 pool to whitelist (address(0) = skip)
-        // Market params
+        // Collateral risk params
         uint256 maxLtv; // bps (e.g., 6500 = 65%)
         uint256 liquidationThreshold; // bps
         uint256 liquidationBonus; // bps
-        uint256 borrowCap; // in stablecoin decimals
+        uint256 haircut; // bps discount applied to collateral value (0 = none)
+        // Per-collateral borrow cap, in 18-dec USD — NOT stablecoin decimals. RiskManager compares
+        // this against amounts converted by LendingEngine._toUsd, so a 6-dec value would cap the
+        // type 1e12 too low and revert every borrow.
+        uint256 borrowCap;
         // Governance
         address multisig; // proposer/executor for timelock (deployer on testnet)
         uint256 timelockDelay; // 172800 (48h) for mainnet, 60 for testnet
@@ -94,9 +98,9 @@ abstract contract DeployBase is Script {
         _deploySecurity(cfg);
         _deployOracles(cfg);
         _deployAdapters(cfg);
-        _deployMarkets(cfg);
+        _deployPoolFactory(cfg);
         _configureRoles(cfg);
-        _createMarket(cfg);
+        _createPools(cfg);
         _beforeGovernance(cfg);
         _deployTimelock(cfg);
 
@@ -119,9 +123,9 @@ abstract contract DeployBase is Script {
     ///         extra stablecoin price feeds (USDT/DAI) here so their markets can be valued.
     function _afterOracles(ChainConfig memory cfg) internal virtual {}
 
-    /// @notice Optional hook run at the end of _createMarket (default no-op). Local creates the
+    /// @notice Optional hook run at the end of _createPools (default no-op). Local creates the
     ///         extra borrow-asset markets (V2->USDT, V2->DAI) here.
-    function _afterMarkets(ChainConfig memory cfg) internal virtual {}
+    function _afterPools(ChainConfig memory cfg) internal virtual {}
 
     // --- Deploy Steps ---
 
@@ -210,7 +214,7 @@ abstract contract DeployBase is Script {
         }
     }
 
-    function _deployMarkets(ChainConfig memory cfg) internal {
+    function _deployPoolFactory(ChainConfig memory cfg) internal {
         InterestRateModel stableModel = new InterestRateModel(100, 400, 7500, 8500);
         InterestRateModel volatileModel = new InterestRateModel(200, 600, 10_000, 8000);
 
@@ -256,7 +260,7 @@ abstract contract DeployBase is Script {
         aclManager.addRiskAdmin(address(poolFactory));
     }
 
-    function _createMarket(ChainConfig memory cfg) internal {
+    function _createPools(ChainConfig memory cfg) internal {
         // Whitelist collateral pools (the underlying LP pools, not the lending pool)
         if (cfg.v3Pool != address(0)) core.whitelistPool(cfg.v3Pool);
         if (cfg.v2Pool != address(0)) core.whitelistPool(cfg.v2Pool);
@@ -272,11 +276,13 @@ abstract contract DeployBase is Script {
             _whitelistCollateral(ILPAdapter.LPType.UniswapV2, cfg);
         }
 
-        _afterMarkets(cfg);
+        _afterPools(cfg);
     }
 
     /// @notice Ensure a shared lending pool exists for a borrow asset (idempotent); wire FeeCollector.
-    /// @dev Subclasses (e.g. Local) use this via _createAndWireMarketFor to add extra borrow assets.
+    /// @dev Subclasses (e.g. Local) call this from _afterPools to add extra borrow assets. Collateral
+    ///      does NOT need re-whitelisting per pool: CollateralConfig is keyed by LPType alone, so one
+    ///      _whitelistCollateral call covers that type against every borrow asset.
     function _ensurePool(address borrowAsset) internal returns (address poolAddr) {
         poolAddr = core.pools(borrowAsset);
         if (poolAddr == address(0)) {
@@ -293,25 +299,11 @@ abstract contract DeployBase is Script {
                 maxLtv: cfg.maxLtv,
                 liquidationThreshold: cfg.liquidationThreshold,
                 liquidationBonus: cfg.liquidationBonus,
-                haircut: 0,
+                haircut: cfg.haircut,
                 borrowCap: cfg.borrowCap,
                 enabled: true
             })
         );
-    }
-
-    /// @notice Back-compat helper for subclasses: ensure a pool exists for `borrowAsset` and
-    ///         whitelist `lpType` collateral against it.
-    function _createAndWireMarketFor(
-        ILPAdapter.LPType lpType,
-        address borrowAsset,
-        ChainConfig memory cfg
-    )
-        internal
-        returns (address poolAddr)
-    {
-        poolAddr = _ensurePool(borrowAsset);
-        _whitelistCollateral(lpType, cfg);
     }
 
     function _deployTimelock(ChainConfig memory cfg) internal virtual {

@@ -212,8 +212,12 @@ contract ProtocolCore {
         priceFeedRegistryAddr = _registry;
     }
 
+    /// @dev Cannot be unset. RiskManager is the collateral registry: clearing it would zero the
+    ///      liquidation threshold for every live position (health factor 0 across the board) and
+    ///      wipe the per-type borrow-cap accounting for debt that is still outstanding.
     function setRiskManager(address _riskManager) external onlyPoolAdmin {
-        require(_riskManager == address(0) || _riskManager.code.length > 0, "NOT_CONTRACT");
+        require(_riskManager != address(0), "ZERO_ADDRESS");
+        require(_riskManager.code.length > 0, "NOT_CONTRACT");
         emit RiskManagerUpdated(riskManagerAddr, _riskManager);
         riskManagerAddr = _riskManager;
     }

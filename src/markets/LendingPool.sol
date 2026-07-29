@@ -120,6 +120,13 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
 
     /// @notice Distribute accumulated protocol reserves to FeeCollector
     /// @dev Permissionless — anyone can trigger (keeper, user, DAO).
+    ///      At high utilization reserves may exceed cash on hand (the tokens are lent out). In that
+    ///      case only the available cash is sent; the remainder stays tracked in protocolReserves
+    ///      and can be distributed once repayments bring cash back — hence the early `return` on
+    ///      zero cash rather than a revert.
+    ///      Distribution reduces totalPoolAssets, so utilization (and borrow rates) tick up until
+    ///      new reserves accrue. That is inherent to utilization-based rate models (same in
+    ///      Aave/Compound) and is an accepted tradeoff.
     function distributeReserves() external nonReentrant {
         accrueInterest(); // Ensure reserves are up-to-date
         uint256 amount = protocolReserves;
@@ -164,6 +171,8 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
 
         uint256 currentUtilization;
         if (totalPoolAssets == 0) {
+            // No pool assets — use max utilization (10000 bps). Interest still accrues and goes
+            // entirely to protocol reserves, which prevents free borrowing when totalSupply == 0.
             currentUtilization = 10_000;
         } else {
             uint256 rawUtil = (state.totalBorrow * 10_000) / totalPoolAssets;
@@ -173,9 +182,11 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
 
         uint256 interestAccrued = (state.totalBorrow * borrowRatePerSecond * elapsed) / 1e18;
 
+        // Split interest: protocol keeps reserveFactorBps%, lenders get the rest.
         uint256 protocolShare;
         uint256 lenderShare;
         if (state.totalSupply == 0) {
+            // No lenders — all interest goes to protocol reserves.
             protocolShare = interestAccrued;
             lenderShare = 0;
         } else {
@@ -188,6 +199,7 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
         protocolReserves += protocolShare; // Protocol's cut stored separately
         state.lastAccrualTimestamp = block.timestamp;
 
+        // borrowRatePerSecond is 1e18 scale, borrowIndex is RAY (1e27) scale.
         uint256 interestFactor = RAY + ((borrowRatePerSecond * elapsed * RAY) / 1e18);
         borrowIndex = (borrowIndex * interestFactor) / RAY;
 
@@ -251,6 +263,9 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
 
     /// @dev Borrow cap is enforced in RiskManager per LPType (not here). This pool draws liquidity
     ///      for ANY collateral type — the shared-pool model.
+    ///      `available` is the actual token balance, NOT totalSupply: protocolReserves are an
+    ///      accounting claim rather than locked cash, so borrowers can draw against them. Lenders
+    ///      keep priority — reserves are only paid out by distributeReserves once cash allows.
     function transferOut(address to, uint256 amount) external onlyLendingEngine nonReentrant {
         require(to != address(0), "ZERO_RECIPIENT");
         require(state.totalSupply > 0, "NO_SUPPLY");
@@ -324,6 +339,8 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
     // --- Bad Debt Management ---
 
     /// @notice Record bad debt from underwater liquidation (called by LendingEngine)
+    /// @dev Burns uncollectable debt from totalBorrow and tracks it as deficit. The burn is clamped
+    ///      to totalBorrow — more debt can never be written off than the pool believes exists.
     function recordDeficit(uint256 amount) external onlyLendingEngine {
         require(amount > 0, "ZERO_AMOUNT");
         uint256 burn = amount > state.totalBorrow ? state.totalBorrow : amount;
@@ -335,6 +352,9 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
     }
 
     /// @notice Cover deficit using protocol reserves (callable by RiskAdmin)
+    /// @dev Partial coverage is fine — covers min(deficit, protocolReserves) and leaves the rest
+    ///      outstanding. totalSupply is deliberately NOT reduced: the reserves spent here were the
+    ///      protocol's cut, not lender principal, so lenders are made whole first.
     function eliminateDeficit() external onlyRiskAdmin {
         require(deficit > 0, "NO_DEFICIT");
         uint256 coverage = deficit > protocolReserves ? protocolReserves : deficit;
