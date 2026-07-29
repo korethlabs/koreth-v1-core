@@ -10,14 +10,12 @@ import {INonfungiblePositionManager} from "../../../src/interfaces/external/IUni
 ///         (not via transform). Also covers V2 removeCollateral, health factor enforcement,
 ///         and circuit breaker blocking.
 contract CollateralManagement is E2EBase {
-    address public v2MarketId;
 
     function setUp() public override {
         super.setUp();
 
         // Create V2 market for V2-specific tests
         vm.startPrank(deployer);
-        v2MarketId = usdcBorrowAsset;
         vm.stopPrank();
 
         _fundUsdc(bob, 50_000e6);
@@ -160,7 +158,7 @@ contract CollateralManagement is E2EBase {
         // Deposit
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         uint256 valueBefore = _getPositionValue(positionId);
@@ -185,7 +183,7 @@ contract CollateralManagement is E2EBase {
 
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         vm.prank(alice);

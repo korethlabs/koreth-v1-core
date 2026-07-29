@@ -163,7 +163,6 @@ contract SecurityE2E is E2EBase {
 
         // Create V2 market
         vm.startPrank(deployer);
-        address v2MarketId = usdcBorrowAsset;
         vm.stopPrank();
 
         // Fund and supply to V2 market
@@ -177,7 +176,7 @@ contract SecurityE2E is E2EBase {
         // Deposit V2 LP
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 

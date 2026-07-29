@@ -6,14 +6,12 @@ import "../E2EBase.t.sol";
 /// @title V2Liquidation
 /// @notice Liquidation tests with real V2 LP positions on forked mainnet
 contract V2Liquidation is E2EBase {
-    address public v2MarketId;
 
     function setUp() public override {
         super.setUp();
 
         // Create a V2 market
         vm.startPrank(deployer);
-        v2MarketId = usdcBorrowAsset;
         vm.stopPrank();
 
         // Fund Bob with extra USDC and supply to V2 market
@@ -31,7 +29,7 @@ contract V2Liquidation is E2EBase {
 
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         vm.roll(block.number + 2);
@@ -69,7 +67,7 @@ contract V2Liquidation is E2EBase {
 
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         vm.roll(block.number + 2);
@@ -107,7 +105,7 @@ contract V2Liquidation is E2EBase {
 
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         vm.roll(block.number + 2);

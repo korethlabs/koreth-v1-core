@@ -135,7 +135,6 @@ contract LiquidationCascade is E2EBase {
     /// @notice Cross-market: Alice borrows from V3 market AND V2 market - positions are independent
     function test_crossMarket_V3andV2() public {
         vm.startPrank(deployer);
-        address v2MarketId = usdcBorrowAsset;
         vm.stopPrank();
 
         _fundUsdc(bob, 50_000e6);
@@ -159,7 +158,7 @@ contract LiquidationCascade is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 1 ether, 2000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 v2PosId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 v2PosId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 5);
         uint256 _v2Max = lendingEngine.getMaxBorrow(v2PosId);

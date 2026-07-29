@@ -13,7 +13,7 @@ and depend on this repo. **Core depends on nothing.**
 ```
 src/
 ├── core/        ProtocolCore, ACLManager, PositionManager, LendingEngine, LiquidationEngine, FeeCollector
-├── markets/     Market, MarketFactory, MarketRegistry, InterestRateModel
+├── markets/     LendingPool, PoolFactory, InterestRateModel
 ├── oracle/      LPOracleHub, PriceFeedRegistry, PriceValidator, UniswapV2Oracle, UniswapV3Oracle
 ├── adapters/    UniswapV2Adapter, UniswapV3Adapter (+ fail-closed stubs)
 ├── security/    RiskManager, CircuitBreaker, PoolHealthMonitor
@@ -22,11 +22,25 @@ src/
 ```
 
 Design highlights:
-- **LP-as-collateral**: deposit V2 LP tokens or V3 position NFTs; borrow the market's stablecoin.
+- **LP-as-collateral**: deposit V2 LP tokens or V3 position NFTs; borrow any asset the protocol
+  has a pool for.
 - **Manipulation-resistant pricing**: V2 fair-value (sqrt-k) and V3 30-min TWAP, cross-checked
   against Chainlink; principal-only valuation (uncollected fees are not collateral).
 - **UUPS upgradeable** engines behind a timelocked governance handoff.
-- **Isolated markets** per (LP type × borrow asset), Aave-style risk parameters.
+- **Shared liquidity, isolated risk**: one `LendingPool` per borrow asset, open to every
+  collateral type, with Aave-style risk parameters and a hard borrow cap held per LP type in
+  `RiskManager`.
+
+### Liquidity and risk are separate axes
+
+Liquidity lives in a **`LendingPool`, one per borrow asset** (USDC, USDT, …), registered through
+`ProtocolCore.registerPool()`. Every collateral type draws on the same pool, so a lender's
+deposit is never stranded behind an LP type nobody borrows against.
+
+Risk lives in **`RiskManager`, keyed per `ILPAdapter.LPType`** — LTV, liquidation threshold and
+bonus, haircut, and a `borrowCap` denominated in USD. The cap is what keeps shared liquidity from
+turning one bad collateral type into a protocol-wide loss: exposure to that type simply stops at
+its cap. `borrowCap == 0` blocks borrowing (fail-closed); `type(uint256).max` means uncapped.
 
 ## Build & test
 

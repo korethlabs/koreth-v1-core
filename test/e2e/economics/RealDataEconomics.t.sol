@@ -14,7 +14,6 @@ import {LendingPool} from "../../../src/markets/LendingPool.sol";
 ///      Uses `_crashEthPrice(dumpAmountEth)` to crash real Uniswap pool + mock Chainlink to match.
 ///      No oracle mocking except Chainlink staleness + the crash helper.
 contract RealDataEconomics is E2EBase {
-    address public v2MarketId;
     address public v2MarketAddr;
 
     function setUp() public override {
@@ -32,7 +31,6 @@ contract RealDataEconomics is E2EBase {
 
         // Create V2 market for V2 tests (pool already whitelisted in E2EBase)
         vm.startPrank(deployer);
-        v2MarketId = usdcBorrowAsset;
         vm.stopPrank();
 
         // Fund V2 market with liquidity (bob supplies)
@@ -291,7 +289,7 @@ contract RealDataEconomics is E2EBase {
         core.whitelistPool(Constants.UNI_V3_WBTC_WETH_3000);
 
         // Create a market for WBTC/WETH positions (borrow asset = USDC, same as ETH market)
-        // We reuse the existing ethUsdcMarketId since the borrow asset is USDC
+        // Reuses the shared USDC pool — every collateral type borrows from the same one.
         vm.stopPrank();
 
         // Fund alice with WBTC + WETH

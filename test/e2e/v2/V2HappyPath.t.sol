@@ -7,11 +7,9 @@ import "../E2EBase.t.sol";
 /// @notice Full lifecycle test with real Uniswap V2 on forked mainnet
 contract V2HappyPath is E2EBase {
     // V2 collateral borrows from the same shared USDC pool (whitelisted in ForkTestBase).
-    address public v2MarketId;
 
     function setUp() public override {
         super.setUp();
-        v2MarketId = usdcBorrowAsset;
 
         // Fund Bob with extra USDC and supply into the shared pool
         _fundUsdc(bob, 50_000e6);
@@ -31,7 +29,7 @@ contract V2HappyPath is E2EBase {
         vm.startPrank(alice);
         IUniswapV2Pair pair = IUniswapV2Pair(Constants.UNI_V2_WETH_USDC);
         pair.approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         // Position has value
@@ -72,7 +70,7 @@ contract V2HappyPath is E2EBase {
 
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         assertGt(_getPositionValue(positionId), 0);

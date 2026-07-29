@@ -9,14 +9,12 @@ import {IPositionManager} from "../../../src/interfaces/IPositionManager.sol";
 ///         and remaining coverage gaps.
 /// @dev All tests run against real Uniswap on forked mainnet via Anvil.
 contract RemainingFlows is E2EBase {
-    address public v2MarketId;
 
     function setUp() public override {
         super.setUp();
 
         // Create V2 market
         vm.startPrank(deployer);
-        v2MarketId = usdcBorrowAsset;
         // Set reserve factor for deficit tests
         LendingPool(address(usdcPool)).setReserveFactor(2000);
         LendingPool(address(usdcPool)).setReserveFactor(2000);
@@ -95,7 +93,7 @@ contract RemainingFlows is E2EBase {
 
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 
@@ -144,7 +142,7 @@ contract RemainingFlows is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 
@@ -209,7 +207,7 @@ contract RemainingFlows is E2EBase {
         uint256 lpAmount1 = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount1);
-        uint256 posId1 = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount1, v2MarketId);
+        uint256 posId1 = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount1, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 
@@ -230,7 +228,7 @@ contract RemainingFlows is E2EBase {
         uint256 lpAmount2 = _createV2Position(alice, 0.3 ether, 600e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount2);
-        uint256 posId2 = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount2, v2MarketId);
+        uint256 posId2 = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount2, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 3);
 
@@ -316,7 +314,7 @@ contract RemainingFlows is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 
@@ -376,7 +374,7 @@ contract RemainingFlows is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 
@@ -417,7 +415,7 @@ contract RemainingFlows is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 

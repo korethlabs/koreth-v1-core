@@ -150,7 +150,6 @@ contract RiskManagement is E2EBase {
     function test_circuitBreaker_freezeMarket_allowsLiquidation() public {
         // Create a V2 market for liquidation (V2 uses amount-based positions)
         vm.startPrank(deployer);
-        address v2MarketId = usdcBorrowAsset;
         LendingPool(address(usdcPool)).setReserveFactor(2000);
         LendingPool(address(usdcPool)).setFeeCollector(address(feeCollector));
         vm.stopPrank();
@@ -167,7 +166,7 @@ contract RiskManagement is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 
@@ -193,7 +192,7 @@ contract RiskManagement is E2EBase {
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount2);
         vm.expectRevert("COLLATERAL_FROZEN");
-        positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount2, v2MarketId);
+        positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount2, usdcBorrowAsset);
         vm.stopPrank();
 
         // Borrow should be blocked on frozen market

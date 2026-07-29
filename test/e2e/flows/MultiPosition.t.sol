@@ -6,14 +6,12 @@ import "../E2EBase.t.sol";
 /// @title MultiPosition
 /// @notice Tests multiple positions from the same user across V2 and V3
 contract MultiPosition is E2EBase {
-    address public v2MarketId;
 
     function setUp() public override {
         super.setUp();
 
         // Create a V2 market
         vm.startPrank(deployer);
-        v2MarketId = usdcBorrowAsset;
         vm.stopPrank();
 
         // Fund Bob for V2 market
@@ -34,7 +32,7 @@ contract MultiPosition is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 v2PositionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 v2PositionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         // Both have value
@@ -112,15 +110,15 @@ contract MultiPosition is E2EBase {
     }
 
     function test_multiplePositions_differentMarkets() public {
-        // Alice deposits V3 in ethUsdcMarketId
+        // Alice deposits V3, borrowing USDC
         uint256 tokenId = _createV3Position(alice, 1 ether, 2000e6);
         uint256 v3PositionId = _depositV3(alice, tokenId);
 
-        // Alice deposits V2 in v2MarketId
+        // Alice deposits V2 in usdcBorrowAsset
         uint256 lpAmount = _createV2Position(alice, 0.3 ether, 600e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 v2PositionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 v2PositionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         // Each position borrows from its own market
