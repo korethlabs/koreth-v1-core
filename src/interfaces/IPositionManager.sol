@@ -29,9 +29,14 @@ interface IPositionManager {
         uint256 depositBlock; // Block number at deposit (for borrow cooldown)
     }
 
+    /// @dev `borrowAsset` identifies the shared pool this position may draw from. It is emitted
+    ///      because it is not derivable from the event stream otherwise: in the shared-pool model
+    ///      the pool is chosen at deposit time, so without it an indexer would need an archive
+    ///      call to getPosition() just to attribute a position to a pool.
     event PositionCreated(
         uint256 indexed positionId,
         address indexed owner,
+        address indexed borrowAsset,
         address lpToken,
         uint256 tokenId,
         ILPAdapter.LPType lpType,

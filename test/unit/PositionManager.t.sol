@@ -44,6 +44,7 @@ contract PositionManagerTest is Test {
     event PositionCreated(
         uint256 indexed positionId,
         address indexed owner,
+        address indexed borrowAsset,
         address lpToken,
         uint256 tokenId,
         ILPAdapter.LPType lpType,
@@ -154,8 +155,10 @@ contract PositionManagerTest is Test {
     // ========== deposit ==========
 
     function test_deposit_success() public {
-        vm.expectEmit(true, true, false, false);
-        emit PositionCreated(1, alice, lpToken, 1, ILPAdapter.LPType.UniswapV3, 50_000e18);
+        // borrowAsset is topic3 and must be checked: it is how an indexer attributes the position
+        // to a shared pool, so emitting the wrong one would be silently wrong downstream.
+        vm.expectEmit(true, true, true, true);
+        emit PositionCreated(1, alice, borrowAsset, lpToken, 1, ILPAdapter.LPType.UniswapV3, 50_000e18);
 
         vm.prank(alice);
         uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);

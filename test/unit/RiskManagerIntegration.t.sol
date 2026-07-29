@@ -424,15 +424,17 @@ contract RiskManagerIntegrationTest is Test {
 
     // ========== Event Emission ==========
 
-    event BorrowRecorded(uint256 amountUsd, uint256 newGlobalBorrows);
-    event RepayRecorded(uint256 amountUsd, uint256 newGlobalBorrows);
+    event BorrowRecorded(uint256 amountUsd, ILPAdapter.LPType indexed lpType, uint256 newGlobalBorrows);
+    event RepayRecorded(uint256 amountUsd, ILPAdapter.LPType indexed lpType, uint256 newGlobalBorrows);
     event DepositRecorded(uint256 valueUsd, address indexed pool, uint256 newPoolSupply);
     event WithdrawRecorded(uint256 valueUsd, address indexed pool, uint256 newPoolSupply);
     event BorrowTrackingDrift(uint256 tracked, uint256 repaid, bool isGlobal);
 
+    /// @dev lpType is checked as topic1: indexers reconstruct per-collateral exposure from these
+    ///      events, so attributing a borrow to the wrong type is a real (silent) bug.
     function test_validateAndRecordBorrow_emitsEvent() public {
-        vm.expectEmit(false, false, false, true);
-        emit BorrowRecorded(1000e18, 1000e18);
+        vm.expectEmit(true, false, false, true);
+        emit BorrowRecorded(1000e18, ILPAdapter.LPType.UniswapV2, 1000e18);
         vm.prank(address(le));
         rm.validateAndRecordBorrow(1000e18, 50_000e18, ILPAdapter.LPType.UniswapV2);
     }
@@ -440,8 +442,8 @@ contract RiskManagerIntegrationTest is Test {
     function test_recordRepay_emitsEvent() public {
         vm.prank(address(le));
         rm.validateAndRecordBorrow(1000e18, 50_000e18, ILPAdapter.LPType.UniswapV2);
-        vm.expectEmit(false, false, false, true);
-        emit RepayRecorded(500e18, 500e18);
+        vm.expectEmit(true, false, false, true);
+        emit RepayRecorded(500e18, ILPAdapter.LPType.UniswapV2, 500e18);
         vm.prank(address(le));
         rm.recordRepay(500e18, ILPAdapter.LPType.UniswapV2);
     }

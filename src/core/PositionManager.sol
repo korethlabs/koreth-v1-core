@@ -239,7 +239,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         _ownerPositions[msg.sender].push(positionId);
         activePositionCount[msg.sender]++;
 
-        emit PositionCreated(positionId, msg.sender, lpToken, tokenId, lpType, price.totalValue);
+        emit PositionCreated(positionId, msg.sender, borrowAsset, lpToken, tokenId, lpType, price.totalValue);
     }
 
     /// @inheritdoc IPositionManager

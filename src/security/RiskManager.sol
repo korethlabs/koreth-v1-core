@@ -66,9 +66,11 @@ contract RiskManager {
     event MaxPositionsPerUserUpdated(uint256 oldValue, uint256 newValue);
     event PoolSupplyCapUpdated(address indexed pool, uint256 oldValue, uint256 newValue);
     event BorrowTrackingDrift(uint256 tracked, uint256 repaid, bool isGlobal);
-    event BorrowRecorded(uint256 amountUsd, uint256 newGlobalBorrows);
+    // All three carry lpType: per-collateral exposure is the unit of risk in the shared-pool model,
+    // so an indexer must be able to reconstruct lpTypeCurrentBorrows from the event stream alone.
+    event BorrowRecorded(uint256 amountUsd, ILPAdapter.LPType indexed lpType, uint256 newGlobalBorrows);
     event AccrualRecorded(uint256 amountUsd, ILPAdapter.LPType indexed lpType, uint256 newGlobalBorrows);
-    event RepayRecorded(uint256 amountUsd, uint256 newGlobalBorrows);
+    event RepayRecorded(uint256 amountUsd, ILPAdapter.LPType indexed lpType, uint256 newGlobalBorrows);
     event DepositRecorded(uint256 valueUsd, address indexed pool, uint256 newPoolSupply);
     event WithdrawRecorded(uint256 valueUsd, address indexed pool, uint256 newPoolSupply);
 
@@ -143,7 +145,7 @@ contract RiskManager {
         // Atomically record the borrow (no gap between validate and record)
         currentGlobalBorrows += borrowAmountUsd;
         lpTypeCurrentBorrows[lpType] += borrowAmountUsd;
-        emit BorrowRecorded(borrowAmountUsd, currentGlobalBorrows);
+        emit BorrowRecorded(borrowAmountUsd, lpType, currentGlobalBorrows);
 
         return (true, "");
     }
@@ -183,7 +185,7 @@ contract RiskManager {
         } else {
             lpTypeCurrentBorrows[lpType] -= amountUsd;
         }
-        emit RepayRecorded(amountUsd, currentGlobalBorrows);
+        emit RepayRecorded(amountUsd, lpType, currentGlobalBorrows);
     }
 
     // --- Deposit Validation (called by PositionManager) ---
