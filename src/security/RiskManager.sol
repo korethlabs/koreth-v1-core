@@ -20,8 +20,21 @@ contract RiskManager {
     // --- Borrow Caps (all in 18-dec USD) ---
     uint256 public globalBorrowCap = 100_000_000e18; // $100M total borrows
     uint256 public currentGlobalBorrows;
-    mapping(ILPAdapter.LPType => uint256) public lpTypeBorrowCap;
     mapping(ILPAdapter.LPType => uint256) public lpTypeCurrentBorrows;
+
+    // --- Collateral registry (per LP type) ---
+    // Single source of truth for collateral-risk params in the shared-pool model. All bps except
+    // haircut (bps applied to collateral value) and borrowCap (18-dec USD). enabled gates deposits.
+    struct CollateralConfig {
+        uint256 maxLtv; // Max LTV in basis points (e.g. 6500 = 65%)
+        uint256 liquidationThreshold; // Liquidation trigger in bps
+        uint256 liquidationBonus; // Liquidator bonus in bps
+        uint256 haircut; // Discount applied to collateral value in bps (0 = none)
+        uint256 borrowCap; // Max USD borrowable against this collateral type (0 = uncapped)
+        bool enabled; // Whether this collateral type may back new positions
+    }
+
+    mapping(ILPAdapter.LPType => CollateralConfig) public collateralConfig;
 
     // --- Supply Caps (per-market collateral cap, 18-dec USD) ---
     mapping(uint256 => uint256) public marketSupplyCap; // marketId → max collateral value
@@ -30,6 +43,7 @@ contract RiskManager {
     // --- Events ---
     event GlobalBorrowCapUpdated(uint256 oldValue, uint256 newValue);
     event LPTypeBorrowCapUpdated(ILPAdapter.LPType indexed lpType, uint256 cap);
+    event CollateralConfigSet(ILPAdapter.LPType indexed lpType);
     event MaxPositionValueUpdated(uint256 oldValue, uint256 newValue);
     event MaxPositionsPerUserUpdated(uint256 oldValue, uint256 newValue);
     event MarketSupplyCapUpdated(uint256 indexed marketId, uint256 oldValue, uint256 newValue);
@@ -95,7 +109,7 @@ contract RiskManager {
         }
 
         // Check 3: LP type borrow cap
-        uint256 typeCap = lpTypeBorrowCap[lpType];
+        uint256 typeCap = collateralConfig[lpType].borrowCap;
         if (typeCap > 0 && lpTypeCurrentBorrows[lpType] + borrowAmountUsd > typeCap) {
             return (false, "LP_TYPE_CAP_REACHED");
         }
@@ -225,7 +239,27 @@ contract RiskManager {
 
     function setLPTypeBorrowCap(ILPAdapter.LPType lpType, uint256 cap) external onlyRiskAdmin {
         emit LPTypeBorrowCapUpdated(lpType, cap);
-        lpTypeBorrowCap[lpType] = cap;
+        collateralConfig[lpType].borrowCap = cap;
+    }
+
+    /// @notice Back-compat view — the per-LP-type borrow cap now lives in collateralConfig.
+    function lpTypeBorrowCap(ILPAdapter.LPType lpType) external view returns (uint256) {
+        return collateralConfig[lpType].borrowCap;
+    }
+
+    /// @notice Set the full collateral-risk config for an LP type (source of truth in the shared pool).
+    function setCollateralConfig(ILPAdapter.LPType lpType, CollateralConfig calldata cfg) external onlyRiskAdmin {
+        require(cfg.maxLtv <= cfg.liquidationThreshold, "LTV_GT_THRESHOLD");
+        require(cfg.liquidationThreshold <= 10_000, "THRESHOLD_GT_100");
+        require(cfg.haircut <= 10_000, "HAIRCUT_GT_100");
+        collateralConfig[lpType] = cfg;
+        emit CollateralConfigSet(lpType);
+        emit LPTypeBorrowCapUpdated(lpType, cfg.borrowCap);
+    }
+
+    /// @notice Read the collateral-risk config for an LP type.
+    function getCollateralConfig(ILPAdapter.LPType lpType) external view returns (CollateralConfig memory) {
+        return collateralConfig[lpType];
     }
 
     function setMaxPositionValue(uint256 maxValue) external onlyRiskAdmin {
