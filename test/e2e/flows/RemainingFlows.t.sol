@@ -13,22 +13,18 @@ contract RemainingFlows is E2EBase {
     function setUp() public override {
         super.setUp();
 
-        // Create V2 market
         vm.startPrank(deployer);
         // Set reserve factor for deficit tests
         LendingPool(address(usdcPool)).setReserveFactor(2000);
-        LendingPool(address(usdcPool)).setReserveFactor(2000);
         // Wire FeeCollector
-        LendingPool(address(usdcPool)).setFeeCollector(address(feeCollector));
         LendingPool(address(usdcPool)).setFeeCollector(address(feeCollector));
         vm.stopPrank();
 
-        // Fund V2 market
+        // Fund the shared USDC pool
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = address(usdcPool);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        ILendingPool(v2MarketAddr).supply(50_000e6);
+        IERC20(Constants.USDC).approve(address(usdcPool), 50_000e6);
+        ILendingPool(address(usdcPool)).supply(50_000e6);
         vm.stopPrank();
     }
 

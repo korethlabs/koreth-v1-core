@@ -109,19 +109,19 @@ contract MultiPosition is E2EBase {
         console.log("=== Independent Repay & Withdraw Test Passed ===");
     }
 
-    function test_multiplePositions_differentMarkets() public {
-        // Alice deposits V3, borrowing USDC
+    function test_multiplePositions_differentCollateralTypes() public {
+        // Alice deposits V3 collateral, borrowing USDC
         uint256 tokenId = _createV3Position(alice, 1 ether, 2000e6);
         uint256 v3PositionId = _depositV3(alice, tokenId);
 
-        // Alice deposits V2 in usdcBorrowAsset
+        // ...and V2 collateral, borrowing the same USDC
         uint256 lpAmount = _createV2Position(alice, 0.3 ether, 600e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
         uint256 v2PositionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
-        // Each position borrows from its own market
+        // Both draw on the one shared pool; only the collateral type differs.
         vm.roll(block.number + 2);
 
         uint256 maxV3 = lendingEngine.getMaxBorrow(v3PositionId);
