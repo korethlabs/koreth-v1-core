@@ -5,6 +5,7 @@ import "../E2EBase.t.sol";
 import {LendingPool} from "../../../src/markets/LendingPool.sol";
 import {IPositionManager} from "../../../src/interfaces/IPositionManager.sol";
 import {RiskManager} from "../../../src/security/RiskManager.sol";
+import {RiskConfig} from "../../helpers/RiskConfig.sol";
 
 /// @title AdminOperations
 /// @notice E2E tests for admin/governance operations on forked mainnet.
