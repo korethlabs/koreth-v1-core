@@ -54,7 +54,7 @@ contract UpgradeE2E is E2EBase {
         assertEq(posAfter.tokenId, posBefore.tokenId, "tokenId mismatch after upgrade");
         assertEq(posAfter.amount, posBefore.amount, "amount mismatch after upgrade");
         assertEq(uint8(posAfter.status), uint8(posBefore.status), "status mismatch after upgrade");
-        assertEq(posAfter.marketId, posBefore.marketId, "marketId mismatch after upgrade");
+        assertEq(posAfter.borrowAsset, posBefore.borrowAsset, "borrowAsset mismatch after upgrade");
 
         uint256 debtAfter = lendingEngine.getDebt(positionId);
         assertEq(debtAfter, debtBefore, "debt mismatch after upgrade");
@@ -65,8 +65,8 @@ contract UpgradeE2E is E2EBase {
     // ================================================================
 
     function test_upgrade_preservesMarketState() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
 
         // Alice deposits and borrows to generate interest
         uint256 tokenId = _createV3Position(alice, 2 ether, 4000e6);
@@ -82,17 +82,17 @@ contract UpgradeE2E is E2EBase {
         market.accrueInterest();
 
         // Snapshot market state before upgrade
-        IMarket.MarketState memory stateBefore = market.getMarketState();
+        ILendingPool.PoolState memory stateBefore = market.getPoolState();
         uint256 borrowIndexBefore = market.borrowIndex();
 
         // Deploy new Market impl and upgrade
         vm.startPrank(deployer);
-        Market newMarketImpl = new Market();
-        Market(marketAddr).upgradeToAndCall(address(newMarketImpl), "");
+        LendingPool newMarketImpl = new LendingPool();
+        LendingPool(poolAddr).upgradeToAndCall(address(newMarketImpl), "");
         vm.stopPrank();
 
         // Verify market state preserved
-        IMarket.MarketState memory stateAfter = market.getMarketState();
+        ILendingPool.PoolState memory stateAfter = market.getPoolState();
         assertEq(stateAfter.totalSupply, stateBefore.totalSupply, "totalSupply mismatch after upgrade");
         assertEq(stateAfter.totalBorrow, stateBefore.totalBorrow, "totalBorrow mismatch after upgrade");
 
@@ -127,11 +127,11 @@ contract UpgradeE2E is E2EBase {
 
         // Repay full debt
         uint256 debt = lendingEngine.getDebt(positionId);
-        address marketAddr = core.markets(ethUsdcMarketId);
-        IMarket.MarketConfig memory cfg = IMarket(marketAddr).getConfig();
+        address poolAddr = address(usdcPool);
+        ILendingPool.PoolConfig memory cfg = ILendingPool(poolAddr).getConfig();
 
         vm.startPrank(alice);
-        IERC20(cfg.borrowAsset).approve(address(marketAddr), debt);
+        IERC20(cfg.borrowAsset).approve(address(poolAddr), debt);
         lendingEngine.repay(positionId, debt);
         vm.stopPrank();
 
@@ -156,8 +156,8 @@ contract UpgradeE2E is E2EBase {
         LendingEngine newLeImpl = new LendingEngine();
         LiquidationEngine newLiqImpl = new LiquidationEngine();
 
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market newMarketImpl = new Market();
+        address poolAddr = address(usdcPool);
+        LendingPool newMarketImpl = new LendingPool();
 
         // Alice (non-admin) cannot upgrade PositionManager
         vm.startPrank(alice);
@@ -172,7 +172,7 @@ contract UpgradeE2E is E2EBase {
         liquidationEngine.upgradeToAndCall(address(newLiqImpl), "");
 
         vm.expectRevert("NOT_POOL_ADMIN");
-        Market(marketAddr).upgradeToAndCall(address(newMarketImpl), "");
+        LendingPool(poolAddr).upgradeToAndCall(address(newMarketImpl), "");
 
         vm.stopPrank();
     }
@@ -204,16 +204,16 @@ contract UpgradeE2E is E2EBase {
         lendingEngine.initialize(address(core), address(positionManager));
 
         // Same for Market
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address poolAddr = address(usdcPool);
         vm.startPrank(deployer);
-        Market newMarketImpl = new Market();
-        Market(marketAddr).upgradeToAndCall(address(newMarketImpl), "");
+        LendingPool newMarketImpl = new LendingPool();
+        LendingPool(poolAddr).upgradeToAndCall(address(newMarketImpl), "");
         vm.stopPrank();
 
-        IMarket.MarketConfig memory cfg = IMarket(marketAddr).getConfig();
+        ILendingPool.PoolConfig memory cfg = ILendingPool(poolAddr).getConfig();
         vm.prank(deployer);
         vm.expectRevert();
-        Market(marketAddr).initialize(cfg, address(volatileModel), address(core));
+        LendingPool(poolAddr).initialize(cfg, address(volatileModel), address(core));
     }
 
     // ================================================================

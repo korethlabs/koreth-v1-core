@@ -51,7 +51,7 @@ contract V3HappyPath is E2EBase {
 
         // 4. Time passes — interest accrues
         _advanceTime(1 hours); // keep within Chainlink staleness window (24h)
-        lendingEngine.accrueInterest(ethUsdcMarketId);
+        lendingEngine.accrueInterest(usdcBorrowAsset);
 
         uint256 debtAfterInterest = _getDebt(positionId);
         assertGe(debtAfterInterest, borrowAmount, "Debt should not decrease");
@@ -60,8 +60,8 @@ contract V3HappyPath is E2EBase {
         // 5. Repay all debt
         _fundUsdc(alice, debtAfterInterest); // fund extra for interest
         vm.startPrank(alice);
-        address marketAddr = core.markets(ethUsdcMarketId);
-        IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
+        address poolAddr = address(usdcPool);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);
         vm.stopPrank();
 

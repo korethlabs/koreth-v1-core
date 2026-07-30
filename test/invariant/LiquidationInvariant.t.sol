@@ -8,12 +8,14 @@ import {ACLManager} from "../../src/core/ACLManager.sol";
 import {PositionManager} from "../../src/core/PositionManager.sol";
 import {LendingEngine} from "../../src/core/LendingEngine.sol";
 import {LiquidationEngine} from "../../src/core/LiquidationEngine.sol";
-import {Market} from "../../src/markets/Market.sol";
+import {LendingPool} from "../../src/markets/LendingPool.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {LPOracleHub} from "../../src/oracle/LPOracleHub.sol";
 import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
-import {IMarket} from "../../src/interfaces/IMarket.sol";
+import {ILendingPool} from "../../src/interfaces/ILendingPool.sol";
+import {RiskManager} from "../../src/security/RiskManager.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {FeeCollector} from "../../src/core/FeeCollector.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
@@ -27,7 +29,8 @@ contract LiquidationInvariantTest is Test {
     PositionManager public pm;
     LendingEngine public le;
     LiquidationEngine public liq;
-    Market public market;
+    LendingPool public market;
+    RiskManager public riskManager;
     LPOracleHub public oracleHub;
     FeeCollector public fc;
     MockLPAdapter public adapter;
@@ -38,7 +41,7 @@ contract LiquidationInvariantTest is Test {
     address public owner = makeAddr("owner");
     address public guardian = makeAddr("guardian");
     address public lpToken = makeAddr("lpToken");
-    uint256 public marketId;
+    address public borrowAsset;
 
     function setUp() public {
         usdc = new MockERC20("USDC", "USDC", 18);
@@ -78,20 +81,12 @@ contract LiquidationInvariantTest is Test {
             )
         );
 
-        IMarket.MarketConfig memory mConfig = IMarket.MarketConfig({
-            lpType: ILPAdapter.LPType.UniswapV3,
-            borrowAsset: address(usdc),
-            maxLtv: 6500,
-            liquidationThreshold: 7500,
-            liquidationBonus: 500,
-            borrowCap: 100_000_000e18,
-            minPoolTvl: 0,
-            minPoolAge: 0
-        });
-        market = Market(
+        ILendingPool.PoolConfig memory mConfig = ILendingPool.PoolConfig({borrowAsset: address(usdc)});
+        market = LendingPool(
             address(
                 new ERC1967Proxy(
-                    address(new Market()), abi.encodeCall(Market.initialize, (mConfig, address(irm), address(core)))
+                    address(new LendingPool()),
+                    abi.encodeCall(LendingPool.initialize, (mConfig, address(irm), address(core)))
                 )
             )
         );
@@ -103,6 +98,7 @@ contract LiquidationInvariantTest is Test {
         adapter.setTokenReturns(address(usdc), address(usdc));
         adapter.setUnwindAmounts(50e18, 50e18);
         oracle = new MockLPOracle();
+        riskManager = new RiskManager(address(core));
 
         // Fund adapter so unwind can transfer tokens
         usdc.mint(address(adapter), 10_000_000e18);
@@ -115,7 +111,11 @@ contract LiquidationInvariantTest is Test {
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.whitelistPool(lpToken);
-        marketId = core.registerMarket(address(market));
+        borrowAsset = address(usdc);
+        core.registerPool(address(usdc), address(market));
+        core.setRiskManager(address(riskManager));
+        aclManager.addRiskAdmin(owner);
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         pm.setLendingEngine(address(le));
         liq.setFeeCollector(address(fc));
         vm.stopPrank();
@@ -140,7 +140,7 @@ contract LiquidationInvariantTest is Test {
 
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         vm.prank(user);
@@ -163,7 +163,7 @@ contract LiquidationInvariantTest is Test {
 
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         // Borrow close to max LTV
@@ -191,7 +191,7 @@ contract LiquidationInvariantTest is Test {
 
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         vm.prank(user);
@@ -227,7 +227,7 @@ contract LiquidationInvariantTest is Test {
 
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         vm.prank(user);
@@ -248,7 +248,7 @@ contract LiquidationInvariantTest is Test {
 
         address alice = makeAddr("alice");
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         address bob = makeAddr("bob");
@@ -269,7 +269,7 @@ contract LiquidationInvariantTest is Test {
 
         address user = makeAddr("user");
         vm.prank(user);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         vm.prank(user);

@@ -13,9 +13,10 @@ import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
-import {MockMarket} from "../mocks/MockMarket.sol";
+import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 
 /// @title AddCollateralTest
 /// @notice Unit tests for PositionManager.addCollateral()
@@ -29,8 +30,7 @@ contract AddCollateralTest is Test {
     MockLPAdapter public v3Adapter;
     MockLPAdapter public v2Adapter;
     MockLPOracle public oracle;
-    MockMarket public market;
-    MockMarket public v2Market;
+    MockLendingPool public market;
     MockERC20 public token0;
     MockERC20 public token1;
 
@@ -40,8 +40,7 @@ contract AddCollateralTest is Test {
     address public lpToken = makeAddr("lpToken");
     address public v2LpToken = makeAddr("v2LpToken");
 
-    uint256 public marketId;
-    uint256 public v2MarketId;
+    address public borrowAsset;
 
     event CollateralAdded(uint256 indexed positionId, uint256 addedLiquidity, uint256 used0, uint256 used1);
 
@@ -91,16 +90,17 @@ contract AddCollateralTest is Test {
 
         oracle = new MockLPOracle();
         MockERC20 usdc = new MockERC20("USDC", "USDC", 6);
+        borrowAsset = address(usdc);
         InterestRateModel irm = new InterestRateModel(200, 600, 10_000, 8000);
-        market = new MockMarket(address(usdc), address(irm)); // defaults to V3
-        v2Market = new MockMarket(address(usdc), address(irm));
-        v2Market.setLpType(ILPAdapter.LPType.UniswapV2);
+        // One shared pool for USDC — both V3 and V2 collateral borrow from it.
+        market = new MockLendingPool(address(usdc), address(irm));
         riskManager = new RiskManager(address(core));
 
         // Wire everything
         vm.startPrank(owner);
         aclManager.addLendingEngine(address(le));
         aclManager.addPositionManager(address(pm));
+        aclManager.addRiskAdmin(owner);
 
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(v3Adapter));
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(v2Adapter));
@@ -108,8 +108,10 @@ contract AddCollateralTest is Test {
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
         core.whitelistPool(lpToken);
         core.whitelistPool(v2LpToken);
-        marketId = core.registerMarket(address(market));
-        v2MarketId = core.registerMarket(address(v2Market));
+        core.registerPool(address(usdc), address(market));
+        core.setRiskManager(address(riskManager));
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
         pm.setLendingEngine(address(le));
         vm.stopPrank();
 
@@ -122,12 +124,12 @@ contract AddCollateralTest is Test {
 
     function _depositV3(address user) internal returns (uint256 positionId) {
         vm.prank(user);
-        positionId = pm.deposit(lpToken, 1, 0, marketId);
+        positionId = pm.deposit(lpToken, 1, 0, borrowAsset);
     }
 
     function _depositV2(address user) internal returns (uint256 positionId) {
         vm.prank(user);
-        positionId = pm.deposit(v2LpToken, 0, 100e18, v2MarketId);
+        positionId = pm.deposit(v2LpToken, 0, 100e18, borrowAsset);
     }
 
     // ========== Success Cases ==========

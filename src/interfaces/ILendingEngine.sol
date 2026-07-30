@@ -8,8 +8,8 @@ interface ILendingEngine {
 
     event Repaid(uint256 indexed positionId, address indexed repayer, uint256 amount, uint256 remainingDebt);
 
-    // Note: InterestAccrued is emitted by Market.accrueInterest(), not LendingEngine.
-    // LendingEngine delegates accrual entirely to Market as the single source of truth.
+    // Note: InterestAccrued is emitted by LendingPool.accrueInterest(), not LendingEngine.
+    // LendingEngine delegates accrual entirely to LendingPool as the single source of truth.
 
     /// @notice Borrow assets against a deposited LP position
     /// @param positionId The position to borrow against
@@ -31,9 +31,9 @@ interface ILendingEngine {
     /// @return maxBorrow Maximum borrow amount in borrow asset
     function getMaxBorrow(uint256 positionId) external view returns (uint256 maxBorrow);
 
-    /// @notice Accrue interest for a market
-    /// @param marketId The market to accrue interest for
-    function accrueInterest(uint256 marketId) external;
+    /// @notice Accrue interest for a shared pool
+    /// @param borrowAsset The borrow asset (pool key) to accrue interest for
+    function accrueInterest(address borrowAsset) external;
 
     /// @notice Repay debt on behalf of a borrower (used by LiquidationEngine)
     function repayOnBehalf(uint256 positionId, uint256 repayAmount) external;

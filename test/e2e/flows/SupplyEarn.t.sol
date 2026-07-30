@@ -10,18 +10,18 @@ contract SupplyEarn is E2EBase {
         super.setUp();
 
         // Set reserve factor so interest is split between lenders and protocol
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address poolAddr = address(usdcPool);
         vm.prank(deployer);
-        Market(marketAddr).setReserveFactor(2000); // 20%
+        LendingPool(poolAddr).setReserveFactor(2000); // 20%
     }
 
     function test_lenderEarnsInterest() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
 
         // Record Bob's initial shares
         uint256 bobShares = market.shares(bob);
-        uint256 initialTotalSupply = market.getMarketState().totalSupply;
+        uint256 initialTotalSupply = market.getPoolState().totalSupply;
         assertGt(bobShares, 0, "Bob should have shares from E2EBase setUp");
         console.log("Bob shares: %s", bobShares);
         console.log("Initial totalSupply: %s", initialTotalSupply);
@@ -42,7 +42,7 @@ contract SupplyEarn is E2EBase {
         _advanceTime(1 hours);
         market.accrueInterest();
 
-        uint256 finalTotalSupply = market.getMarketState().totalSupply;
+        uint256 finalTotalSupply = market.getPoolState().totalSupply;
         assertGt(finalTotalSupply, initialTotalSupply, "totalSupply should grow from interest");
 
         // Bob's withdrawal value (shares * totalSupply / totalShares) should be higher
@@ -64,14 +64,14 @@ contract SupplyEarn is E2EBase {
     }
 
     function test_multipleSuppliers_earningProportionally() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
 
         // Carol supplies 50K USDC (same as Bob)
         address carol = makeAddr("carol");
         _fundUsdc(carol, 50_000e6);
         vm.startPrank(carol);
-        IERC20(Constants.USDC).approve(marketAddr, 50_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 50_000e6);
         market.supply(50_000e6);
         vm.stopPrank();
 
@@ -80,7 +80,7 @@ contract SupplyEarn is E2EBase {
         console.log("Bob shares: %s, Carol shares: %s", bobShares, carolShares);
 
         // Snapshot pre-borrow totalSupply
-        uint256 totalSupplyBefore = market.getMarketState().totalSupply;
+        uint256 totalSupplyBefore = market.getPoolState().totalSupply;
 
         // Alice borrows
         uint256 tokenId = _createV3Position(alice, 2 ether, 4000e6);
@@ -96,7 +96,7 @@ contract SupplyEarn is E2EBase {
         market.accrueInterest();
 
         // Both earn proportionally to their shares
-        uint256 totalSupplyAfter = market.getMarketState().totalSupply;
+        uint256 totalSupplyAfter = market.getPoolState().totalSupply;
         uint256 totalShares = market.totalShares();
 
         // totalSupply must grow monotonically after interest accrual
@@ -119,8 +119,8 @@ contract SupplyEarn is E2EBase {
     }
 
     function test_withdrawAfterEarning() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market market = Market(marketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
 
         uint256 bobShares = market.shares(bob);
 
@@ -141,7 +141,7 @@ contract SupplyEarn is E2EBase {
         uint256 debt = lendingEngine.getDebt(positionId);
         _fundUsdc(alice, debt);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);
         vm.stopPrank();
 

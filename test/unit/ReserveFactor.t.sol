@@ -6,8 +6,8 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {ACLManager} from "../../src/core/ACLManager.sol";
 import {ProtocolCore} from "../../src/core/ProtocolCore.sol";
 import {FeeCollector} from "../../src/core/FeeCollector.sol";
-import {Market} from "../../src/markets/Market.sol";
-import {IMarket} from "../../src/interfaces/IMarket.sol";
+import {LendingPool} from "../../src/markets/LendingPool.sol";
+import {ILendingPool} from "../../src/interfaces/ILendingPool.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
@@ -18,7 +18,7 @@ contract ReserveFactorTest is Test {
     ACLManager public aclManager;
     ProtocolCore public core;
     FeeCollector public fc;
-    Market public market;
+    LendingPool public market;
     MockERC20 public usdc;
     InterestRateModel public irm;
 
@@ -37,22 +37,13 @@ contract ReserveFactorTest is Test {
         fc = new FeeCollector(address(core), treasury, insurance);
 
         // Deploy Market proxy
-        Market marketImpl = new Market();
-        IMarket.MarketConfig memory config = IMarket.MarketConfig({
-            lpType: ILPAdapter.LPType.UniswapV3,
-            borrowAsset: address(usdc),
-            maxLtv: 6500,
-            liquidationThreshold: 7500,
-            liquidationBonus: 500,
-            borrowCap: 10_000_000e18,
-            minPoolTvl: 0,
-            minPoolAge: 0
-        });
+        LendingPool marketImpl = new LendingPool();
+        ILendingPool.PoolConfig memory config = ILendingPool.PoolConfig({borrowAsset: address(usdc)});
 
-        market = Market(
+        market = LendingPool(
             address(
                 new ERC1967Proxy(
-                    address(marketImpl), abi.encodeCall(Market.initialize, (config, address(irm), address(core)))
+                    address(marketImpl), abi.encodeCall(LendingPool.initialize, (config, address(irm), address(core)))
                 )
             )
         );
@@ -60,7 +51,7 @@ contract ReserveFactorTest is Test {
         // Grant LENDING_ENGINE to this test contract so we can call transferOut/transferIn
         vm.startPrank(owner);
         aclManager.addLendingEngine(address(this));
-        core.registerMarket(address(market));
+        core.registerPool(address(usdc), address(market));
         market.setReserveFactor(2000); // 20%
         market.setFeeCollector(address(fc));
         vm.stopPrank();
@@ -82,12 +73,12 @@ contract ReserveFactorTest is Test {
         // Advance time — 1 year
         vm.warp(block.timestamp + 365 days);
 
-        IMarket.MarketState memory stateBefore = market.getMarketState();
+        ILendingPool.PoolState memory stateBefore = market.getPoolState();
         uint256 totalBorrowBefore = stateBefore.totalBorrow;
 
         market.accrueInterest();
 
-        IMarket.MarketState memory stateAfter = market.getMarketState();
+        ILendingPool.PoolState memory stateAfter = market.getPoolState();
         uint256 interestAccrued = stateAfter.totalBorrow - totalBorrowBefore;
 
         // Protocol should get 20% of interest
@@ -111,9 +102,9 @@ contract ReserveFactorTest is Test {
         market.transferOut(borrower, 50_000e18);
         vm.warp(block.timestamp + 365 days);
 
-        IMarket.MarketState memory stateBefore = market.getMarketState();
+        ILendingPool.PoolState memory stateBefore = market.getPoolState();
         market.accrueInterest();
-        IMarket.MarketState memory stateAfter = market.getMarketState();
+        ILendingPool.PoolState memory stateAfter = market.getPoolState();
 
         uint256 interestAccrued = stateAfter.totalBorrow - stateBefore.totalBorrow;
 
@@ -167,21 +158,12 @@ contract ReserveFactorTest is Test {
 
     function test_distributeReserves_revertsNoFeeCollector() public {
         // Deploy market without feeCollector set
-        Market marketImpl2 = new Market();
-        IMarket.MarketConfig memory config2 = IMarket.MarketConfig({
-            lpType: ILPAdapter.LPType.UniswapV3,
-            borrowAsset: address(usdc),
-            maxLtv: 6500,
-            liquidationThreshold: 7500,
-            liquidationBonus: 500,
-            borrowCap: 10_000_000e18,
-            minPoolTvl: 0,
-            minPoolAge: 0
-        });
-        Market market2 = Market(
+        LendingPool marketImpl2 = new LendingPool();
+        ILendingPool.PoolConfig memory config2 = ILendingPool.PoolConfig({borrowAsset: address(usdc)});
+        LendingPool market2 = LendingPool(
             address(
                 new ERC1967Proxy(
-                    address(marketImpl2), abi.encodeCall(Market.initialize, (config2, address(irm), address(core)))
+                    address(marketImpl2), abi.encodeCall(LendingPool.initialize, (config2, address(irm), address(core)))
                 )
             )
         );
@@ -285,7 +267,7 @@ contract ReserveFactorTest is Test {
         vm.warp(block.timestamp + 180 days);
         market.accrueInterest();
 
-        IMarket.MarketState memory s = market.getMarketState();
+        ILendingPool.PoolState memory s = market.getPoolState();
         uint256 reserves = market.protocolReserves();
 
         // totalBorrow should equal what was originally supplied + all interest

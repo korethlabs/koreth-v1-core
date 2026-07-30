@@ -3,13 +3,14 @@ pragma solidity ^0.8.26;
 
 import {ProtocolCore} from "../core/ProtocolCore.sol";
 import {ACLManager} from "../core/ACLManager.sol";
+import {ILPAdapter} from "../interfaces/ILPAdapter.sol";
 
 /// @title CircuitBreaker
-/// @notice Granular halt mechanism for individual markets and pools.
+/// @notice Granular halt mechanism for individual collateral types and pools.
 /// @dev EmergencyAdmin/Keeper can freeze/pause. Only PoolAdmin can unfreeze/unpause.
-///      Per-market halts use `marketFrozen` (Aave-style: blocks new risk, always allows
+///      Per-collateral-type halts use `collateralFrozen` (Aave-style: blocks new risk, always allows
 ///      withdraw/repay/liquidate so users can exit). Per-pool halts use `poolPaused`.
-///      A full protocol stop is `ProtocolCore.pause()`. There is deliberately NO per-market
+///      A full protocol stop is `ProtocolCore.pause()`. There is deliberately NO per-collateral
 ///      "block-everything" switch: halting user exits (withdraw/repay) would trap funds.
 contract CircuitBreaker {
     ProtocolCore public immutable core;
@@ -17,12 +18,14 @@ contract CircuitBreaker {
     // Per-pool pause state
     mapping(address => bool) public poolPaused;
 
-    // Frozen state (Aave V3 pattern): blocks deposits/borrows/supply, allows withdraw/repay/liquidate
-    mapping(uint256 => bool) public marketFrozen;
+    // Frozen state (Aave V3 pattern): blocks deposits/borrows against this collateral, allows
+    // withdraw/repay/liquidate. Keyed by LP collateral type in the unified-pool model, so it does
+    // not reach lender-side LendingPool.supply() — that is gated per pool by poolPaused.
+    mapping(ILPAdapter.LPType => bool) public collateralFrozen;
 
     // --- Events ---
-    event MarketFrozen(uint256 indexed marketId, string reason);
-    event MarketUnfrozen(uint256 indexed marketId);
+    event CollateralFrozen(ILPAdapter.LPType indexed lpType, string reason);
+    event CollateralUnfrozen(ILPAdapter.LPType indexed lpType);
     event PoolPaused(address indexed pool, string reason);
     event PoolUnpaused(address indexed pool);
 
@@ -61,17 +64,18 @@ contract CircuitBreaker {
         emit PoolUnpaused(pool);
     }
 
-    /// @notice Freeze a market — blocks new risk (deposit/borrow/addCollateral) but allows withdraw/repay/liquidate/supply
+    /// @notice Freeze a collateral type — blocks new risk (deposit/borrow/addCollateral) but allows
+    ///         withdraw/repay/liquidate/supply
     /// @dev Use for token depegs, oracle issues, or exploit response (Aave V3 frozen reserve pattern)
-    function freezeMarket(uint256 marketId, string calldata reason) external onlyGuardianOrKeeper {
-        marketFrozen[marketId] = true;
-        emit MarketFrozen(marketId, reason);
+    function freezeCollateral(ILPAdapter.LPType lpType, string calldata reason) external onlyGuardianOrKeeper {
+        collateralFrozen[lpType] = true;
+        emit CollateralFrozen(lpType, reason);
     }
 
-    /// @notice Unfreeze a market (PoolAdmin only — requires timelock)
-    function unfreezeMarket(uint256 marketId) external onlyPoolAdmin {
-        marketFrozen[marketId] = false;
-        emit MarketUnfrozen(marketId);
+    /// @notice Unfreeze a collateral type (PoolAdmin only — requires timelock)
+    function unfreezeCollateral(ILPAdapter.LPType lpType) external onlyPoolAdmin {
+        collateralFrozen[lpType] = false;
+        emit CollateralUnfrozen(lpType);
     }
 
     /// @notice Check if a pool's positions can be managed (global pause + pool pause)

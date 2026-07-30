@@ -28,7 +28,7 @@ contract Emergency is E2EBase {
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId2);
         vm.expectRevert("PAUSED");
-        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId2, 0, ethUsdcMarketId);
+        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId2, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         // Borrow should also fail
@@ -77,7 +77,7 @@ contract Emergency is E2EBase {
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId);
         vm.expectRevert("POOL_CIRCUIT_BREAKER");
-        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, ethUsdcMarketId);
+        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         console.log("=== Pool Circuit Breaker Blocks Deposits ===");

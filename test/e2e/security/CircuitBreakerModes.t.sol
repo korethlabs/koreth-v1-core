@@ -20,7 +20,7 @@ contract CircuitBreakerModes is E2EBase {
 
         // Freeze market
         vm.prank(guardian);
-        circuitBreaker.freezeMarket(ethUsdcMarketId, "Oracle anomaly");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "Oracle anomaly");
 
         // New deposit should revert
         _fundWeth(alice, 1 ether);
@@ -28,8 +28,8 @@ contract CircuitBreakerModes is E2EBase {
         uint256 tokenId2 = _createV3Position(alice, 1 ether, 2000e6);
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId2);
-        vm.expectRevert("MARKET_FROZEN");
-        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId2, 0, ethUsdcMarketId);
+        vm.expectRevert("COLLATERAL_FROZEN");
+        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId2, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         // Withdraw should still work (risk-reducing)
@@ -57,18 +57,18 @@ contract CircuitBreakerModes is E2EBase {
 
         // Freeze market
         vm.prank(guardian);
-        circuitBreaker.freezeMarket(ethUsdcMarketId, "Token depeg");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "Token depeg");
 
         // New borrow should revert
         vm.prank(alice);
-        vm.expectRevert("MARKET_FROZEN");
+        vm.expectRevert("COLLATERAL_FROZEN");
         lendingEngine.borrow(positionId, 100e6);
 
         // Repay should still work (risk-reducing)
         _fundUsdc(alice, debtBefore);
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address poolAddr = address(usdcPool);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);
         vm.stopPrank();
 
@@ -91,7 +91,7 @@ contract CircuitBreakerModes is E2EBase {
 
         // Freeze market
         vm.prank(guardian);
-        circuitBreaker.freezeMarket(ethUsdcMarketId, "Emergency response");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "Emergency response");
 
         // Crash ETH price to make position liquidatable
         _crashEthPrice(5000 ether);
@@ -137,7 +137,7 @@ contract CircuitBreakerModes is E2EBase {
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId2);
         vm.expectRevert("PAUSED");
-        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId2, 0, ethUsdcMarketId);
+        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId2, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         // Borrow should revert
@@ -152,9 +152,9 @@ contract CircuitBreakerModes is E2EBase {
 
         // Repay should revert
         _fundUsdc(alice, 1000e6);
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address poolAddr = address(usdcPool);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         vm.expectRevert("PAUSED");
         lendingEngine.repay(positionId, 100e6);
         vm.stopPrank();
@@ -182,7 +182,7 @@ contract CircuitBreakerModes is E2EBase {
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId);
         vm.expectRevert("POOL_CIRCUIT_BREAKER");
-        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, ethUsdcMarketId);
+        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         // Verify isPoolOperationAllowed returns false
@@ -197,7 +197,7 @@ contract CircuitBreakerModes is E2EBase {
 
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId);
-        uint256 posId = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, ethUsdcMarketId);
+        uint256 posId = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         assertGt(_getPositionValue(posId), 0, "Position should have value after unpause");
@@ -210,26 +210,26 @@ contract CircuitBreakerModes is E2EBase {
     function test_unfreezeRequiresAdmin() public {
         // Guardian can freeze
         vm.prank(guardian);
-        circuitBreaker.freezeMarket(ethUsdcMarketId, "Emergency");
-        assertTrue(circuitBreaker.marketFrozen(ethUsdcMarketId), "Market should be frozen");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "Emergency");
+        assertTrue(circuitBreaker.collateralFrozen(ILPAdapter.LPType.UniswapV3), "Market should be frozen");
 
         // Guardian cannot unfreeze
         vm.prank(guardian);
         vm.expectRevert("NOT_POOL_ADMIN");
-        circuitBreaker.unfreezeMarket(ethUsdcMarketId);
+        circuitBreaker.unfreezeCollateral(ILPAdapter.LPType.UniswapV3);
 
         // Alice (random user) cannot unfreeze
         vm.prank(alice);
         vm.expectRevert("NOT_POOL_ADMIN");
-        circuitBreaker.unfreezeMarket(ethUsdcMarketId);
+        circuitBreaker.unfreezeCollateral(ILPAdapter.LPType.UniswapV3);
 
         // Market is still frozen
-        assertTrue(circuitBreaker.marketFrozen(ethUsdcMarketId), "Market should still be frozen");
+        assertTrue(circuitBreaker.collateralFrozen(ILPAdapter.LPType.UniswapV3), "Market should still be frozen");
 
         // Deployer (poolAdmin) can unfreeze
         vm.prank(deployer);
-        circuitBreaker.unfreezeMarket(ethUsdcMarketId);
-        assertFalse(circuitBreaker.marketFrozen(ethUsdcMarketId), "Market should be unfrozen");
+        circuitBreaker.unfreezeCollateral(ILPAdapter.LPType.UniswapV3);
+        assertFalse(circuitBreaker.collateralFrozen(ILPAdapter.LPType.UniswapV3), "Market should be unfrozen");
 
         console.log("=== unfreeze: only poolAdmin can unfreeze ===");
     }

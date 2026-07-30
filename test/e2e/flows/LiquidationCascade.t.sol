@@ -111,7 +111,7 @@ contract LiquidationCascade is E2EBase {
             abi.encode(uint80(1), int256(100_000_000), block.timestamp, block.timestamp, uint80(1))
         );
 
-        lendingEngine.accrueInterest(ethUsdcMarketId);
+        lendingEngine.accrueInterest(usdcBorrowAsset);
 
         uint256 hfAfterInterest = _getHealthFactor(positionId);
         uint256 debtAfterInterest = _getDebt(positionId);
@@ -134,17 +134,11 @@ contract LiquidationCascade is E2EBase {
 
     /// @notice Cross-market: Alice borrows from V3 market AND V2 market - positions are independent
     function test_crossMarket_V3andV2() public {
-        vm.startPrank(deployer);
-        (uint256 v2MarketId,) = marketFactory.createMarket(
-            ILPAdapter.LPType.UniswapV2, Constants.USDC, 6500, 7500, 500, 10_000_000e6, 0, 0, "volatile"
-        );
-        vm.stopPrank();
-
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = core.markets(v2MarketId);
+        address poolAddr = address(usdcPool);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        IMarket(v2MarketAddr).supply(50_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 50_000e6);
+        ILendingPool(poolAddr).supply(50_000e6);
         vm.stopPrank();
 
         // V3 position
@@ -161,7 +155,7 @@ contract LiquidationCascade is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 1 ether, 2000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 v2PosId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 v2PosId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 5);
         uint256 _v2Max = lendingEngine.getMaxBorrow(v2PosId);
@@ -172,9 +166,8 @@ contract LiquidationCascade is E2EBase {
 
         // Repay V3 - V2 should be unaffected
         _fundUsdc(alice, _getDebt(v3PosId));
-        address v3MarketAddr = core.markets(ethUsdcMarketId);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(v3MarketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(v3PosId, type(uint256).max);
         vm.stopPrank();
 

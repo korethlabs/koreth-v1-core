@@ -10,11 +10,13 @@ import {LendingEngine} from "../../src/core/LendingEngine.sol";
 import {LiquidationEngine} from "../../src/core/LiquidationEngine.sol";
 import {FeeCollector} from "../../src/core/FeeCollector.sol";
 import {LPOracleHub} from "../../src/oracle/LPOracleHub.sol";
-import {Market} from "../../src/markets/Market.sol";
+import {LendingPool} from "../../src/markets/LendingPool.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
-import {IMarket} from "../../src/interfaces/IMarket.sol";
+import {ILendingPool} from "../../src/interfaces/ILendingPool.sol";
+import {RiskManager} from "../../src/security/RiskManager.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
@@ -32,7 +34,8 @@ contract FullLifecycleTest is Test {
     LiquidationEngine public liq;
     FeeCollector public fc;
     LPOracleHub public oracleHub;
-    Market public market;
+    LendingPool public market;
+    RiskManager public riskManager;
     InterestRateModel public irm;
 
     // --- Mocks ---
@@ -53,7 +56,7 @@ contract FullLifecycleTest is Test {
     address public treasury = makeAddr("treasury");
     address public insurance = makeAddr("insurance");
 
-    uint256 public marketId;
+    address public borrowAsset;
 
     function setUp() public {
         // --- Deploy tokens ---
@@ -107,20 +110,12 @@ contract FullLifecycleTest is Test {
         irm = new InterestRateModel(200, 600, 10_000, 8000);
 
         // --- Market (UUPS proxy via real Market, not mock) ---
-        IMarket.MarketConfig memory mConfig = IMarket.MarketConfig({
-            lpType: ILPAdapter.LPType.UniswapV2,
-            borrowAsset: address(usdc),
-            maxLtv: 6500,
-            liquidationThreshold: 7500,
-            liquidationBonus: 500,
-            borrowCap: 10_000_000e18,
-            minPoolTvl: 5_000_000e18,
-            minPoolAge: 0
-        });
-        market = Market(
+        ILendingPool.PoolConfig memory mConfig = ILendingPool.PoolConfig({borrowAsset: address(usdc)});
+        market = LendingPool(
             address(
                 new ERC1967Proxy(
-                    address(new Market()), abi.encodeCall(Market.initialize, (mConfig, address(irm), address(core)))
+                    address(new LendingPool()),
+                    abi.encodeCall(LendingPool.initialize, (mConfig, address(irm), address(core)))
                 )
             )
         );
@@ -133,6 +128,8 @@ contract FullLifecycleTest is Test {
         adapter.setTotalLiquidity(100e18);
         oracle = new MockLPOracle();
         oracle.setPrice(50_000e18); // $50K collateral value
+        riskManager = new RiskManager(address(core));
+        borrowAsset = address(usdc);
 
         // --- Register everything and grant roles ---
         vm.startPrank(owner);
@@ -141,10 +138,18 @@ contract FullLifecycleTest is Test {
         aclManager.addLiquidationEngine(address(liq));
         aclManager.addPositionManager(address(pm));
         aclManager.addKeeper(address(liq));
+        aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
         core.whitelistPool(lpToken);
-        marketId = core.registerMarket(address(market));
+        core.registerPool(address(usdc), address(market));
+        core.setRiskManager(address(riskManager));
+        // V2 collateral: 65% LTV / 75% liq / 5% bonus / no haircut / $10M borrow cap
+        riskManager.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV2, RiskConfig.config(6500, 7500, 500, 0, 10_000_000e18, true)
+        );
+        // Raise position value cap above the borrow-cap test's $15M collateral.
+        riskManager.setMaxPositionValue(1_000_000_000e18);
         pm.setLendingEngine(address(le));
         liq.setFeeCollector(address(fc));
         vm.stopPrank();
@@ -166,7 +171,7 @@ contract FullLifecycleTest is Test {
 
     function _depositLP(address user, uint256 tokenId, uint256 amount) internal returns (uint256 posId) {
         vm.prank(user);
-        posId = pm.deposit(lpToken, tokenId, amount, marketId);
+        posId = pm.deposit(lpToken, tokenId, amount, borrowAsset);
         vm.roll(block.number + 2); // Past borrow cooldown
     }
 
@@ -253,7 +258,7 @@ contract FullLifecycleTest is Test {
         market.accrueInterest();
 
         // Lender's shares should be worth more than original deposit
-        IMarket.MarketState memory mState = market.getMarketState();
+        ILendingPool.PoolState memory mState = market.getPoolState();
         assertGt(mState.totalSupply, 100_000e18, "Total supply should grow from interest");
     }
 
@@ -369,7 +374,7 @@ contract FullLifecycleTest is Test {
         assertEq(le.getDebt(posId2), 15_000e18);
 
         // Market state reflects both
-        IMarket.MarketState memory mState = market.getMarketState();
+        ILendingPool.PoolState memory mState = market.getPoolState();
         assertEq(mState.totalBorrow, 35_000e18);
 
         // Alice repays, Bob doesn't
@@ -405,7 +410,7 @@ contract FullLifecycleTest is Test {
         market.accrueInterest();
 
         // Total supply should be > 100K (interest added)
-        IMarket.MarketState memory mState = market.getMarketState();
+        ILendingPool.PoolState memory mState = market.getPoolState();
         assertGt(mState.totalSupply, 100_000e18);
 
         // Both lenders' shares should be redeemable for more than they deposited
@@ -436,7 +441,7 @@ contract FullLifecycleTest is Test {
 
         // Try to borrow $8M — would put total at $11M, exceeding $10M cap
         vm.prank(bob);
-        vm.expectRevert("BORROW_CAP_EXCEEDED");
+        vm.expectRevert("LP_TYPE_CAP_REACHED");
         le.borrow(posId2, 8_000_000e18);
 
         // But $6M works (total = $9M, under cap)
@@ -453,7 +458,7 @@ contract FullLifecycleTest is Test {
 
         // Deposit LP without advancing blocks
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 0, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 0, 100e18, borrowAsset);
 
         // Try to borrow in same block — should fail
         vm.prank(alice);
@@ -702,10 +707,10 @@ contract FullLifecycleTest is Test {
         vm.expectRevert("NOT_POOL_ADMIN");
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, makeAddr("x"));
 
-        // Random user can't update market config
+        // Random user can't update collateral risk config
         vm.prank(bob);
         vm.expectRevert("NOT_RISK_ADMIN");
-        market.updateConfig(7000, 8000, 600, 20_000_000e18);
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
     }
 
     // ========================================================

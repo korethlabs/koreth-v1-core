@@ -7,16 +7,15 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ProtocolCore} from "../src/core/ProtocolCore.sol";
 import {LiquidationEngine} from "../src/core/LiquidationEngine.sol";
-import {Market} from "../src/markets/Market.sol";
-import {IMarket} from "../src/interfaces/IMarket.sol";
+import {RiskManager} from "../src/security/RiskManager.sol";
 import {ILPAdapter} from "../src/interfaces/ILPAdapter.sol";
 import {IWETH, IUniswapV2SwapRouter} from "./local/ISeedExternal.sol";
 
 /// @title SeedLiquidate
 /// @notice Produces a liquidation for the demo: the deployer (still RISK_ADMIN on the local fork)
-///         temporarily drops the V2->USDC market threshold so a borrowed position goes underwater,
+///         temporarily drops the V2 collateral threshold so a borrowed position goes underwater,
 ///         a liquidator (account #5) fully liquidates it, then the config is restored. Result: one
-///         LiquidationEvent + a `liquidated` position, with the market config back to normal.
+///         LiquidationEvent + a `liquidated` position, with the collateral config back to normal.
 /// @dev    Run last (after SeedBorrow): forge script script/SeedLiquidate.s.sol --broadcast
 contract SeedLiquidate is Script {
     using stdJson for string;
@@ -38,11 +37,21 @@ contract SeedLiquidate is Script {
         string memory json = vm.readFile("./deployments/local.json");
         ProtocolCore core = ProtocolCore(json.readAddress(".core"));
         LiquidationEngine liqEngine = LiquidationEngine(json.readAddress(".liquidationEngine"));
-        address marketAddr = _findMarket(core, ILPAdapter.LPType.UniswapV2, USDC);
+        RiskManager riskManager = RiskManager(json.readAddress(".riskManager"));
 
-        // 1. Deployer drops the threshold so the position is deeply underwater (full-liquidation zone).
+        // 1. Deployer drops the V2 collateral threshold so the position is deeply underwater
+        //    (full-liquidation zone). Risk params are per-lpType in the shared-pool model.
+        //    Snapshot the live config and override only LTV/threshold — re-typing the whole struct
+        //    here would silently drift from what DeployLocal actually set (and get the units wrong:
+        //    borrowCap is 18-dec USD, not borrow-asset decimals).
+        RiskManager.CollateralConfig memory originalV2 = riskManager.getCollateralConfig(ILPAdapter.LPType.UniswapV2);
+
+        RiskManager.CollateralConfig memory underwaterV2 = originalV2;
+        underwaterV2.maxLtv = 50;
+        underwaterV2.liquidationThreshold = 100;
+
         vm.startBroadcast(deployerKey);
-        Market(marketAddr).updateConfig(50, 100, 500, 100_000e6);
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, underwaterV2);
         vm.stopBroadcast();
 
         (bool canLiq, uint256 maxRepay) = liqEngine.isLiquidatable(POSITION_ID);
@@ -60,32 +69,13 @@ contract SeedLiquidate is Script {
         liqEngine.liquidate(POSITION_ID, maxRepay, block.timestamp + 3600, 0, 0);
         vm.stopBroadcast();
 
-        // 3. Deployer restores the normal config (protects the other positions).
+        // 3. Deployer restores the exact V2 collateral config (protects the other positions).
         vm.startBroadcast(deployerKey);
-        Market(marketAddr).updateConfig(6500, 7500, 500, 100_000e6);
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, originalV2);
         vm.stopBroadcast();
 
         console.log("=== Liquidation complete ===");
         console.log("Liquidated position:", POSITION_ID);
         console.log("Repaid (USDC):      ", maxRepay);
-    }
-
-    function _findMarket(
-        ProtocolCore core,
-        ILPAdapter.LPType lpType,
-        address borrowAsset
-    )
-        internal
-        view
-        returns (address addr)
-    {
-        uint256 count = core.nextMarketId();
-        for (uint256 i = 0; i < count; i++) {
-            address m = core.markets(i);
-            if (m == address(0)) continue;
-            IMarket.MarketConfig memory cfg = IMarket(m).getConfig();
-            if (cfg.lpType == lpType && cfg.borrowAsset == borrowAsset) return m;
-        }
-        revert("MARKET_NOT_FOUND");
     }
 }

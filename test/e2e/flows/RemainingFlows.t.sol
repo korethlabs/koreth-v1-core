@@ -9,30 +9,21 @@ import {IPositionManager} from "../../../src/interfaces/IPositionManager.sol";
 ///         and remaining coverage gaps.
 /// @dev All tests run against real Uniswap on forked mainnet via Anvil.
 contract RemainingFlows is E2EBase {
-    uint256 public v2MarketId;
-
     function setUp() public override {
         super.setUp();
 
-        // Create V2 market
         vm.startPrank(deployer);
-        (v2MarketId,) = marketFactory.createMarket(
-            ILPAdapter.LPType.UniswapV2, Constants.USDC, 6500, 7500, 500, 10_000_000e6, 0, 0, "volatile"
-        );
         // Set reserve factor for deficit tests
-        Market(core.markets(ethUsdcMarketId)).setReserveFactor(2000);
-        Market(core.markets(v2MarketId)).setReserveFactor(2000);
+        LendingPool(address(usdcPool)).setReserveFactor(2000);
         // Wire FeeCollector
-        Market(core.markets(ethUsdcMarketId)).setFeeCollector(address(feeCollector));
-        Market(core.markets(v2MarketId)).setFeeCollector(address(feeCollector));
+        LendingPool(address(usdcPool)).setFeeCollector(address(feeCollector));
         vm.stopPrank();
 
-        // Fund V2 market
+        // Fund the shared USDC pool
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = core.markets(v2MarketId);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        IMarket(v2MarketAddr).supply(50_000e6);
+        IERC20(Constants.USDC).approve(address(usdcPool), 50_000e6);
+        ILendingPool(address(usdcPool)).supply(50_000e6);
         vm.stopPrank();
     }
 
@@ -97,7 +88,7 @@ contract RemainingFlows is E2EBase {
 
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 
@@ -146,7 +137,7 @@ contract RemainingFlows is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 
@@ -155,10 +146,10 @@ contract RemainingFlows is E2EBase {
         vm.prank(alice);
         lendingEngine.borrow(positionId, borrowAmount);
 
-        address v2MarketAddr = core.markets(v2MarketId);
-        Market market = Market(v2MarketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
         uint256 deficitBefore = market.deficit();
-        uint256 totalBorrowBefore = market.getMarketState().totalBorrow;
+        uint256 totalBorrowBefore = market.getPoolState().totalBorrow;
 
         // Crash collateral to near zero — position deeply underwater
         PositionManager.Position memory pos = positionManager.getPosition(positionId);
@@ -179,7 +170,7 @@ contract RemainingFlows is E2EBase {
         uint256 remainingDebt = lendingEngine.getDebt(positionId);
         uint256 deficitAfter = market.deficit();
         // Repaying + writing off the remainder must reduce the market's total borrows.
-        uint256 totalBorrowAfter = market.getMarketState().totalBorrow;
+        uint256 totalBorrowAfter = market.getPoolState().totalBorrow;
         assertLt(totalBorrowAfter, totalBorrowBefore, "totalBorrow must decrease after repay + writeoff");
 
         // Position should be liquidated
@@ -204,14 +195,14 @@ contract RemainingFlows is E2EBase {
     // ========================================================================
 
     function test_eliminateDeficit_reservesCoverBadDebt() public {
-        address v2MarketAddr = core.markets(v2MarketId);
-        Market market = Market(v2MarketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
 
         // First: generate some protocol reserves via interest
         uint256 lpAmount1 = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount1);
-        uint256 posId1 = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount1, v2MarketId);
+        uint256 posId1 = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount1, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 
@@ -232,7 +223,7 @@ contract RemainingFlows is E2EBase {
         uint256 lpAmount2 = _createV2Position(alice, 0.3 ether, 600e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount2);
-        uint256 posId2 = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount2, v2MarketId);
+        uint256 posId2 = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount2, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 3);
 
@@ -318,7 +309,7 @@ contract RemainingFlows is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 
@@ -360,14 +351,14 @@ contract RemainingFlows is E2EBase {
     // ========================================================================
 
     function test_lenderEarnsProfit_withdrawsMore() public {
-        address marketAddr = core.markets(v2MarketId);
-        Market market = Market(marketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
 
         // Carol supplies 10K USDC
         address carol = makeAddr("carol");
         _fundUsdc(carol, 10_000e6);
         vm.startPrank(carol);
-        IERC20(Constants.USDC).approve(marketAddr, 10_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 10_000e6);
         market.supply(10_000e6);
         vm.stopPrank();
 
@@ -378,7 +369,7 @@ contract RemainingFlows is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 
@@ -394,7 +385,7 @@ contract RemainingFlows is E2EBase {
         uint256 debt = lendingEngine.getDebt(positionId);
         _fundUsdc(alice, debt);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);
         vm.stopPrank();
 
@@ -419,7 +410,7 @@ contract RemainingFlows is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 

@@ -15,18 +15,19 @@ import {UniswapV3Oracle} from "../../src/oracle/UniswapV3Oracle.sol";
 import {UniswapV2Oracle} from "../../src/oracle/UniswapV2Oracle.sol";
 import {PriceValidator} from "../../src/oracle/PriceValidator.sol";
 import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
-import {Market} from "../../src/markets/Market.sol";
-import {MarketFactory} from "../../src/markets/MarketFactory.sol";
+import {LendingPool} from "../../src/markets/LendingPool.sol";
+import {PoolFactory} from "../../src/markets/PoolFactory.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {CircuitBreaker} from "../../src/security/CircuitBreaker.sol";
 import {RiskManager} from "../../src/security/RiskManager.sol";
 import {UniswapV3Adapter} from "../../src/adapters/UniswapV3Adapter.sol";
 import {UniswapV2Adapter} from "../../src/adapters/UniswapV2Adapter.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
-import {IMarket} from "../../src/interfaces/IMarket.sol";
+import {ILendingPool} from "../../src/interfaces/ILendingPool.sol";
 import {IERC20} from "../../src/interfaces/IERC20.sol";
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 import {Constants} from "./Constants.sol";
+import {RiskConfig} from "./RiskConfig.sol";
 
 /// @title ForkTestBase
 /// @notice Base contract for all fork tests — deploys the full protocol against forked mainnet
@@ -55,15 +56,17 @@ abstract contract ForkTestBase is Test {
     RiskManager public riskManager;
     PriceFeedRegistry public priceFeedRegistry;
     TimelockController public timelock;
-    MarketFactory public marketFactory;
+    PoolFactory public poolFactory;
     InterestRateModel public volatileModel;
 
     // --- Adapters ---
     UniswapV3Adapter public v3Adapter;
     UniswapV2Adapter public v2Adapter;
 
-    // --- Market ---
-    uint256 public ethUsdcMarketId;
+    // --- Shared pool ---
+    /// @notice The single shared USDC lending pool's borrow asset (pool key).
+    address public usdcBorrowAsset;
+    LendingPool public usdcPool;
 
     // --- Test accounts ---
     address public deployer = makeAddr("deployer");
@@ -170,35 +173,36 @@ abstract contract ForkTestBase is Test {
         core.whitelistPool(Constants.UNI_V3_WETH_USDC_3000);
         core.whitelistPool(Constants.UNI_V2_WETH_USDC);
 
-        // 11. Interest rate model + Market
+        // 11. Wire RiskManager + PriceFeedRegistry (via ProtocolCore) — RiskManager is the source of
+        //     truth for collateral risk params in the shared-pool model, so wire it before the pool.
+        core.setRiskManager(address(riskManager));
+        core.setPriceFeedRegistry(address(priceFeedRegistry));
+
+        // 12. Interest rate model + shared USDC pool via PoolFactory
         volatileModel = new InterestRateModel(200, 600, 10_000, 8000);
-        Market marketImpl = new Market();
-        marketFactory = new MarketFactory(address(core), address(marketImpl));
-        marketFactory.setInterestRateModel("volatile", address(volatileModel));
-        core.setMarketFactory(address(marketFactory));
+        LendingPool poolImpl = new LendingPool();
+        poolFactory = new PoolFactory(address(core), address(poolImpl));
+        poolFactory.setInterestRateModel("volatile", address(volatileModel));
+        core.setPoolFactory(address(poolFactory));
 
-        // Create ETH/USDC market
-        (ethUsdcMarketId,) = marketFactory.createMarket(
-            ILPAdapter.LPType.UniswapV3,
-            Constants.USDC,
-            6500, // 65% max LTV
-            7500, // 75% liquidation threshold
-            500, // 5% liquidation bonus
-            10_000_000e6, // $10M borrow cap
-            5_000_000e18, // $5M min pool TVL
-            0, // 0 min pool age (for testing)
-            "volatile"
-        );
+        // PoolFactory forwards collateral configs to RiskManager and sets the pool reserve factor —
+        // grant it PoolAdmin (createPool) and RiskAdmin (whitelistCollateral/setReserveFactor).
+        aclManager.grantRole(aclManager.POOL_ADMIN(), address(poolFactory));
+        aclManager.addRiskAdmin(address(poolFactory));
 
-        // 12. Grant ACL roles
+        // Create the single shared USDC pool (0 reserve factor by default)
+        usdcBorrowAsset = Constants.USDC;
+        usdcPool = LendingPool(poolFactory.createPool(Constants.USDC, "volatile", 0));
+
+        // Whitelist V2/V3 collateral against the shared pool (65% LTV / 75% liq / 5% bonus / no haircut)
+        poolFactory.whitelistCollateral(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
+        poolFactory.whitelistCollateral(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
+
+        // 13. Grant ACL roles
         aclManager.addLendingEngine(address(lendingEngine));
         aclManager.addLiquidationEngine(address(liquidationEngine));
         aclManager.addPositionManager(address(positionManager));
         positionManager.setLendingEngine(address(lendingEngine));
-
-        // 14. Wire RiskManager + PriceFeedRegistry (via ProtocolCore)
-        core.setRiskManager(address(riskManager));
-        core.setPriceFeedRegistry(address(priceFeedRegistry));
         positionManager.setCircuitBreaker(address(circuitBreaker));
 
         // 15. Grant KEEPER to PriceValidator (so it can call CircuitBreaker.pausePool)

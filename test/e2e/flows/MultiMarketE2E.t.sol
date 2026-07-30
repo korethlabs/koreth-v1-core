@@ -6,24 +6,15 @@ import "../E2EBase.t.sol";
 /// @title MultiMarketE2E
 /// @notice E2E tests for same user borrowing across multiple markets (V3 + V2)
 contract MultiMarketE2E is E2EBase {
-    uint256 public v2MarketId;
-
     function setUp() public override {
         super.setUp();
 
-        // Create a V2 market
-        vm.startPrank(deployer);
-        (v2MarketId,) = marketFactory.createMarket(
-            ILPAdapter.LPType.UniswapV2, Constants.USDC, 6500, 7500, 500, 10_000_000e6, 0, 0, "volatile"
-        );
-        vm.stopPrank();
-
         // Fund Bob for V2 market
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = core.markets(v2MarketId);
+        address poolAddr = address(usdcPool);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        IMarket(v2MarketAddr).supply(50_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 50_000e6);
+        ILendingPool(poolAddr).supply(50_000e6);
         vm.stopPrank();
     }
 
@@ -32,15 +23,15 @@ contract MultiMarketE2E is E2EBase {
     // ========================================================================
 
     function test_sameUser_borrowFromTwoMarkets() public {
-        // Alice deposits V3 in ethUsdcMarketId
+        // Alice deposits V3, borrowing USDC
         uint256 tokenId = _createV3Position(alice, 1 ether, 2000e6);
         uint256 v3PosId = _depositV3(alice, tokenId);
 
-        // Alice deposits V2 in v2MarketId
+        // Alice deposits V2 in usdcBorrowAsset
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 v2PosId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 v2PosId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         // Advance past deposit block
@@ -87,7 +78,7 @@ contract MultiMarketE2E is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 v2PosId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 v2PosId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         vm.roll(block.number + 2);
@@ -127,7 +118,7 @@ contract MultiMarketE2E is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 v2PosId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 v2PosId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         vm.roll(block.number + 2);

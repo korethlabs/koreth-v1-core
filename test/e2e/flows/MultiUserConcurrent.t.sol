@@ -43,13 +43,13 @@ contract MultiUserConcurrent is E2EBase {
         uint256 tokenIdC = _createV3Position(charlie, 1 ether, 2000e6);
         vm.startPrank(charlie);
         nftManager.approve(address(v3Adapter), tokenIdC);
-        uint256 posC = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenIdC, 0, ethUsdcMarketId);
+        uint256 posC = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenIdC, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         uint256 tokenIdD = _createV3Position(dave, 1 ether, 2000e6);
         vm.startPrank(dave);
         nftManager.approve(address(v3Adapter), tokenIdD);
-        uint256 posD = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenIdD, 0, ethUsdcMarketId);
+        uint256 posD = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenIdD, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         // Cooldown: advance past all deposit blocks
@@ -89,7 +89,7 @@ contract MultiUserConcurrent is E2EBase {
         uint256 tokenIdC = _createV3Position(charlie, 1 ether, 2000e6);
         vm.startPrank(charlie);
         nftManager.approve(address(v3Adapter), tokenIdC);
-        uint256 posC = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenIdC, 0, ethUsdcMarketId);
+        uint256 posC = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenIdC, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         vm.roll(block.number + 5);

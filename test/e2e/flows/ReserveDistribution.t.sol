@@ -6,14 +6,14 @@ import "../E2EBase.t.sol";
 /// @title ReserveDistribution
 /// @notice E2E tests for Market.distributeReserves and FeeCollector distribution flows
 contract ReserveDistribution is E2EBase {
-    address public marketAddr;
-    Market public market;
+    address public poolAddr;
+    LendingPool public market;
 
     function setUp() public override {
         super.setUp();
 
-        marketAddr = core.markets(ethUsdcMarketId);
-        market = Market(marketAddr);
+        poolAddr = address(usdcPool);
+        market = LendingPool(poolAddr);
 
         vm.startPrank(deployer);
         // Set reserve factor (20% of interest goes to protocol)

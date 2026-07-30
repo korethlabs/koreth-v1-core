@@ -110,7 +110,7 @@ contract PoolHealthMonitorE2E is E2EBase {
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId);
         vm.expectRevert("POOL_CIRCUIT_BREAKER");
-        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, ethUsdcMarketId);
+        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, usdcBorrowAsset);
         vm.stopPrank();
     }
 

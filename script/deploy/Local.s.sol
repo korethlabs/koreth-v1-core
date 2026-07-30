@@ -12,8 +12,8 @@ interface IAggregatorRead {
 }
 
 /// @title DeployLocal
-/// @notice Deploy Koreth on a local anvil MAINNET FORK (Uniswap V2 + V3), with multi-stablecoin
-///         markets: V3->USDC and V2->USDC/USDT/DAI.
+/// @notice Deploy Koreth on a local anvil MAINNET FORK (Uniswap V2 + V3), with one shared lending
+///         pool per stablecoin (USDC, USDT, DAI) and V2 + V3 collateral enabled against all of them.
 /// @dev Run via script/local/run.sh, which loads SEED_MNEMONIC from the local .env (gitignored)
 ///      and derives DEPLOYER_PRIVATE_KEY. Never hardcode private keys in tracked files.
 ///      Writes deployments/local.json (named addresses + deploy block) for seeding + subgraph tooling.
@@ -55,7 +55,8 @@ contract DeployLocal is DeployBase {
             maxLtv: 6500, // 65%
             liquidationThreshold: 7500, // 75%
             liquidationBonus: 500, // 5%
-            borrowCap: 100_000e6, // $100K (6-dec USDC)
+            haircut: 500, // 5% discount on collateral value
+            borrowCap: 100_000e18, // $100K (18-dec USD, not borrow-asset decimals)
             // Governance — deployer as multisig, short delay
             multisig: deployer,
             timelockDelay: 60
@@ -80,11 +81,12 @@ contract DeployLocal is DeployBase {
         priceFeedRegistry.setPriceFeed(token, address(mock));
     }
 
-    /// @notice Create the extra borrow-asset markets (V2->USDT, V2->DAI). The base already made
-    ///         V3->USDC and V2->USDC. Collateral is any whitelisted V2 pool; borrow asset differs.
-    function _afterMarkets(ChainConfig memory cfg) internal override {
-        _createAndWireMarketFor(ILPAdapter.LPType.UniswapV2, USDT, cfg);
-        _createAndWireMarketFor(ILPAdapter.LPType.UniswapV2, DAI, cfg);
+    /// @notice Create the extra shared lending pools (USDT, DAI); the base already made USDC.
+    /// @dev No collateral re-whitelisting: CollateralConfig is keyed by LPType only, so the V2/V3
+    ///      types the base enabled are already borrowable against these pools too.
+    function _afterPools(ChainConfig memory) internal override {
+        _ensurePool(USDT);
+        _ensurePool(DAI);
     }
 
     /// @notice Fork tweak: real Chainlink feeds can lag the 1h default (e.g. USDC/USD updates
@@ -110,8 +112,7 @@ contract DeployLocal is DeployBase {
         vm.serializeAddress(obj, "liquidationEngine", address(liquidationEngine));
         vm.serializeAddress(obj, "feeCollector", address(feeCollector));
         vm.serializeAddress(obj, "riskManager", address(riskManager));
-        vm.serializeAddress(obj, "marketFactory", address(marketFactory));
-        vm.serializeAddress(obj, "marketRegistry", address(marketRegistry));
+        vm.serializeAddress(obj, "poolFactory", address(poolFactory));
         vm.serializeAddress(obj, "priceFeedRegistry", address(priceFeedRegistry));
         // Adapters (frontend needs these to approve LP before deposit)
         vm.serializeAddress(obj, "v2Adapter", core.adapters(ILPAdapter.LPType.UniswapV2));

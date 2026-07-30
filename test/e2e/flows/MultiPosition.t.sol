@@ -6,24 +6,15 @@ import "../E2EBase.t.sol";
 /// @title MultiPosition
 /// @notice Tests multiple positions from the same user across V2 and V3
 contract MultiPosition is E2EBase {
-    uint256 public v2MarketId;
-
     function setUp() public override {
         super.setUp();
 
-        // Create a V2 market
-        vm.startPrank(deployer);
-        (v2MarketId,) = marketFactory.createMarket(
-            ILPAdapter.LPType.UniswapV2, Constants.USDC, 6500, 7500, 500, 10_000_000e6, 0, 0, "volatile"
-        );
-        vm.stopPrank();
-
         // Fund Bob for V2 market
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = core.markets(v2MarketId);
+        address poolAddr = address(usdcPool);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        IMarket(v2MarketAddr).supply(50_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 50_000e6);
+        ILendingPool(poolAddr).supply(50_000e6);
         vm.stopPrank();
     }
 
@@ -36,7 +27,7 @@ contract MultiPosition is E2EBase {
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 v2PositionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 v2PositionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         // Both have value
@@ -102,9 +93,9 @@ contract MultiPosition is E2EBase {
         // Repay and withdraw position 1
         uint256 debt = _getDebt(positionId1);
         _fundUsdc(alice, debt);
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address poolAddr = address(usdcPool);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(positionId1, type(uint256).max);
         positionManager.withdraw(positionId1);
         vm.stopPrank();
@@ -113,19 +104,19 @@ contract MultiPosition is E2EBase {
         console.log("=== Independent Repay & Withdraw Test Passed ===");
     }
 
-    function test_multiplePositions_differentMarkets() public {
-        // Alice deposits V3 in ethUsdcMarketId
+    function test_multiplePositions_differentCollateralTypes() public {
+        // Alice deposits V3 collateral, borrowing USDC
         uint256 tokenId = _createV3Position(alice, 1 ether, 2000e6);
         uint256 v3PositionId = _depositV3(alice, tokenId);
 
-        // Alice deposits V2 in v2MarketId
+        // ...and V2 collateral, borrowing the same USDC
         uint256 lpAmount = _createV2Position(alice, 0.3 ether, 600e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 v2PositionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 v2PositionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
-        // Each position borrows from its own market
+        // Both draw on the one shared pool; only the collateral type differs.
         vm.roll(block.number + 2);
 
         uint256 maxV3 = lendingEngine.getMaxBorrow(v3PositionId);
@@ -139,10 +130,11 @@ contract MultiPosition is E2EBase {
         // Verify positions are independent
         PositionManager.Position memory p1 = positionManager.getPosition(v3PositionId);
         PositionManager.Position memory p2 = positionManager.getPosition(v2PositionId);
-        assertEq(p1.marketId, ethUsdcMarketId, "V3 should be in ethUsdcMarket");
-        assertEq(p2.marketId, v2MarketId, "V2 should be in v2Market");
+        // Both V3 and V2 collateral borrow from the single shared USDC pool.
+        assertEq(p1.borrowAsset, usdcBorrowAsset, "V3 should use the shared USDC pool");
+        assertEq(p2.borrowAsset, usdcBorrowAsset, "V2 should use the shared USDC pool");
 
-        console.log("V3 market: %s, V2 market: %s", p1.marketId, p2.marketId);
-        console.log("=== Multiple Markets Test Passed ===");
+        console.log("Shared borrow asset: %s", p1.borrowAsset);
+        console.log("=== Multiple Collateral Types, Shared Pool Test Passed ===");
     }
 }

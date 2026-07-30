@@ -10,11 +10,13 @@ import {LendingEngine} from "../../src/core/LendingEngine.sol";
 import {LiquidationEngine} from "../../src/core/LiquidationEngine.sol";
 import {FeeCollector} from "../../src/core/FeeCollector.sol";
 import {LPOracleHub} from "../../src/oracle/LPOracleHub.sol";
-import {Market} from "../../src/markets/Market.sol";
+import {LendingPool} from "../../src/markets/LendingPool.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
-import {IMarket} from "../../src/interfaces/IMarket.sol";
+import {ILendingPool} from "../../src/interfaces/ILendingPool.sol";
+import {RiskManager} from "../../src/security/RiskManager.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
@@ -33,6 +35,7 @@ contract EdgeCasesTest is Test {
 
     MockLPAdapter public adapter;
     MockLPOracle public oracle;
+    RiskManager public riskManager;
 
     address public owner = makeAddr("owner");
     address public guardian = makeAddr("guardian");
@@ -46,30 +49,23 @@ contract EdgeCasesTest is Test {
     // ========================================================
     // Helper: deploy full protocol with a specific borrow token
     // ========================================================
-    function _deployWithToken(MockERC20 borrowToken) internal returns (Market market, uint256 marketId) {
+    function _deployWithToken(MockERC20 borrowToken) internal returns (LendingPool market, address borrowAsset) {
         InterestRateModel irm = new InterestRateModel(200, 600, 10_000, 8000);
 
-        IMarket.MarketConfig memory mConfig = IMarket.MarketConfig({
-            lpType: ILPAdapter.LPType.UniswapV3,
-            borrowAsset: address(borrowToken),
-            maxLtv: 6500,
-            liquidationThreshold: 7500,
-            liquidationBonus: 500,
-            borrowCap: 10_000_000_000e18, // Very high cap
-            minPoolTvl: 0,
-            minPoolAge: 0
-        });
+        ILendingPool.PoolConfig memory mConfig = ILendingPool.PoolConfig({borrowAsset: address(borrowToken)});
 
-        market = Market(
+        market = LendingPool(
             address(
                 new ERC1967Proxy(
-                    address(new Market()), abi.encodeCall(Market.initialize, (mConfig, address(irm), address(core)))
+                    address(new LendingPool()),
+                    abi.encodeCall(LendingPool.initialize, (mConfig, address(irm), address(core)))
                 )
             )
         );
 
+        borrowAsset = address(borrowToken);
         vm.prank(owner);
-        marketId = core.registerMarket(address(market));
+        core.registerPool(address(borrowToken), address(market));
 
         // Supply liquidity
         borrowToken.mint(address(this), 10_000_000e18);
@@ -119,6 +115,7 @@ contract EdgeCasesTest is Test {
         adapter.setSupportedToken(lpToken, true);
         oracle = new MockLPOracle();
         oracle.setPrice(50_000e18);
+        riskManager = new RiskManager(address(core));
 
         vm.startPrank(owner);
         aclManager.addEmergencyAdmin(guardian);
@@ -126,9 +123,15 @@ contract EdgeCasesTest is Test {
         aclManager.addLiquidationEngine(address(liq));
         aclManager.addPositionManager(address(pm));
         aclManager.addKeeper(address(liq));
+        aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.whitelistPool(lpToken);
+        core.setRiskManager(address(riskManager));
+        // V3 collateral: 65% LTV / 75% liq / 5% bonus / no haircut / uncapped
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
+        // Raise the position value cap so the large-amount edge cases aren't capped at $10M default.
+        riskManager.setMaxPositionValue(1_000_000_000e18);
         pm.setLendingEngine(address(le));
         liq.setFeeCollector(address(fc));
         vm.stopPrank();
@@ -140,7 +143,7 @@ contract EdgeCasesTest is Test {
 
     function test_sixDecimalToken_fullLifecycle() public {
         MockERC20 usdc6 = new MockERC20("USDC", "USDC", 6);
-        (Market market6, uint256 mId) = _deployWithToken(usdc6);
+        (LendingPool market6, address mId) = _deployWithToken(usdc6);
 
         // Deposit LP
         vm.prank(alice);
@@ -169,7 +172,7 @@ contract EdgeCasesTest is Test {
 
     function test_eightDecimalToken_fullLifecycle() public {
         MockERC20 wbtc = new MockERC20("WBTC", "WBTC", 8);
-        (Market market8, uint256 mId) = _deployWithToken(wbtc);
+        (LendingPool market8, address mId) = _deployWithToken(wbtc);
 
         vm.prank(alice);
         uint256 posId = pm.deposit(lpToken, 0, 100e18, mId);
@@ -197,7 +200,7 @@ contract EdgeCasesTest is Test {
 
     function test_dustAmount_borrow1Wei() public {
         MockERC20 token = new MockERC20("TOKEN", "TKN", 18);
-        (Market m, uint256 mId) = _deployWithToken(token);
+        (LendingPool m, address mId) = _deployWithToken(token);
 
         vm.prank(alice);
         uint256 posId = pm.deposit(lpToken, 0, 100e18, mId);
@@ -228,25 +231,18 @@ contract EdgeCasesTest is Test {
 
         // Supply $100M liquidity
         InterestRateModel irm2 = new InterestRateModel(200, 600, 10_000, 8000);
-        IMarket.MarketConfig memory mConfig2 = IMarket.MarketConfig({
-            lpType: ILPAdapter.LPType.UniswapV3,
-            borrowAsset: address(token),
-            maxLtv: 6500,
-            liquidationThreshold: 7500,
-            liquidationBonus: 500,
-            borrowCap: 100_000_000_000e18,
-            minPoolTvl: 0,
-            minPoolAge: 0
-        });
-        Market m = Market(
+        ILendingPool.PoolConfig memory mConfig2 = ILendingPool.PoolConfig({borrowAsset: address(token)});
+        LendingPool m = LendingPool(
             address(
                 new ERC1967Proxy(
-                    address(new Market()), abi.encodeCall(Market.initialize, (mConfig2, address(irm2), address(core)))
+                    address(new LendingPool()),
+                    abi.encodeCall(LendingPool.initialize, (mConfig2, address(irm2), address(core)))
                 )
             )
         );
         vm.prank(owner);
-        uint256 mId = core.registerMarket(address(m));
+        core.registerPool(address(token), address(m));
+        address mId = address(token);
         token.mint(address(this), 100_000_000e18);
         token.approve(address(m), 100_000_000e18);
         m.supply(100_000_000e18);
@@ -277,7 +273,7 @@ contract EdgeCasesTest is Test {
 
     function test_multiplePositions_sameUser() public {
         MockERC20 token = new MockERC20("TOKEN", "TKN", 18);
-        (Market m, uint256 mId) = _deployWithToken(token);
+        (LendingPool m, address mId) = _deployWithToken(token);
 
         // Alice creates 3 positions
         vm.startPrank(alice);
@@ -311,7 +307,7 @@ contract EdgeCasesTest is Test {
 
     function test_interestAccrual_multipleSteps() public {
         MockERC20 token = new MockERC20("TOKEN", "TKN", 18);
-        (Market m, uint256 mId) = _deployWithToken(token);
+        (LendingPool m, address mId) = _deployWithToken(token);
 
         vm.prank(alice);
         uint256 posId = pm.deposit(lpToken, 0, 100e18, mId);
@@ -342,7 +338,7 @@ contract EdgeCasesTest is Test {
 
     function test_complexBorrowRepaySequence() public {
         MockERC20 token = new MockERC20("TOKEN", "TKN", 18);
-        (Market m, uint256 mId) = _deployWithToken(token);
+        (LendingPool m, address mId) = _deployWithToken(token);
 
         vm.prank(alice);
         uint256 posId = pm.deposit(lpToken, 0, 100e18, mId);
@@ -386,7 +382,7 @@ contract EdgeCasesTest is Test {
 
     function test_priceIncrease_healthFactorImproves() public {
         MockERC20 token = new MockERC20("TOKEN", "TKN", 18);
-        (, uint256 mId) = _deployWithToken(token);
+        (, address mId) = _deployWithToken(token);
 
         vm.prank(alice);
         uint256 posId = pm.deposit(lpToken, 0, 100e18, mId);
@@ -410,7 +406,7 @@ contract EdgeCasesTest is Test {
 
     function test_zeroOraclePrice_healthFactorZero() public {
         MockERC20 token = new MockERC20("TOKEN", "TKN", 18);
-        (, uint256 mId) = _deployWithToken(token);
+        (, address mId) = _deployWithToken(token);
 
         vm.prank(alice);
         uint256 posId = pm.deposit(lpToken, 0, 100e18, mId);
@@ -432,7 +428,7 @@ contract EdgeCasesTest is Test {
 
     function test_withdrawBlockedWithDustDebt() public {
         MockERC20 token = new MockERC20("TOKEN", "TKN", 18);
-        (Market m, uint256 mId) = _deployWithToken(token);
+        (LendingPool m, address mId) = _deployWithToken(token);
 
         vm.prank(alice);
         uint256 posId = pm.deposit(lpToken, 0, 100e18, mId);
@@ -461,10 +457,10 @@ contract EdgeCasesTest is Test {
 
     function test_marketUtilization_boundaries() public {
         MockERC20 token = new MockERC20("TOKEN", "TKN", 18);
-        (Market m, uint256 mId) = _deployWithToken(token);
+        (LendingPool m, address mId) = _deployWithToken(token);
 
         // 0% utilization
-        IMarket.MarketState memory state0 = m.getMarketState();
+        ILendingPool.PoolState memory state0 = m.getPoolState();
         assertEq(state0.utilization, 0);
 
         // Borrow to ~50% utilization
@@ -475,7 +471,7 @@ contract EdgeCasesTest is Test {
         vm.prank(alice);
         le.borrow(posId, 5_000_000e18); // 50% of 10M supply
 
-        IMarket.MarketState memory state50 = m.getMarketState();
+        ILendingPool.PoolState memory state50 = m.getPoolState();
         assertGt(state50.utilization, 4000); // ~50%
         assertLt(state50.utilization, 6000);
 
@@ -489,7 +485,7 @@ contract EdgeCasesTest is Test {
 
     function test_nonWhitelistedPool_rejected() public {
         MockERC20 token = new MockERC20("TOKEN", "TKN", 18);
-        (, uint256 mId) = _deployWithToken(token);
+        (, address mId) = _deployWithToken(token);
 
         address fakeLP = makeAddr("fakeLP");
         adapter.setSupportedToken(fakeLP, true); // Adapter supports it
@@ -506,7 +502,7 @@ contract EdgeCasesTest is Test {
 
     function test_unsupportedLPToken_rejected() public {
         MockERC20 token = new MockERC20("TOKEN", "TKN", 18);
-        (, uint256 mId) = _deployWithToken(token);
+        (, address mId) = _deployWithToken(token);
 
         address unknownLP = makeAddr("unknownLP");
         // Not registered with any adapter

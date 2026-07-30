@@ -14,8 +14,10 @@ import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
-import {MockMarket} from "../mocks/MockMarket.sol";
+import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {RiskManager} from "../../src/security/RiskManager.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 
 contract LiquidationEngineTest is Test {
     ProtocolCore public core;
@@ -26,10 +28,11 @@ contract LiquidationEngineTest is Test {
     LPOracleHub public oracleHub;
     MockLPAdapter public adapter;
     MockLPOracle public oracle;
-    MockMarket public market;
+    MockLendingPool public market;
     MockERC20 public usdc;
     MockERC20 public weth;
     InterestRateModel public irm;
+    RiskManager public riskManager;
 
     address public owner = makeAddr("owner");
     address public guardian = makeAddr("guardian");
@@ -37,7 +40,7 @@ contract LiquidationEngineTest is Test {
     address public liquidator = makeAddr("liquidator");
     address public lpToken = makeAddr("lpToken");
 
-    uint256 public marketId;
+    address public borrowAsset;
 
     // Events
     event LiquidationExecuted(
@@ -99,8 +102,9 @@ contract LiquidationEngineTest is Test {
         adapter.setSupportedToken(lpToken, true);
         oracle = new MockLPOracle();
         oracle.setPrice(50_000e18);
-        market = new MockMarket(address(usdc), address(irm));
-        market.setLpType(ILPAdapter.LPType.UniswapV2);
+        market = new MockLendingPool(address(usdc), address(irm));
+        borrowAsset = address(usdc);
+        riskManager = new RiskManager(address(core));
 
         // Register and grant roles
         vm.startPrank(owner);
@@ -108,10 +112,13 @@ contract LiquidationEngineTest is Test {
         aclManager.addLendingEngine(address(le));
         aclManager.addLiquidationEngine(address(liq));
         aclManager.addPositionManager(address(pm));
+        aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
         core.whitelistPool(lpToken);
-        marketId = core.registerMarket(address(market));
+        core.registerPool(address(usdc), address(market));
+        core.setRiskManager(address(riskManager));
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
         pm.setLendingEngine(address(le));
         vm.stopPrank();
 
@@ -134,7 +141,7 @@ contract LiquidationEngineTest is Test {
     function _createLiquidatablePosition() internal returns (uint256 posId) {
         // Alice deposits LP worth $50K
         vm.prank(alice);
-        posId = pm.deposit(lpToken, 0, 100e18, marketId);
+        posId = pm.deposit(lpToken, 0, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         // Advance past borrow cooldown
@@ -193,7 +200,7 @@ contract LiquidationEngineTest is Test {
 
     function test_isLiquidatable_falseWhenHealthy() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 0, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 0, 100e18, borrowAsset);
         vm.roll(block.number + 2);
         vm.roll(block.number + 2);
 
@@ -220,7 +227,7 @@ contract LiquidationEngineTest is Test {
         // For HF = 0.975: collateral = debt * 10000 * 0.975 / 7500 = debt * 1.3
         oracle.setPrice(50_000e18);
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 0, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 0, 100e18, borrowAsset);
         vm.roll(block.number + 2);
         vm.prank(alice);
         le.borrow(posId, 30_000e18);
@@ -254,7 +261,7 @@ contract LiquidationEngineTest is Test {
 
     function test_isLiquidatable_falseForNoDebt() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 0, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 0, 100e18, borrowAsset);
         vm.roll(block.number + 2);
         vm.roll(block.number + 2);
 
@@ -264,9 +271,9 @@ contract LiquidationEngineTest is Test {
 
     // ========== getLiquidationBonus ==========
 
-    function test_getLiquidationBonus_returnsMarketConfig() public {
+    function test_getLiquidationBonus_returnsRiskConfig() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 0, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 0, 100e18, borrowAsset);
         vm.roll(block.number + 2);
         vm.roll(block.number + 2);
 
@@ -278,7 +285,7 @@ contract LiquidationEngineTest is Test {
 
     function test_liquidate_revertsNotLiquidatable() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 0, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 0, 100e18, borrowAsset);
         vm.roll(block.number + 2);
         vm.roll(block.number + 2);
 
@@ -423,7 +430,7 @@ contract LiquidationEngineTest is Test {
         // Create position with HF between 0.95-1.0 (partial liq rules apply)
         oracle.setPrice(50_000e18);
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 0, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 0, 100e18, borrowAsset);
         vm.roll(block.number + 2);
         vm.prank(alice);
         le.borrow(posId, 30_000e18);
@@ -515,12 +522,11 @@ contract LiquidationEngineTest is Test {
         // Deploy a 6-decimal USDC (real-world scenario)
         MockERC20 usdc6 = new MockERC20("USDC", "USDC", 6);
         InterestRateModel irm6 = new InterestRateModel(200, 600, 10_000, 8000);
-        MockMarket market6 = new MockMarket(address(usdc6), address(irm6));
-        market6.setLpType(ILPAdapter.LPType.UniswapV2);
+        MockLendingPool market6 = new MockLendingPool(address(usdc6), address(irm6));
 
-        // Register the new market
+        // Register the new pool (keyed by its borrow asset)
         vm.prank(owner);
-        uint256 marketId6 = core.registerMarket(address(market6));
+        core.registerPool(address(usdc6), address(market6));
 
         // Fund market
         usdc6.mint(address(market6), 1_000_000e6);
@@ -534,7 +540,7 @@ contract LiquidationEngineTest is Test {
         // Alice deposits LP worth $50K
         oracle.setPrice(50_000e18); // Oracle always returns 18 decimals
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 0, 100e18, marketId6);
+        uint256 posId = pm.deposit(lpToken, 0, 100e18, address(usdc6));
         vm.roll(block.number + 2);
         vm.roll(block.number + 2);
 
@@ -690,7 +696,7 @@ contract LiquidationEngineTest is Test {
 
         oracle.setPrice(50_000e18);
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 0, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 0, 100e18, borrowAsset);
         vm.roll(block.number + 2);
         vm.roll(block.number + 2);
 
@@ -769,7 +775,7 @@ contract LiquidationEngineTest is Test {
 
         oracle.setPrice(50_000e18);
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 0, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 0, 100e18, borrowAsset);
         vm.roll(block.number + 2);
         vm.prank(alice);
         le.borrow(posId, 30_000e18);
@@ -800,7 +806,7 @@ contract LiquidationEngineTest is Test {
 
         oracle.setPrice(50_000e18);
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 0, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 0, 100e18, borrowAsset);
         vm.roll(block.number + 2);
         vm.prank(alice);
         le.borrow(posId, 30_000e18);

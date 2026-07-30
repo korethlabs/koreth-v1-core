@@ -1,45 +1,30 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {IMarket} from "../../src/interfaces/IMarket.sol";
+import {ILendingPool} from "../../src/interfaces/ILendingPool.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {IERC20} from "../../src/interfaces/IERC20.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 
-/// @notice Mock market for testing — simulates Market.sol with borrowIndex
-contract MockMarket is IMarket {
-    MarketConfig public _config;
-    MarketState public _state;
+/// @notice Mock shared lending pool for testing — simulates LendingPool.sol with borrowIndex
+contract MockLendingPool is ILendingPool {
+    PoolConfig public _config;
+    PoolState public _state;
     InterestRateModel public interestRateModel;
 
-    /// @notice Cumulative borrow index (same as real Market)
+    /// @notice Cumulative borrow index (same as real LendingPool)
     uint256 public borrowIndex;
     uint256 internal constant RAY = 1e27;
 
     constructor(address _borrowAsset, address _irm) {
         interestRateModel = InterestRateModel(_irm);
         borrowIndex = RAY; // Initialize to 1.0
-        _config = MarketConfig({
-            lpType: ILPAdapter.LPType.UniswapV3,
-            borrowAsset: _borrowAsset,
-            maxLtv: 6500,
-            liquidationThreshold: 7500,
-            liquidationBonus: 500,
-            borrowCap: 10_000_000e18,
-            minPoolTvl: 5_000_000e18,
-            minPoolAge: 0
-        });
+        _config = PoolConfig({borrowAsset: _borrowAsset});
     }
 
-    function setLpType(ILPAdapter.LPType _lpType) external {
-        _config.lpType = _lpType;
-    }
-
-    /// @notice Accrue interest (simplified for testing — just updates index based on elapsed time)
+    /// @notice Accrue interest (simplified for testing — tests control the index directly)
     function accrueInterest() public {
-        // In tests, we manually advance time with vm.warp
-        // For simplicity, we update index only when explicitly called via setBorrowIndex
-        // Real Market computes from rate model, but tests control this directly
+        // In tests, we manually advance time with vm.warp and set the index via setBorrowIndex.
     }
 
     /// @notice Test helper — manually set the borrow index to simulate interest accrual
@@ -67,12 +52,16 @@ contract MockMarket is IMarket {
         return 0;
     }
 
-    function getMarketState() external view returns (MarketState memory) {
+    function getPoolState() external view returns (PoolState memory) {
         return _state;
     }
 
-    function getConfig() external view returns (MarketConfig memory) {
+    function getConfig() external view returns (PoolConfig memory) {
         return _config;
+    }
+
+    function borrowAsset() external view returns (address) {
+        return _config.borrowAsset;
     }
 
     function recordDeficit(uint256 amount) external {
@@ -83,20 +72,6 @@ contract MockMarket is IMarket {
     function eliminateDeficit() external {}
 
     function distributeReserves() external {}
-
-    function updateConfig(
-        uint256 _maxLtv,
-        uint256 _liquidationThreshold,
-        uint256 _liquidationBonus,
-        uint256 _borrowCap
-    )
-        external
-    {
-        _config.maxLtv = _maxLtv;
-        _config.liquidationThreshold = _liquidationThreshold;
-        _config.liquidationBonus = _liquidationBonus;
-        _config.borrowCap = _borrowCap;
-    }
 
     function setReserveFactor(uint256) external {}
 

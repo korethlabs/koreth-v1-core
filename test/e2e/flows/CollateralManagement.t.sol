@@ -10,23 +10,14 @@ import {INonfungiblePositionManager} from "../../../src/interfaces/external/IUni
 ///         (not via transform). Also covers V2 removeCollateral, health factor enforcement,
 ///         and circuit breaker blocking.
 contract CollateralManagement is E2EBase {
-    uint256 public v2MarketId;
-
     function setUp() public override {
         super.setUp();
 
-        // Create V2 market for V2-specific tests
-        vm.startPrank(deployer);
-        (v2MarketId,) = marketFactory.createMarket(
-            ILPAdapter.LPType.UniswapV2, Constants.USDC, 6500, 7500, 500, 10_000_000e6, 0, 0, "volatile"
-        );
-        vm.stopPrank();
-
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = core.markets(v2MarketId);
+        address poolAddr = address(usdcPool);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        IMarket(v2MarketAddr).supply(50_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 50_000e6);
+        ILendingPool(poolAddr).supply(50_000e6);
         vm.stopPrank();
     }
 
@@ -162,7 +153,7 @@ contract CollateralManagement is E2EBase {
         // Deposit
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         uint256 valueBefore = _getPositionValue(positionId);
@@ -187,7 +178,7 @@ contract CollateralManagement is E2EBase {
 
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
 
         vm.prank(alice);
@@ -204,17 +195,17 @@ contract CollateralManagement is E2EBase {
 
         // Freeze the market
         vm.prank(deployer);
-        circuitBreaker.freezeMarket(ethUsdcMarketId, "test freeze");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "test freeze");
 
         (,,,,,,, uint128 currentLiquidity,,,,) = nftManager.positions(tokenId);
 
         vm.prank(alice);
-        vm.expectRevert("MARKET_FROZEN");
+        vm.expectRevert("COLLATERAL_FROZEN");
         positionManager.removeCollateral(positionId, currentLiquidity / 5, 0, 0);
 
         // Unfreeze
         vm.prank(deployer);
-        circuitBreaker.unfreezeMarket(ethUsdcMarketId);
+        circuitBreaker.unfreezeCollateral(ILPAdapter.LPType.UniswapV3);
     }
 
     // ========== Slippage protection ==========

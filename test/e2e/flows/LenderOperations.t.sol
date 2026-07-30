@@ -2,7 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "../E2EBase.t.sol";
-import {Market} from "../../../src/markets/Market.sol";
+import {LendingPool} from "../../../src/markets/LendingPool.sol";
 
 /// @title LenderOperations
 /// @notice E2E tests for lender supply/withdraw from markets on forked mainnet.
@@ -14,15 +14,15 @@ contract LenderOperations is E2EBase {
 
     /// @notice Lender supplies USDC → earns interest from borrowers → withdraws with profit
     function test_lenderSupply_earnInterest_withdraw() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
-        IMarket market = IMarket(marketAddr);
+        address poolAddr = address(usdcPool);
+        ILendingPool market = ILendingPool(poolAddr);
 
         // 1. Charlie supplies USDC as a lender
         address charlie = makeAddr("charlie");
         _fundUsdc(charlie, 50_000e6);
 
         vm.startPrank(charlie);
-        IERC20(Constants.USDC).approve(marketAddr, 50_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 50_000e6);
         uint256 shares = market.supply(50_000e6);
         vm.stopPrank();
 
@@ -42,7 +42,7 @@ contract LenderOperations is E2EBase {
         // 3. Time passes — interest accrues (re-mock Chainlink to avoid staleness)
         _advanceTime(30 days);
         _refreshChainlinkMocks();
-        lendingEngine.accrueInterest(ethUsdcMarketId);
+        lendingEngine.accrueInterest(usdcBorrowAsset);
 
         // 4. Charlie withdraws all shares
         vm.prank(charlie);
@@ -57,8 +57,8 @@ contract LenderOperations is E2EBase {
 
     /// @notice Lender cannot withdraw more than available liquidity
     function test_revert_lenderWithdraw_insufficientLiquidity() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
-        IMarket market = IMarket(marketAddr);
+        address poolAddr = address(usdcPool);
+        ILendingPool market = ILendingPool(poolAddr);
 
         // Bob already supplied 100K USDC in E2EBase setUp
         // Alice borrows most of it
@@ -72,7 +72,7 @@ contract LenderOperations is E2EBase {
         lendingEngine.borrow(positionId, (maxBorrow * 90) / 100);
 
         // Bob tries to withdraw all shares — should fail (most USDC is lent out)
-        uint256 bobShares = Market(marketAddr).shares(bob);
+        uint256 bobShares = LendingPool(poolAddr).shares(bob);
         vm.prank(bob);
         vm.expectRevert("INSUFFICIENT_LIQUIDITY");
         market.withdraw(bobShares);
@@ -80,18 +80,18 @@ contract LenderOperations is E2EBase {
 
     /// @notice Multiple lenders share interest proportionally
     function test_multipleLenders_proportionalReturns() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
-        IMarket market = IMarket(marketAddr);
+        address poolAddr = address(usdcPool);
+        ILendingPool market = ILendingPool(poolAddr);
 
         // Charlie supplies 50K (Bob already supplied 100K in E2EBase)
         address charlie = makeAddr("charlie");
         _fundUsdc(charlie, 50_000e6);
         vm.startPrank(charlie);
-        IERC20(Constants.USDC).approve(marketAddr, 50_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 50_000e6);
         uint256 charlieShares = market.supply(50_000e6);
         vm.stopPrank();
 
-        uint256 bobShares = Market(marketAddr).shares(bob);
+        uint256 bobShares = LendingPool(poolAddr).shares(bob);
 
         // Alice borrows
         uint256 tokenId = _createV3Position(alice, 2 ether, 5000e6);
@@ -104,7 +104,7 @@ contract LenderOperations is E2EBase {
         // Time passes — re-mock Chainlink to avoid staleness
         _advanceTime(30 days);
         _refreshChainlinkMocks();
-        lendingEngine.accrueInterest(ethUsdcMarketId);
+        lendingEngine.accrueInterest(usdcBorrowAsset);
 
         // Both withdraw partial
         uint256 charliePartial = charlieShares / 2;

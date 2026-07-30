@@ -3,7 +3,7 @@ pragma solidity ^0.8.26;
 
 import "../E2EBase.t.sol";
 import {InterestRateModel} from "../../../src/markets/InterestRateModel.sol";
-import {Market} from "../../../src/markets/Market.sol";
+import {LendingPool} from "../../../src/markets/LendingPool.sol";
 import {ILPAdapter} from "../../../src/interfaces/ILPAdapter.sol";
 import {FeeCollector} from "../../../src/core/FeeCollector.sol";
 import {RiskManager} from "../../../src/security/RiskManager.sol";
@@ -12,7 +12,7 @@ import {RiskManager} from "../../../src/security/RiskManager.sol";
 /// @notice E2E fork tests for admin operations not covered in AdminOperations.t.sol.
 /// @dev Covers: interest rate model hot-swap, borrow cooldown, bad debt write-off, deficit elimination.
 contract AdminOpsExtended is E2EBase {
-    event DebtWrittenOff(uint256 indexed positionId, uint256 indexed marketId, uint256 amount, address caller);
+    event DebtWrittenOff(uint256 indexed positionId, address indexed borrowAsset, uint256 amount, address caller);
 
     function setUp() public override {
         super.setUp();
@@ -40,7 +40,7 @@ contract AdminOpsExtended is E2EBase {
         assertGt(debtAfterBorrow, 0, "Should have debt");
 
         // Record the current borrow rate from the original model
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address poolAddr = address(usdcPool);
         uint256 oldRate = volatileModel.getBorrowRate(5000); // at 50% utilization
 
         // Deploy new IRM with much higher base rate and slopes
@@ -52,11 +52,11 @@ contract AdminOpsExtended is E2EBase {
 
         // Hot-swap the interest rate model
         vm.prank(deployer);
-        Market(marketAddr).setInterestRateModel(address(newModel));
+        LendingPool(poolAddr).setInterestRateModel(address(newModel));
 
         // Advance time to accumulate interest under the new model
         _advanceTime(1 hours);
-        lendingEngine.accrueInterest(ethUsdcMarketId);
+        lendingEngine.accrueInterest(usdcBorrowAsset);
 
         uint256 debtAfterAccrual = _getDebt(positionId);
         assertGt(debtAfterAccrual, debtAfterBorrow, "Debt should increase after accrual with new model");
@@ -126,10 +126,10 @@ contract AdminOpsExtended is E2EBase {
 
         // Liquidate what we can
         if (maxRepay > 0) {
-            address marketAddr = core.markets(ethUsdcMarketId);
+            address poolAddr = address(usdcPool);
             vm.startPrank(liquidator);
             IERC20(Constants.USDC).approve(address(liquidationEngine), maxRepay);
-            IERC20(Constants.USDC).approve(marketAddr, maxRepay);
+            IERC20(Constants.USDC).approve(poolAddr, maxRepay);
             liquidationEngine.liquidate(positionId, maxRepay, block.timestamp + 300, 0, 0);
             vm.stopPrank();
         }
@@ -141,7 +141,7 @@ contract AdminOpsExtended is E2EBase {
         if (remainingDebt > 0) {
             // Assert DebtWrittenOff fires with the position, market, debt amount, and caller.
             vm.expectEmit(true, true, false, true, address(lendingEngine));
-            emit DebtWrittenOff(positionId, ethUsdcMarketId, remainingDebt, address(liquidationEngine));
+            emit DebtWrittenOff(positionId, usdcBorrowAsset, remainingDebt, address(liquidationEngine));
 
             vm.prank(address(liquidationEngine));
             lendingEngine.writeOffDebt(positionId);
@@ -150,8 +150,8 @@ contract AdminOpsExtended is E2EBase {
             assertEq(debtAfterWriteOff, 0, "Debt should be zero after write-off");
 
             // Market should have recorded deficit
-            address marketAddr = core.markets(ethUsdcMarketId);
-            uint256 marketDeficit = Market(marketAddr).deficit();
+            address poolAddr = address(usdcPool);
+            uint256 marketDeficit = LendingPool(poolAddr).deficit();
             assertGt(marketDeficit, 0, "Market should have deficit after write-off");
 
             console.log("Remaining debt written off: %s USDC", remainingDebt / 1e6);
@@ -165,11 +165,11 @@ contract AdminOpsExtended is E2EBase {
 
     /// @notice After writeOffDebt creates a deficit, build reserves via interest, then eliminate deficit.
     function test_eliminateDeficit() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address poolAddr = address(usdcPool);
 
         // Step 1: Set reserve factor so protocol accumulates reserves from interest
         vm.prank(deployer);
-        Market(marketAddr).setReserveFactor(2000); // 20%
+        LendingPool(poolAddr).setReserveFactor(2000); // 20%
 
         // Step 2: Create a position with active debt to generate interest
         uint256 tokenId = _createV3Position(alice, 2 ether, 4000e6);
@@ -182,9 +182,9 @@ contract AdminOpsExtended is E2EBase {
 
         // Step 3: Advance time to accumulate interest (and thus reserves)
         _advanceTime(30 days);
-        lendingEngine.accrueInterest(ethUsdcMarketId);
+        lendingEngine.accrueInterest(usdcBorrowAsset);
 
-        uint256 reservesBefore = Market(marketAddr).protocolReserves();
+        uint256 reservesBefore = LendingPool(poolAddr).protocolReserves();
         console.log("Protocol reserves after 30 days: %s USDC", reservesBefore / 1e6);
         assertGt(reservesBefore, 0, "Should have accumulated reserves");
 
@@ -199,7 +199,7 @@ contract AdminOpsExtended is E2EBase {
             _fundUsdc(liquidator, maxRepay);
             vm.startPrank(liquidator);
             IERC20(Constants.USDC).approve(address(liquidationEngine), maxRepay);
-            IERC20(Constants.USDC).approve(marketAddr, maxRepay);
+            IERC20(Constants.USDC).approve(poolAddr, maxRepay);
             liquidationEngine.liquidate(positionId, maxRepay, block.timestamp + 300, 0, 0);
             vm.stopPrank();
         }
@@ -211,17 +211,17 @@ contract AdminOpsExtended is E2EBase {
             lendingEngine.writeOffDebt(positionId);
         }
 
-        uint256 deficitBefore = Market(marketAddr).deficit();
+        uint256 deficitBefore = LendingPool(poolAddr).deficit();
         console.log("Deficit after write-off: %s USDC", deficitBefore / 1e6);
 
         // Step 5: Eliminate deficit using reserves
         if (deficitBefore > 0) {
-            uint256 reservesNow = Market(marketAddr).protocolReserves();
+            uint256 reservesNow = LendingPool(poolAddr).protocolReserves();
             vm.prank(deployer);
-            Market(marketAddr).eliminateDeficit();
+            LendingPool(poolAddr).eliminateDeficit();
 
-            uint256 deficitAfter = Market(marketAddr).deficit();
-            uint256 reservesAfter = Market(marketAddr).protocolReserves();
+            uint256 deficitAfter = LendingPool(poolAddr).deficit();
+            uint256 reservesAfter = LendingPool(poolAddr).protocolReserves();
 
             // Deficit should be reduced (fully if reserves >= deficit, partially otherwise)
             assertLt(deficitAfter, deficitBefore, "Deficit should decrease");
@@ -233,7 +233,7 @@ contract AdminOpsExtended is E2EBase {
             // If no deficit (liquidation covered everything), verify eliminateDeficit reverts
             vm.prank(deployer);
             vm.expectRevert("NO_DEFICIT");
-            Market(marketAddr).eliminateDeficit();
+            LendingPool(poolAddr).eliminateDeficit();
             console.log("No deficit to eliminate (liquidation covered all debt)");
         }
 

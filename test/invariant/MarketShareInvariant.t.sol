@@ -8,12 +8,14 @@ import {ProtocolCore} from "../../src/core/ProtocolCore.sol";
 import {ACLManager} from "../../src/core/ACLManager.sol";
 import {PositionManager} from "../../src/core/PositionManager.sol";
 import {LendingEngine} from "../../src/core/LendingEngine.sol";
-import {Market} from "../../src/markets/Market.sol";
+import {LendingPool} from "../../src/markets/LendingPool.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {LPOracleHub} from "../../src/oracle/LPOracleHub.sol";
 import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
-import {IMarket} from "../../src/interfaces/IMarket.sol";
+import {ILendingPool} from "../../src/interfaces/ILendingPool.sol";
+import {RiskManager} from "../../src/security/RiskManager.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
@@ -26,7 +28,8 @@ contract MarketShareInvariantTest is Test {
     ACLManager public aclManager;
     PositionManager public pm;
     LendingEngine public le;
-    Market public market;
+    LendingPool public market;
+    RiskManager public riskManager;
     LPOracleHub public oracleHub;
     MockLPAdapter public adapter;
     MockLPOracle public oracle;
@@ -35,7 +38,7 @@ contract MarketShareInvariantTest is Test {
 
     address public owner = makeAddr("owner");
     address public lpToken = makeAddr("lpToken");
-    uint256 public marketId;
+    address public borrowAsset;
 
     function setUp() public {
         usdc = new MockERC20("USDC", "USDC", 18);
@@ -66,20 +69,12 @@ contract MarketShareInvariantTest is Test {
             )
         );
 
-        IMarket.MarketConfig memory mConfig = IMarket.MarketConfig({
-            lpType: ILPAdapter.LPType.UniswapV3,
-            borrowAsset: address(usdc),
-            maxLtv: 6500,
-            liquidationThreshold: 7500,
-            liquidationBonus: 500,
-            borrowCap: 100_000_000e18,
-            minPoolTvl: 0,
-            minPoolAge: 0
-        });
-        market = Market(
+        ILendingPool.PoolConfig memory mConfig = ILendingPool.PoolConfig({borrowAsset: address(usdc)});
+        market = LendingPool(
             address(
                 new ERC1967Proxy(
-                    address(new Market()), abi.encodeCall(Market.initialize, (mConfig, address(irm), address(core)))
+                    address(new LendingPool()),
+                    abi.encodeCall(LendingPool.initialize, (mConfig, address(irm), address(core)))
                 )
             )
         );
@@ -87,14 +82,19 @@ contract MarketShareInvariantTest is Test {
         adapter = new MockLPAdapter(ILPAdapter.LPType.UniswapV3);
         adapter.setSupportedToken(lpToken, true);
         oracle = new MockLPOracle();
+        riskManager = new RiskManager(address(core));
+        borrowAsset = address(usdc);
 
         vm.startPrank(owner);
         aclManager.addLendingEngine(address(le));
         aclManager.addPositionManager(address(pm));
+        aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.whitelistPool(lpToken);
-        marketId = core.registerMarket(address(market));
+        core.registerPool(address(usdc), address(market));
+        core.setRiskManager(address(riskManager));
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         pm.setLendingEngine(address(le));
         vm.stopPrank();
     }
@@ -195,7 +195,7 @@ contract MarketShareInvariantTest is Test {
         borrowAmt = bound(borrowAmt, 10_000e18, maxBorrowable > 65_000e18 ? 65_000e18 : maxBorrowable);
         address borrower = makeAddr("borrower");
         vm.prank(borrower);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
         vm.prank(borrower);
         le.borrow(posId, borrowAmt);
@@ -208,7 +208,7 @@ contract MarketShareInvariantTest is Test {
         // INVARIANT: totalSupply grows from interest (lender earns)
         // We check totalSupply increased rather than withdrawing, because
         // liquidity may be borrowed out (INSUFFICIENT_LIQUIDITY is valid behavior)
-        IMarket.MarketState memory s = market.getMarketState();
+        ILendingPool.PoolState memory s = market.getPoolState();
         assertGt(s.totalSupply, supplyAmt, "totalSupply must grow from interest accrual");
     }
 
@@ -236,7 +236,7 @@ contract MarketShareInvariantTest is Test {
         vm.prank(bob);
         uint256 shares2 = market.supply(amt2);
 
-        IMarket.MarketState memory s = market.getMarketState();
+        ILendingPool.PoolState memory s = market.getPoolState();
 
         // totalSupply should equal amt1 + amt2 (no interest yet)
         assertEq(s.totalSupply, amt1 + amt2, "totalSupply must equal sum of deposits");

@@ -14,8 +14,10 @@ import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
-import {MockMarket} from "../mocks/MockMarket.sol";
+import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {RiskManager} from "../../src/security/RiskManager.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 
 /// @title V3LiquidationPaths
 /// @notice Tests for V3-specific liquidation paths: fee-only, NFT return, slippage, tokenId discriminator
@@ -29,8 +31,8 @@ contract V3LiquidationPaths is Test {
     MockLPAdapter public v3Adapter;
     MockLPAdapter public v2Adapter;
     MockLPOracle public oracle;
-    MockMarket public v3Market;
-    MockMarket public v2Market;
+    MockLendingPool public market;
+    RiskManager public riskManager;
     MockERC20 public usdc;
     MockERC20 public weth;
 
@@ -41,8 +43,7 @@ contract V3LiquidationPaths is Test {
     address public lpToken = makeAddr("lpToken");
     address public v2LpToken = makeAddr("v2LpToken");
 
-    uint256 public v3MarketId;
-    uint256 public v2MarketId;
+    address public borrowAsset;
 
     function setUp() public {
         usdc = new MockERC20("USDC", "USDC", 18);
@@ -101,30 +102,32 @@ contract V3LiquidationPaths is Test {
         oracle = new MockLPOracle();
         oracle.setPrice(50_000e18);
 
-        v3Market = new MockMarket(address(usdc), address(irm));
-        // MockMarket defaults to V3 lpType — keep it
-        v2Market = new MockMarket(address(usdc), address(irm));
-        v2Market.setLpType(ILPAdapter.LPType.UniswapV2);
+        // One shared USDC pool — both V3 and V2 collateral borrow from it.
+        market = new MockLendingPool(address(usdc), address(irm));
+        borrowAsset = address(usdc);
+        riskManager = new RiskManager(address(core));
 
         vm.startPrank(owner);
         aclManager.addEmergencyAdmin(guardian);
         aclManager.addLendingEngine(address(le));
         aclManager.addLiquidationEngine(address(liq));
         aclManager.addPositionManager(address(pm));
+        aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(v3Adapter));
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(v2Adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
         core.whitelistPool(lpToken);
         core.whitelistPool(v2LpToken);
-        v3MarketId = core.registerMarket(address(v3Market));
-        v2MarketId = core.registerMarket(address(v2Market));
+        core.registerPool(address(usdc), address(market));
+        core.setRiskManager(address(riskManager));
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
         pm.setLendingEngine(address(le));
         vm.stopPrank();
 
         // Fund
-        usdc.mint(address(v3Market), 1_000_000e18);
-        usdc.mint(address(v2Market), 1_000_000e18);
+        usdc.mint(address(market), 2_000_000e18);
         weth.mint(address(v3Adapter), 1_000_000e18);
         usdc.mint(address(v3Adapter), 1_000_000e18);
         weth.mint(address(v2Adapter), 1_000_000e18);
@@ -134,7 +137,7 @@ contract V3LiquidationPaths is Test {
     // Helper: create V3 position (tokenId > 0, amount = 0)
     function _createV3LiquidatablePosition() internal returns (uint256 posId) {
         vm.prank(alice);
-        posId = pm.deposit(lpToken, 42, 0, v3MarketId); // V3: tokenId=42, amount=0
+        posId = pm.deposit(lpToken, 42, 0, borrowAsset); // V3: tokenId=42, amount=0
         vm.roll(block.number + 3);
         vm.prank(alice);
         le.borrow(posId, 30_000e18);
@@ -146,7 +149,7 @@ contract V3LiquidationPaths is Test {
 
     function test_v3_feeOnlyLiquidation() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 42, 0, v3MarketId);
+        uint256 posId = pm.deposit(lpToken, 42, 0, borrowAsset);
         vm.roll(block.number + 3);
         vm.prank(alice);
         le.borrow(posId, 10_000e18);
@@ -181,7 +184,7 @@ contract V3LiquidationPaths is Test {
     ///      repaid the debt — never back to the borrower.
     function test_v3_feeOnly_liquidatorTakesFees() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 42, 0, v3MarketId);
+        uint256 posId = pm.deposit(lpToken, 42, 0, borrowAsset);
         vm.roll(block.number + 3);
         vm.prank(alice);
         le.borrow(posId, 5000e18);
@@ -220,7 +223,7 @@ contract V3LiquidationPaths is Test {
     ///      liquidation can no longer skim the position's fees.
     function test_v3_normalLiquidation_sweepsFeesToBorrower() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 42, 0, v3MarketId);
+        uint256 posId = pm.deposit(lpToken, 42, 0, borrowAsset);
         vm.roll(block.number + 3);
         vm.prank(alice);
         le.borrow(posId, 30_000e18);
@@ -305,7 +308,7 @@ contract V3LiquidationPaths is Test {
 
     function test_v3_underwaterFeeOnly_takesAllFees() public {
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 42, 0, v3MarketId);
+        uint256 posId = pm.deposit(lpToken, 42, 0, borrowAsset);
         vm.roll(block.number + 3);
         vm.prank(alice);
         le.borrow(posId, 20_000e18);
@@ -330,7 +333,7 @@ contract V3LiquidationPaths is Test {
     function test_v2_tokenIdNonZero_normalPath() public {
         // V2 position with tokenId > 0 (shouldn't hit fee-only path)
         vm.prank(alice);
-        uint256 posId = pm.deposit(v2LpToken, 99, 100e18, v2MarketId); // tokenId=99, amount=100
+        uint256 posId = pm.deposit(v2LpToken, 99, 100e18, borrowAsset); // tokenId=99, amount=100
         vm.roll(block.number + 3);
         vm.prank(alice);
         le.borrow(posId, 30_000e18);

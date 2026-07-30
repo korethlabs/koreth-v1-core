@@ -6,7 +6,7 @@ import {stdJson} from "forge-std/StdJson.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ProtocolCore} from "../src/core/ProtocolCore.sol";
-import {IMarket} from "../src/interfaces/IMarket.sol";
+import {ILendingPool} from "../src/interfaces/ILendingPool.sol";
 import {IPositionManager} from "../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../src/interfaces/ILPAdapter.sol";
 import {IUniswapV2Pair, IUniswapV2Router} from "../src/interfaces/external/IUniswapV2.sol";
@@ -48,11 +48,10 @@ contract SeedLocal is Script {
         ProtocolCore core = ProtocolCore(json.readAddress(".core"));
         IPositionManager positionManager = IPositionManager(json.readAddress(".positionManager"));
 
-        (uint256 v2Usdc,) = _findMarket(core, ILPAdapter.LPType.UniswapV2, USDC);
-        address v2UsdcAddr = core.markets(v2Usdc);
-        address v3UsdcAddr = core.markets(_findMarketId(core, ILPAdapter.LPType.UniswapV3, USDC));
-        address v2UsdtAddr = core.markets(_findMarketId(core, ILPAdapter.LPType.UniswapV2, USDT));
-        address v2DaiAddr = core.markets(_findMarketId(core, ILPAdapter.LPType.UniswapV2, DAI));
+        // Shared-pool model: one lending pool per borrow asset (collateral type is not part of the key).
+        address usdcPoolAddr = core.getPool(USDC);
+        address usdtPoolAddr = core.getPool(USDT);
+        address daiPoolAddr = core.getPool(DAI);
         address adapter = core.adapters(ILPAdapter.LPType.UniswapV2);
         require(adapter != address(0), "NO_V2_ADAPTER");
 
@@ -72,23 +71,21 @@ contract SeedLocal is Script {
         IERC20(USDC).forceApprove(V2_ROUTER, usdcForLp);
         IUniswapV2Router(V2_ROUTER).addLiquidity(WETH, USDC, LP_WETH, usdcForLp, 0, 0, me, deadline);
 
-        // 3. Supply lender liquidity to every market.
-        uint256 usdcLeft = IERC20(USDC).balanceOf(me);
-        _supply(v2UsdcAddr, USDC, usdcLeft / 2); // borrowed market — keep the bigger half
-        _supply(v3UsdcAddr, USDC, IERC20(USDC).balanceOf(me));
-        _supply(v2UsdtAddr, USDT, IERC20(USDT).balanceOf(me));
-        _supply(v2DaiAddr, DAI, IERC20(DAI).balanceOf(me));
+        // 3. Supply lender liquidity to every pool.
+        _supply(usdcPoolAddr, USDC, IERC20(USDC).balanceOf(me));
+        _supply(usdtPoolAddr, USDT, IERC20(USDT).balanceOf(me));
+        _supply(daiPoolAddr, DAI, IERC20(DAI).balanceOf(me));
 
-        // 4. Deposit LP as collateral into the V2->USDC market (adapter pulls the LP).
+        // 4. Deposit LP as collateral, borrowing against the shared USDC pool (adapter pulls the LP).
         uint256 lpBal = IUniswapV2Pair(V2_PAIR).balanceOf(me);
         require(lpBal > 0, "NO_LP");
         IUniswapV2Pair(V2_PAIR).approve(adapter, lpBal);
-        uint256 positionId = positionManager.deposit(V2_PAIR, 0, lpBal, v2Usdc);
+        uint256 positionId = positionManager.deposit(V2_PAIR, 0, lpBal, USDC);
 
         vm.stopBroadcast();
 
         console.log("=== Seed (supply + collateral) complete ===");
-        console.log("V2/USDC marketId:", v2Usdc);
+        console.log("USDC pool:       ", usdcPoolAddr);
         console.log("LP deposited:    ", lpBal);
         console.log("positionId:      ", positionId);
         console.log("Next: SeedUsers, then SeedBorrow (after cooldown)");
@@ -102,43 +99,9 @@ contract SeedLocal is Script {
         IUniswapV2SwapRouter(V2_ROUTER).swapExactTokensForTokens(amountIn, 0, path, to, deadline);
     }
 
-    function _supply(address market, address asset, uint256 amount) internal {
+    function _supply(address pool, address asset, uint256 amount) internal {
         require(amount > 0, "NOTHING_TO_SUPPLY");
-        IERC20(asset).forceApprove(market, amount);
-        IMarket(market).supply(amount);
-    }
-
-    function _findMarketId(
-        ProtocolCore core,
-        ILPAdapter.LPType lpType,
-        address borrowAsset
-    )
-        internal
-        view
-        returns (uint256 id)
-    {
-        (id,) = _findMarket(core, lpType, borrowAsset);
-    }
-
-    /// @notice Locate a market by (lpType, borrowAsset) among the registered markets.
-    function _findMarket(
-        ProtocolCore core,
-        ILPAdapter.LPType lpType,
-        address borrowAsset
-    )
-        internal
-        view
-        returns (uint256 id, address addr)
-    {
-        uint256 count = core.nextMarketId();
-        for (uint256 i = 0; i < count; i++) {
-            address m = core.markets(i);
-            if (m == address(0)) continue;
-            IMarket.MarketConfig memory cfg = IMarket(m).getConfig();
-            if (cfg.lpType == lpType && cfg.borrowAsset == borrowAsset) {
-                return (i, m);
-            }
-        }
-        revert("MARKET_NOT_FOUND");
+        IERC20(asset).forceApprove(pool, amount);
+        ILendingPool(pool).supply(amount);
     }
 }

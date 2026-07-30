@@ -12,9 +12,9 @@ contract RiskManagement is E2EBase {
 
         // Set reserve factor + fee collector for the market (needed for liquidation test)
         vm.startPrank(deployer);
-        address marketAddr = core.markets(ethUsdcMarketId);
-        Market(marketAddr).setReserveFactor(2000);
-        Market(marketAddr).setFeeCollector(address(feeCollector));
+        address poolAddr = address(usdcPool);
+        LendingPool(poolAddr).setReserveFactor(2000);
+        LendingPool(poolAddr).setFeeCollector(address(feeCollector));
         vm.stopPrank();
     }
 
@@ -63,7 +63,7 @@ contract RiskManagement is E2EBase {
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId);
         vm.expectRevert("POSITION_TOO_LARGE");
-        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, ethUsdcMarketId);
+        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         console.log("=== Max Position Value Enforced ===");
@@ -95,7 +95,7 @@ contract RiskManagement is E2EBase {
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId3);
         vm.expectRevert("MAX_POSITIONS_REACHED");
-        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId3, 0, ethUsdcMarketId);
+        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId3, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         console.log("=== Max Positions Per User Enforced ===");
@@ -123,7 +123,7 @@ contract RiskManagement is E2EBase {
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId);
         vm.expectRevert("POOL_CIRCUIT_BREAKER");
-        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, ethUsdcMarketId);
+        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         // PoolAdmin unpauses
@@ -135,7 +135,7 @@ contract RiskManagement is E2EBase {
         // Now deposit works
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, ethUsdcMarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         IPositionManager.Position memory pos = positionManager.getPosition(positionId);
@@ -148,28 +148,19 @@ contract RiskManagement is E2EBase {
     // ========================================================================
 
     function test_circuitBreaker_freezeMarket_allowsLiquidation() public {
-        // Create a V2 market for liquidation (V2 uses amount-based positions)
-        vm.startPrank(deployer);
-        (uint256 v2MarketId,) = marketFactory.createMarket(
-            ILPAdapter.LPType.UniswapV2, Constants.USDC, 6500, 7500, 500, 10_000_000e6, 0, 0, "volatile"
-        );
-        Market(core.markets(v2MarketId)).setReserveFactor(2000);
-        Market(core.markets(v2MarketId)).setFeeCollector(address(feeCollector));
-        vm.stopPrank();
-
-        // Fund V2 market with liquidity
+        // Reserve factor and fee collector are already wired in setUp.
+        // Fund the shared USDC pool
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = core.markets(v2MarketId);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        IMarket(v2MarketAddr).supply(50_000e6);
+        IERC20(Constants.USDC).approve(address(usdcPool), 50_000e6);
+        ILendingPool(address(usdcPool)).supply(50_000e6);
         vm.stopPrank();
 
         // Alice creates position and borrows aggressively
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 
@@ -184,9 +175,9 @@ contract RiskManagement is E2EBase {
 
         // Freeze the market
         vm.prank(deployer);
-        circuitBreaker.freezeMarket(v2MarketId, "Depeg detected");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV2, "Depeg detected");
 
-        assertTrue(circuitBreaker.marketFrozen(v2MarketId), "Market should be frozen");
+        assertTrue(circuitBreaker.collateralFrozen(ILPAdapter.LPType.UniswapV2), "Market should be frozen");
 
         // New deposit should be blocked on frozen market
         _fundWeth(alice, 0.5 ether);
@@ -194,13 +185,13 @@ contract RiskManagement is E2EBase {
         uint256 lpAmount2 = _createV2Position(alice, 0.5 ether, 1000e6);
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount2);
-        vm.expectRevert("MARKET_FROZEN");
-        positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount2, v2MarketId);
+        vm.expectRevert("COLLATERAL_FROZEN");
+        positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount2, usdcBorrowAsset);
         vm.stopPrank();
 
         // Borrow should be blocked on frozen market
         vm.prank(alice);
-        vm.expectRevert("MARKET_FROZEN");
+        vm.expectRevert("COLLATERAL_FROZEN");
         lendingEngine.borrow(positionId, 100e6);
 
         // Liquidation should still work on frozen market

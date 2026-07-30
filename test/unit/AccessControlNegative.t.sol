@@ -9,10 +9,10 @@ import {FeeCollector} from "../../src/core/FeeCollector.sol";
 import {RiskManager} from "../../src/security/RiskManager.sol";
 import {CircuitBreaker} from "../../src/security/CircuitBreaker.sol";
 import {PoolHealthMonitor} from "../../src/security/PoolHealthMonitor.sol";
-import {Market} from "../../src/markets/Market.sol";
+import {LendingPool} from "../../src/markets/LendingPool.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
-import {IMarket} from "../../src/interfaces/IMarket.sol";
+import {ILendingPool} from "../../src/interfaces/ILendingPool.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 
@@ -26,7 +26,7 @@ contract AccessControlNegativeTest is Test {
     RiskManager public rm;
     CircuitBreaker public cb;
     PoolHealthMonitor public phm;
-    Market public market;
+    LendingPool public market;
     PriceFeedRegistry public registry;
     InterestRateModel public irm;
     MockERC20 public usdc;
@@ -48,22 +48,13 @@ contract AccessControlNegativeTest is Test {
         phm = new PoolHealthMonitor(address(core), address(cb));
         registry = new PriceFeedRegistry(address(core));
 
-        IMarket.MarketConfig memory config = IMarket.MarketConfig({
-            lpType: ILPAdapter.LPType.UniswapV3,
-            borrowAsset: address(usdc),
-            maxLtv: 6500,
-            liquidationThreshold: 7500,
-            liquidationBonus: 500,
-            borrowCap: 10_000_000e6,
-            minPoolTvl: 5_000_000e18,
-            minPoolAge: 0
-        });
+        ILendingPool.PoolConfig memory config = ILendingPool.PoolConfig({borrowAsset: address(usdc)});
 
-        Market impl = new Market();
-        market = Market(
+        LendingPool impl = new LendingPool();
+        market = LendingPool(
             address(
                 new ERC1967Proxy(
-                    address(impl), abi.encodeCall(Market.initialize, (config, address(irm), address(core)))
+                    address(impl), abi.encodeCall(LendingPool.initialize, (config, address(irm), address(core)))
                 )
             )
         );
@@ -141,10 +132,10 @@ contract AccessControlNegativeTest is Test {
         rm.setMaxPositionsPerUser(5);
     }
 
-    function test_setMarketSupplyCap_revertsUnauthorized() public {
+    function test_setPoolSupplyCap_revertsUnauthorized() public {
         vm.prank(attacker);
         vm.expectRevert("NOT_RISK_ADMIN");
-        rm.setMarketSupplyCap(0, 100_000e18);
+        rm.setPoolSupplyCap(makeAddr("pool"), 100_000e18);
     }
 
     // ========== CircuitBreaker — onlyGuardianOrKeeper ==========
@@ -155,10 +146,10 @@ contract AccessControlNegativeTest is Test {
         cb.pausePool(makeAddr("pool"), "test");
     }
 
-    function test_freezeMarket_revertsUnauthorized() public {
+    function test_freezeCollateral_revertsUnauthorized() public {
         vm.prank(attacker);
         vm.expectRevert("NOT_AUTHORIZED");
-        cb.freezeMarket(0, "test");
+        cb.freezeCollateral(ILPAdapter.LPType.UniswapV3, "test");
     }
 
     // ========== CircuitBreaker — onlyPoolAdmin ==========
@@ -169,24 +160,18 @@ contract AccessControlNegativeTest is Test {
         cb.unpausePool(makeAddr("pool"));
     }
 
-    function test_unfreezeMarket_revertsUnauthorized() public {
+    function test_unfreezeCollateral_revertsUnauthorized() public {
         vm.prank(attacker);
         vm.expectRevert("NOT_POOL_ADMIN");
-        cb.unfreezeMarket(0);
+        cb.unfreezeCollateral(ILPAdapter.LPType.UniswapV3);
     }
 
-    // ========== Market — onlyRiskAdmin ==========
+    // ========== LendingPool — onlyRiskAdmin ==========
 
     function test_marketSetReserveFactor_revertsUnauthorized() public {
         vm.prank(attacker);
         vm.expectRevert("NOT_RISK_ADMIN");
         market.setReserveFactor(2000);
-    }
-
-    function test_updateConfig_revertsUnauthorized() public {
-        vm.prank(attacker);
-        vm.expectRevert("NOT_RISK_ADMIN");
-        market.updateConfig(6500, 7500, 500, 10_000_000e6);
     }
 
     function test_eliminateDeficit_revertsUnauthorized() public {

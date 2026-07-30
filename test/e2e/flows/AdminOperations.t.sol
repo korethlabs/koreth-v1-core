@@ -2,12 +2,14 @@
 pragma solidity ^0.8.26;
 
 import "../E2EBase.t.sol";
-import {Market} from "../../../src/markets/Market.sol";
+import {LendingPool} from "../../../src/markets/LendingPool.sol";
 import {IPositionManager} from "../../../src/interfaces/IPositionManager.sol";
+import {RiskManager} from "../../../src/security/RiskManager.sol";
+import {RiskConfig} from "../../helpers/RiskConfig.sol";
 
 /// @title AdminOperations
 /// @notice E2E tests for admin/governance operations on forked mainnet.
-/// @dev Covers: Market.updateConfig, Market.eliminateDeficit, RiskManager caps,
+/// @dev Covers: RiskManager collateral config, LendingPool.eliminateDeficit, RiskManager caps,
 ///      LiquidationEngine admin setters, FeeCollector.sweepExcess, oracle config.
 contract AdminOperations is E2EBase {
     function setUp() public override {
@@ -34,10 +36,12 @@ contract AdminOperations is E2EBase {
         uint256 hfBefore = _getHealthFactor(positionId);
         console.log("HF before config change: %s", hfBefore / 1e16);
 
-        // Admin reduces LTV from 65% to 50%
-        address marketAddr = core.markets(ethUsdcMarketId);
+        // Admin reduces LTV from 65% to 50% and liq threshold 75% -> 60% (via RiskManager).
+        // An enabled type must state a cap — 0 means "blocked", so it would revert ZERO_BORROW_CAP.
         vm.prank(deployer);
-        Market(marketAddr).updateConfig(5000, 6000, 500, 10_000_000e6);
+        riskManager.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(5000, 6000, 500, 0, riskManager.NO_BORROW_CAP(), true)
+        );
 
         // HF should change (liquidation threshold changed from 75% to 60%)
         uint256 hfAfter = _getHealthFactor(positionId);
@@ -50,35 +54,39 @@ contract AdminOperations is E2EBase {
         assertLt(maxBorrowAfter, maxBorrow, "Max borrow should decrease with lower LTV");
     }
 
-    /// @notice updateConfig reverts with invalid params
+    /// @notice setCollateralConfig reverts with invalid params
     function test_revert_updateConfig_invalidParams() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
+        // Each case passes NO_BORROW_CAP so the only invalid field is the one under test —
+        // a 0 cap would trip ZERO_BORROW_CAP and mask the check we care about.
+        uint256 noCap = riskManager.NO_BORROW_CAP();
 
         // LTV >= liquidation threshold
         vm.prank(deployer);
-        vm.expectRevert("LTV_MUST_BE_BELOW_LIQ_THRESHOLD");
-        Market(marketAddr).updateConfig(8000, 7500, 500, 10_000_000e6);
+        vm.expectRevert("LTV_GE_THRESHOLD");
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.config(8000, 7500, 500, 0, noCap, true));
 
-        // LTV too high
+        // Liquidation threshold above the allowed maximum
         vm.prank(deployer);
-        vm.expectRevert("LTV_TOO_HIGH");
-        Market(marketAddr).updateConfig(9600, 9800, 500, 10_000_000e6);
+        vm.expectRevert("THRESHOLD_TOO_HIGH");
+        riskManager.setCollateralConfig(
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(9600, 10_001, 500, 0, noCap, true)
+        );
 
         // Non-admin blocked
         vm.prank(alice);
-        vm.expectRevert();
-        Market(marketAddr).updateConfig(5000, 6000, 500, 10_000_000e6);
+        vm.expectRevert("NOT_RISK_ADMIN");
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.config(5000, 6000, 500, 0, noCap, true));
     }
 
     // ========== Market.eliminateDeficit ==========
 
     /// @notice eliminateDeficit when no deficit reverts
     function test_revert_eliminateDeficit_noDeficit() public {
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address poolAddr = address(usdcPool);
 
         vm.prank(deployer);
         vm.expectRevert("NO_DEFICIT");
-        Market(marketAddr).eliminateDeficit();
+        LendingPool(poolAddr).eliminateDeficit();
     }
 
     // ========== RiskManager supply cap ==========
@@ -87,7 +95,7 @@ contract AdminOperations is E2EBase {
     function test_riskManager_supplyCap_enforced() public {
         // Set a tight supply cap on the market ($5K)
         vm.prank(deployer);
-        riskManager.setMarketSupplyCap(ethUsdcMarketId, 5000e18); // $5K in 18-dec USD
+        riskManager.setPoolSupplyCap(usdcBorrowAsset, 5000e18); // $5K in 18-dec USD
 
         // Alice deposits a $7K+ position -- should fail
         uint256 tokenId = _createV3Position(alice, 2 ether, 5000e6);
@@ -95,16 +103,16 @@ contract AdminOperations is E2EBase {
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId);
         vm.expectRevert("SUPPLY_CAP_REACHED");
-        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, ethUsdcMarketId);
+        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         // Raise cap -- deposit succeeds
         vm.prank(deployer);
-        riskManager.setMarketSupplyCap(ethUsdcMarketId, 100_000e18);
+        riskManager.setPoolSupplyCap(usdcBorrowAsset, 100_000e18);
 
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId);
-        uint256 posId = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, ethUsdcMarketId);
+        uint256 posId = positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         assertGt(_getPositionValue(posId), 0);

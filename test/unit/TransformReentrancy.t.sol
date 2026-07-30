@@ -7,15 +7,17 @@ import {ProtocolCore} from "../../src/core/ProtocolCore.sol";
 import {ACLManager} from "../../src/core/ACLManager.sol";
 import {PositionManager} from "../../src/core/PositionManager.sol";
 import {LendingEngine} from "../../src/core/LendingEngine.sol";
-import {Market} from "../../src/markets/Market.sol";
+import {LendingPool} from "../../src/markets/LendingPool.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {LPOracleHub} from "../../src/oracle/LPOracleHub.sol";
 import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
-import {IMarket} from "../../src/interfaces/IMarket.sol";
+import {ILendingPool} from "../../src/interfaces/ILendingPool.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {RiskManager} from "../../src/security/RiskManager.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 
 /// @notice Transformer that re-enters PositionManager.transform() while a transform is in progress.
 ///         It owns its OWN position so the nested call passes the owner check and reaches the
@@ -72,7 +74,7 @@ contract TransformReentrancyTest is Test {
     ACLManager public aclManager;
     PositionManager public pm;
     LendingEngine public le;
-    Market public market;
+    LendingPool public market;
     LPOracleHub public oracleHub;
     MockLPAdapter public adapter;
     MockLPOracle public oracle;
@@ -81,7 +83,7 @@ contract TransformReentrancyTest is Test {
     address public owner = makeAddr("owner");
     address public alice = makeAddr("alice");
     address public lpToken = makeAddr("lpToken");
-    uint256 public marketId;
+    address public borrowAsset;
 
     function setUp() public {
         usdc = new MockERC20("USDC", "USDC", 18);
@@ -110,20 +112,13 @@ contract TransformReentrancyTest is Test {
             )
         );
 
-        IMarket.MarketConfig memory mConfig = IMarket.MarketConfig({
-            lpType: ILPAdapter.LPType.UniswapV3,
-            borrowAsset: address(usdc),
-            maxLtv: 6500,
-            liquidationThreshold: 7500,
-            liquidationBonus: 500,
-            borrowCap: 100_000_000e18,
-            minPoolTvl: 0,
-            minPoolAge: 0
-        });
-        market = Market(
+        ILendingPool.PoolConfig memory mConfig = ILendingPool.PoolConfig({borrowAsset: address(usdc)});
+        borrowAsset = address(usdc);
+        market = LendingPool(
             address(
                 new ERC1967Proxy(
-                    address(new Market()), abi.encodeCall(Market.initialize, (mConfig, address(irm), address(core)))
+                    address(new LendingPool()),
+                    abi.encodeCall(LendingPool.initialize, (mConfig, address(irm), address(core)))
                 )
             )
         );
@@ -140,8 +135,12 @@ contract TransformReentrancyTest is Test {
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.whitelistPool(lpToken);
-        marketId = core.registerMarket(address(market));
+        core.registerPool(address(usdc), address(market));
         pm.setLendingEngine(address(le));
+        // RiskManager is the collateral registry in the shared-pool model; deposits require it.
+        RiskManager rm = new RiskManager(address(core));
+        rm.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
+        core.setRiskManager(address(rm));
         vm.stopPrank();
     }
 
@@ -156,12 +155,12 @@ contract TransformReentrancyTest is Test {
 
         // The attacker owns its own position (so the nested owner check passes and we reach the guard)
         vm.prank(address(attacker));
-        uint256 attackerPos = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 attackerPos = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         attacker.setOwnPosition(attackerPos);
 
         // Alice owns a position and transforms it via the attacker
         vm.prank(alice);
-        uint256 alicePos = pm.deposit(lpToken, 2, 100e18, marketId);
+        uint256 alicePos = pm.deposit(lpToken, 2, 100e18, borrowAsset);
 
         bytes memory data = abi.encodeCall(ReentrantTransformer.reenter, ());
 
@@ -181,12 +180,12 @@ contract TransformReentrancyTest is Test {
 
         // Victim position owned by alice
         vm.prank(alice);
-        uint256 victimPos = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 victimPos = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         attacker.setVictim(victimPos);
 
         // Attacker owns the position it will legitimately transform
         vm.prank(address(attacker));
-        uint256 attackerPos = pm.deposit(lpToken, 2, 100e18, marketId);
+        uint256 attackerPos = pm.deposit(lpToken, 2, 100e18, borrowAsset);
 
         bytes memory data = abi.encodeCall(CrossPositionTransformer.attackOtherPosition, ());
 
@@ -206,7 +205,7 @@ contract TransformReentrancyTest is Test {
         aclManager.addTransformer(address(attacker));
 
         vm.prank(alice);
-        uint256 alicePos = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 alicePos = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         bytes memory data = abi.encodeCall(SilentRevertTransformer.boom, ());
 
@@ -224,7 +223,7 @@ contract TransformReentrancyTest is Test {
         aclManager.addTransformer(address(t));
 
         vm.prank(alice);
-        uint256 alicePos = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 alicePos = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(makeAddr("stranger"));
         vm.expectRevert("NOT_POSITION_OWNER");
@@ -238,7 +237,7 @@ contract TransformReentrancyTest is Test {
         SilentRevertTransformer t = new SilentRevertTransformer(); // NOT added as transformer
 
         vm.prank(alice);
-        uint256 alicePos = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 alicePos = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         vm.prank(alice);
         vm.expectRevert("NOT_TRANSFORMER");

@@ -23,15 +23,20 @@ interface IPositionManager {
         address pool;
         address token0;
         address token1;
-        uint256 marketId;
+        address borrowAsset; // The shared lending pool (borrow asset) this position borrows from
         PositionStatus status;
         uint256 depositTimestamp;
         uint256 depositBlock; // Block number at deposit (for borrow cooldown)
     }
 
+    /// @dev `borrowAsset` identifies the shared pool this position may draw from. It is emitted
+    ///      because it is not derivable from the event stream otherwise: in the shared-pool model
+    ///      the pool is chosen at deposit time, so without it an indexer would need an archive
+    ///      call to getPosition() just to attribute a position to a pool.
     event PositionCreated(
         uint256 indexed positionId,
         address indexed owner,
+        address indexed borrowAsset,
         address lpToken,
         uint256 tokenId,
         ILPAdapter.LPType lpType,
@@ -46,7 +51,7 @@ interface IPositionManager {
         address lpToken,
         uint256 tokenId,
         uint256 amount,
-        uint256 marketId
+        address borrowAsset
     )
         external
         returns (uint256 positionId);
@@ -85,8 +90,8 @@ interface IPositionManager {
     /// @notice Mark position as liquidated (called by LiquidationEngine)
     function markLiquidated(uint256 positionId, address liquidator, uint256 debtRepaid) external;
 
-    /// @notice Record collateral value (18-dec USD) leaving the market on liquidation, for supply-cap tracking
-    /// @dev Called by LiquidationEngine; forwards to RiskManager.recordWithdraw so marketCurrentSupply
+    /// @notice Record collateral value (18-dec USD) leaving the pool on liquidation, for supply-cap tracking
+    /// @dev Called by LiquidationEngine; forwards to RiskManager.recordWithdraw so poolCurrentSupply
     ///      does not drift upward as liquidations remove collateral.
     function recordCollateralSeized(uint256 positionId, uint256 valueUsd) external;
 

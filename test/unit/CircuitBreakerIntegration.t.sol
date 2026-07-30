@@ -14,8 +14,10 @@ import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
-import {MockMarket} from "../mocks/MockMarket.sol";
+import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {RiskManager} from "../../src/security/RiskManager.sol";
+import {RiskConfig} from "../helpers/RiskConfig.sol";
 
 contract CircuitBreakerIntegrationTest is Test {
     ACLManager public aclManager;
@@ -26,16 +28,17 @@ contract CircuitBreakerIntegrationTest is Test {
     CircuitBreaker public cb;
     MockLPAdapter public adapter;
     MockLPOracle public oracle;
-    MockMarket public market;
+    MockLendingPool public market;
     MockERC20 public usdc;
     InterestRateModel public irm;
+    RiskManager public riskManager;
 
     address public owner = makeAddr("owner");
     address public keeper = makeAddr("keeper");
     address public alice = makeAddr("alice");
     address public lpToken = makeAddr("lpToken");
 
-    uint256 public marketId;
+    address public borrowAsset;
 
     function setUp() public {
         usdc = new MockERC20("USDC", "USDC", 18);
@@ -72,16 +75,21 @@ contract CircuitBreakerIntegrationTest is Test {
         adapter.setSupportedToken(lpToken, true);
         oracle = new MockLPOracle();
         oracle.setPrice(50_000e18);
-        market = new MockMarket(address(usdc), address(irm));
+        market = new MockLendingPool(address(usdc), address(irm));
+        borrowAsset = address(usdc);
+        riskManager = new RiskManager(address(core));
 
         vm.startPrank(owner);
         aclManager.addLendingEngine(address(le));
         aclManager.addPositionManager(address(pm));
         aclManager.addKeeper(keeper);
+        aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.whitelistPool(lpToken);
-        marketId = core.registerMarket(address(market));
+        core.registerPool(address(usdc), address(market));
+        core.setRiskManager(address(riskManager));
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         pm.setLendingEngine(address(le));
         pm.setCircuitBreaker(address(cb));
         vm.stopPrank();
@@ -98,12 +106,12 @@ contract CircuitBreakerIntegrationTest is Test {
 
         vm.prank(alice);
         vm.expectRevert("POOL_CIRCUIT_BREAKER");
-        pm.deposit(lpToken, 1, 100e18, marketId);
+        pm.deposit(lpToken, 1, 100e18, borrowAsset);
     }
 
     function test_deposit_worksWhenPoolNotPaused() public {
         vm.prank(alice);
-        pm.deposit(lpToken, 1, 100e18, marketId);
+        pm.deposit(lpToken, 1, 100e18, borrowAsset);
     }
 
     // ========== Borrow ==========
@@ -111,7 +119,7 @@ contract CircuitBreakerIntegrationTest is Test {
     function test_borrow_revertsWhenPoolPaused() public {
         // Deposit first (pool not paused yet)
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
 
         // Keeper pauses the pool
@@ -129,7 +137,7 @@ contract CircuitBreakerIntegrationTest is Test {
     function test_withdraw_worksWhenPoolPaused() public {
         // Deposit
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         // Keeper pauses the pool
         vm.prank(keeper);
@@ -148,7 +156,7 @@ contract CircuitBreakerIntegrationTest is Test {
     function test_getPositionValue_worksWhenPoolPaused() public {
         // Deposit and borrow
         vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, marketId);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
         vm.roll(block.number + 2);
         vm.prank(alice);
         le.borrow(posId, 30_000e18);
@@ -171,7 +179,7 @@ contract CircuitBreakerIntegrationTest is Test {
         // Blocked
         vm.prank(alice);
         vm.expectRevert("POOL_CIRCUIT_BREAKER");
-        pm.deposit(lpToken, 1, 100e18, marketId);
+        pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
         // Unpause
         vm.prank(owner);
@@ -179,7 +187,7 @@ contract CircuitBreakerIntegrationTest is Test {
 
         // Works again
         vm.prank(alice);
-        pm.deposit(lpToken, 1, 100e18, marketId);
+        pm.deposit(lpToken, 1, 100e18, borrowAsset);
     }
 
     // ========== Admin ==========
@@ -197,6 +205,6 @@ contract CircuitBreakerIntegrationTest is Test {
 
         // Deposit works
         vm.prank(alice);
-        pm.deposit(lpToken, 1, 100e18, marketId);
+        pm.deposit(lpToken, 1, 100e18, borrowAsset);
     }
 }

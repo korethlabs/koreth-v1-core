@@ -17,9 +17,8 @@ import {PriceValidator} from "../src/oracle/PriceValidator.sol";
 import {UniswapV3Adapter} from "../src/adapters/UniswapV3Adapter.sol";
 import {UniswapV2Adapter} from "../src/adapters/UniswapV2Adapter.sol";
 import {InterestRateModel} from "../src/markets/InterestRateModel.sol";
-import {Market} from "../src/markets/Market.sol";
-import {MarketFactory} from "../src/markets/MarketFactory.sol";
-import {MarketRegistry} from "../src/markets/MarketRegistry.sol";
+import {LendingPool} from "../src/markets/LendingPool.sol";
+import {PoolFactory} from "../src/markets/PoolFactory.sol";
 import {CircuitBreaker} from "../src/security/CircuitBreaker.sol";
 import {RiskManager} from "../src/security/RiskManager.sol";
 import {PoolHealthMonitor} from "../src/security/PoolHealthMonitor.sol";
@@ -52,11 +51,15 @@ abstract contract DeployBase is Script {
         // Pools to whitelist
         address v2Pool; // V2 pair to whitelist (address(0) = skip)
         address v3Pool; // V3 pool to whitelist (address(0) = skip)
-        // Market params
+        // Collateral risk params
         uint256 maxLtv; // bps (e.g., 6500 = 65%)
         uint256 liquidationThreshold; // bps
         uint256 liquidationBonus; // bps
-        uint256 borrowCap; // in stablecoin decimals
+        uint256 haircut; // bps discount applied to collateral value (0 = none)
+        // Per-collateral borrow cap, in 18-dec USD — NOT stablecoin decimals. RiskManager compares
+        // this against amounts converted by LendingEngine._toUsd, so a 6-dec value would cap the
+        // type 1e12 too low and revert every borrow.
+        uint256 borrowCap;
         // Governance
         address multisig; // proposer/executor for timelock (deployer on testnet)
         uint256 timelockDelay; // 172800 (48h) for mainnet, 60 for testnet
@@ -75,8 +78,7 @@ abstract contract DeployBase is Script {
     PriceFeedRegistry public priceFeedRegistry;
     PriceValidator public priceValidator;
     PoolHealthMonitor public poolHealthMonitor;
-    MarketFactory public marketFactory;
-    MarketRegistry public marketRegistry;
+    PoolFactory public poolFactory;
     TimelockController public timelock;
 
     // --- Abstract: subclass provides config ---
@@ -96,9 +98,9 @@ abstract contract DeployBase is Script {
         _deploySecurity(cfg);
         _deployOracles(cfg);
         _deployAdapters(cfg);
-        _deployMarkets(cfg);
+        _deployPoolFactory(cfg);
         _configureRoles(cfg);
-        _createMarket(cfg);
+        _createPools(cfg);
         _beforeGovernance(cfg);
         _deployTimelock(cfg);
 
@@ -121,9 +123,9 @@ abstract contract DeployBase is Script {
     ///         extra stablecoin price feeds (USDT/DAI) here so their markets can be valued.
     function _afterOracles(ChainConfig memory cfg) internal virtual {}
 
-    /// @notice Optional hook run at the end of _createMarket (default no-op). Local creates the
+    /// @notice Optional hook run at the end of _createPools (default no-op). Local creates the
     ///         extra borrow-asset markets (V2->USDT, V2->DAI) here.
-    function _afterMarkets(ChainConfig memory cfg) internal virtual {}
+    function _afterPools(ChainConfig memory cfg) internal virtual {}
 
     // --- Deploy Steps ---
 
@@ -212,18 +214,17 @@ abstract contract DeployBase is Script {
         }
     }
 
-    function _deployMarkets(ChainConfig memory cfg) internal {
+    function _deployPoolFactory(ChainConfig memory cfg) internal {
         InterestRateModel stableModel = new InterestRateModel(100, 400, 7500, 8500);
         InterestRateModel volatileModel = new InterestRateModel(200, 600, 10_000, 8000);
 
-        Market marketImpl = new Market();
-        marketFactory = new MarketFactory(address(core), address(marketImpl));
-        marketRegistry = new MarketRegistry(address(core));
+        LendingPool poolImpl = new LendingPool();
+        poolFactory = new PoolFactory(address(core), address(poolImpl));
 
-        marketFactory.setInterestRateModel("stable", address(stableModel));
-        marketFactory.setInterestRateModel("volatile", address(volatileModel));
+        poolFactory.setInterestRateModel("stable", address(stableModel));
+        poolFactory.setInterestRateModel("volatile", address(volatileModel));
 
-        core.setMarketFactory(address(marketFactory));
+        core.setPoolFactory(address(poolFactory));
     }
 
     function _configureRoles(ChainConfig memory cfg) internal {
@@ -252,55 +253,57 @@ abstract contract DeployBase is Script {
         // Grant KEEPER to security contracts so they can trigger CircuitBreaker.pausePool()
         aclManager.addKeeper(address(priceValidator));
         aclManager.addKeeper(address(poolHealthMonitor));
+
+        // PoolFactory needs POOL_ADMIN (createPool→registerPool) and RISK_ADMIN
+        // (whitelistCollateral→setCollateralConfig + setReserveFactor on new pools).
+        aclManager.grantRole(aclManager.POOL_ADMIN(), address(poolFactory));
+        aclManager.addRiskAdmin(address(poolFactory));
     }
 
-    function _createMarket(ChainConfig memory cfg) internal {
-        // Whitelist pools
+    function _createPools(ChainConfig memory cfg) internal {
+        // Whitelist collateral pools (the underlying LP pools, not the lending pool)
         if (cfg.v3Pool != address(0)) core.whitelistPool(cfg.v3Pool);
         if (cfg.v2Pool != address(0)) core.whitelistPool(cfg.v2Pool);
 
-        // Create V3 market if V3 is configured
+        // Shared-pool model: create ONE lending pool for the primary stablecoin, then whitelist
+        // each configured collateral type against it (borrow cap is per-collateral in RiskManager).
+        _ensurePool(cfg.stablecoin);
+
         if (cfg.v3NftManager != address(0)) {
-            _createAndWireMarket(ILPAdapter.LPType.UniswapV3, cfg);
+            _whitelistCollateral(ILPAdapter.LPType.UniswapV3, cfg);
         }
-
-        // Create V2 market if V2 is configured
         if (cfg.v2Factory != address(0)) {
-            _createAndWireMarket(ILPAdapter.LPType.UniswapV2, cfg);
+            _whitelistCollateral(ILPAdapter.LPType.UniswapV2, cfg);
         }
 
-        _afterMarkets(cfg);
+        _afterPools(cfg);
     }
 
-    function _createAndWireMarket(ILPAdapter.LPType lpType, ChainConfig memory cfg) internal {
-        _createAndWireMarketFor(lpType, cfg.stablecoin, cfg);
+    /// @notice Ensure a shared lending pool exists for a borrow asset (idempotent); wire FeeCollector.
+    /// @dev Subclasses (e.g. Local) call this from _afterPools to add extra borrow assets. Collateral
+    ///      does NOT need re-whitelisting per pool: CollateralConfig is keyed by LPType alone, so one
+    ///      _whitelistCollateral call covers that type against every borrow asset.
+    function _ensurePool(address borrowAsset) internal returns (address poolAddr) {
+        poolAddr = core.pools(borrowAsset);
+        if (poolAddr == address(0)) {
+            poolAddr = poolFactory.createPool(borrowAsset, "volatile", 0);
+            LendingPool(poolAddr).setFeeCollector(address(feeCollector));
+        }
     }
 
-    /// @notice Create a market for a specific (lpType, borrowAsset) and wire the FeeCollector.
-    /// @dev Subclasses (e.g. Local) use this from _afterMarkets to add extra borrow-asset markets.
-    function _createAndWireMarketFor(
-        ILPAdapter.LPType lpType,
-        address borrowAsset,
-        ChainConfig memory cfg
-    )
-        internal
-        returns (uint256 marketId)
-    {
-        (marketId,) = marketFactory.createMarket(
+    /// @notice Whitelist a collateral type against the shared pool (risk params via RiskManager).
+    function _whitelistCollateral(ILPAdapter.LPType lpType, ChainConfig memory cfg) internal {
+        poolFactory.whitelistCollateral(
             lpType,
-            borrowAsset,
-            cfg.maxLtv,
-            cfg.liquidationThreshold,
-            cfg.liquidationBonus,
-            cfg.borrowCap,
-            0, // minPoolTvl (0 for testnet)
-            0, // minPoolAge (0 for testnet)
-            "volatile"
+            RiskManager.CollateralConfig({
+                maxLtv: cfg.maxLtv,
+                liquidationThreshold: cfg.liquidationThreshold,
+                liquidationBonus: cfg.liquidationBonus,
+                haircut: cfg.haircut,
+                borrowCap: cfg.borrowCap,
+                enabled: true
+            })
         );
-
-        // Wire FeeCollector into the newly created market
-        address marketAddr = core.markets(marketId);
-        Market(marketAddr).setFeeCollector(address(feeCollector));
     }
 
     function _deployTimelock(ChainConfig memory cfg) internal virtual {
@@ -346,8 +349,7 @@ abstract contract DeployBase is Script {
         console.log("PriceFeedRegistry:      ", address(priceFeedRegistry));
         console.log("PriceValidator:         ", address(priceValidator));
         console.log("PoolHealthMonitor:      ", address(poolHealthMonitor));
-        console.log("MarketFactory:          ", address(marketFactory));
+        console.log("PoolFactory:            ", address(poolFactory));
         console.log("TimelockController:     ", address(timelock));
-        console.log("MarketRegistry:         ", address(marketRegistry));
     }
 }

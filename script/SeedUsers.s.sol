@@ -5,7 +5,6 @@ import "forge-std/Script.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ProtocolCore} from "../src/core/ProtocolCore.sol";
-import {IMarket} from "../src/interfaces/IMarket.sol";
 import {IPositionManager} from "../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../src/interfaces/ILPAdapter.sol";
 import {IUniswapV2Pair, IUniswapV2Router} from "../src/interfaces/external/IUniswapV2.sol";
@@ -29,7 +28,9 @@ contract SeedUsers is Script {
         string memory json = vm.readFile("./deployments/local.json");
         ProtocolCore core = ProtocolCore(json.readAddress(".core"));
         address positionManager = json.readAddress(".positionManager");
-        (uint256 marketId,) = _findV2Market(core);
+        // Shared-pool model: collateral borrows against the USDC pool (asset is the pool key).
+        // Read the mapping directly — getPool() reverts on a missing pool, which would mask NO_USDC_POOL.
+        require(core.pools(USDC) != address(0), "NO_USDC_POOL");
         address adapter = core.adapters(ILPAdapter.LPType.UniswapV2);
         require(adapter != address(0), "NO_V2_ADAPTER");
 
@@ -43,7 +44,7 @@ contract SeedUsers is Script {
         uint256[3] memory wrapWeth = [uint256(16 ether), 46 ether, 10 ether];
 
         for (uint256 i = 0; i < keys.length; i++) {
-            _seedUser(keys[i], wrapWeth[i], swapWeth[i], lpWeth[i], positionManager, adapter, marketId);
+            _seedUser(keys[i], wrapWeth[i], swapWeth[i], lpWeth[i], positionManager, adapter);
         }
     }
 
@@ -53,8 +54,7 @@ contract SeedUsers is Script {
         uint256 swapWethAmt,
         uint256 lpWethAmt,
         address positionManager,
-        address adapter,
-        uint256 marketId
+        address adapter
     )
         internal
     {
@@ -82,25 +82,12 @@ contract SeedUsers is Script {
         uint256 lpBal = IUniswapV2Pair(V2_PAIR).balanceOf(user);
         require(lpBal > 0, "NO_LP");
         IUniswapV2Pair(V2_PAIR).approve(adapter, lpBal);
-        uint256 positionId = IPositionManager(positionManager).deposit(V2_PAIR, 0, lpBal, marketId);
+        uint256 positionId = IPositionManager(positionManager).deposit(V2_PAIR, 0, lpBal, USDC);
 
         vm.stopBroadcast();
 
         console.log("user", user);
         console.log("  positionId", positionId);
         console.log("  LP", lpBal);
-    }
-
-    function _findV2Market(ProtocolCore core) internal view returns (uint256 id, address addr) {
-        uint256 count = core.nextMarketId();
-        for (uint256 i = 0; i < count; i++) {
-            address m = core.markets(i);
-            if (m == address(0)) continue;
-            IMarket.MarketConfig memory cfg = IMarket(m).getConfig();
-            if (cfg.lpType == ILPAdapter.LPType.UniswapV2 && cfg.borrowAsset == USDC) {
-                return (i, m);
-            }
-        }
-        revert("V2_MARKET_NOT_FOUND");
     }
 }

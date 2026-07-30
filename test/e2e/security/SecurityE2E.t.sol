@@ -126,7 +126,7 @@ contract SecurityE2E is E2EBase {
         // Second deposit — alice no longer owns the NFT
         vm.startPrank(alice);
         vm.expectRevert(); // transferFrom fails — alice doesn't own tokenId
-        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, ethUsdcMarketId);
+        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         console.log("=== Double Deposit NFT Blocked ===");
@@ -145,8 +145,8 @@ contract SecurityE2E is E2EBase {
         lendingEngine.borrow(positionId, maxBorrow);
 
         // Market should have very low liquidity now
-        address marketAddr = core.markets(ethUsdcMarketId);
-        uint256 marketBalance = IERC20(Constants.USDC).balanceOf(marketAddr);
+        address poolAddr = address(usdcPool);
+        uint256 marketBalance = IERC20(Constants.USDC).balanceOf(poolAddr);
         console.log("Market balance after max borrow: %s USDC", marketBalance / 1e6);
 
         // Verify market is nearly drained
@@ -161,25 +161,18 @@ contract SecurityE2E is E2EBase {
         // Use V2 for liquidation test — V2 has pos.amount > 0 (required for ZERO_LIQUIDITY check)
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
 
-        // Create V2 market
-        vm.startPrank(deployer);
-        (uint256 v2MarketId,) = marketFactory.createMarket(
-            ILPAdapter.LPType.UniswapV2, Constants.USDC, 6500, 7500, 500, 10_000_000e6, 0, 0, "volatile"
-        );
-        vm.stopPrank();
-
         // Fund and supply to V2 market
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = core.markets(v2MarketId);
+        address poolAddr = address(usdcPool);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        IMarket(v2MarketAddr).supply(50_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 50_000e6);
+        ILendingPool(poolAddr).supply(50_000e6);
         vm.stopPrank();
 
         // Deposit V2 LP
         vm.startPrank(alice);
         IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, v2MarketId);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
         vm.stopPrank();
         vm.roll(block.number + 2);
 
@@ -200,7 +193,7 @@ contract SecurityE2E is E2EBase {
         _fundUsdc(alice, maxRepay);
         vm.startPrank(alice);
         IERC20(Constants.USDC).approve(address(liquidationEngine), maxRepay);
-        IERC20(Constants.USDC).approve(v2MarketAddr, maxRepay);
+        IERC20(Constants.USDC).approve(poolAddr, maxRepay);
         liquidationEngine.liquidate(positionId, maxRepay, block.timestamp, 0, 0);
         vm.stopPrank();
 
@@ -214,14 +207,14 @@ contract SecurityE2E is E2EBase {
     function test_security_frozenMarket_depositsBlocked() public {
         // Freeze market
         vm.prank(deployer);
-        circuitBreaker.freezeMarket(ethUsdcMarketId, "USDC depeg");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "USDC depeg");
 
         // New deposit should fail
         uint256 tokenId = _createV3Position(alice, 1 ether, 2000e6);
         vm.startPrank(alice);
         nftManager.approve(address(v3Adapter), tokenId);
-        vm.expectRevert("MARKET_FROZEN");
-        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, ethUsdcMarketId);
+        vm.expectRevert("COLLATERAL_FROZEN");
+        positionManager.deposit(Constants.UNI_V3_NFT_MANAGER, tokenId, 0, usdcBorrowAsset);
         vm.stopPrank();
 
         console.log("=== Frozen Market Blocks Deposits ===");
@@ -234,10 +227,10 @@ contract SecurityE2E is E2EBase {
 
         // Freeze
         vm.prank(deployer);
-        circuitBreaker.freezeMarket(ethUsdcMarketId, "Oracle anomaly");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "Oracle anomaly");
 
         vm.prank(alice);
-        vm.expectRevert("MARKET_FROZEN");
+        vm.expectRevert("COLLATERAL_FROZEN");
         lendingEngine.borrow(positionId, 100e6);
 
         console.log("=== Frozen Market Blocks Borrows ===");
@@ -255,13 +248,13 @@ contract SecurityE2E is E2EBase {
 
         // Freeze
         vm.prank(deployer);
-        circuitBreaker.freezeMarket(ethUsdcMarketId, "Emergency");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "Emergency");
 
         // Repay should work (risk-reducing)
         _fundUsdc(alice, maxBorrow);
-        address marketAddr = core.markets(ethUsdcMarketId);
+        address poolAddr = address(usdcPool);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);
         vm.stopPrank();
         assertEq(_getDebt(positionId), 0, "Debt should be zero");
@@ -276,17 +269,17 @@ contract SecurityE2E is E2EBase {
 
     function test_security_frozenMarket_unfreezeRequiresPoolAdmin() public {
         vm.prank(deployer);
-        circuitBreaker.freezeMarket(ethUsdcMarketId, "Test");
+        circuitBreaker.freezeCollateral(ILPAdapter.LPType.UniswapV3, "Test");
 
         // Guardian cannot unfreeze
         vm.prank(guardian);
         vm.expectRevert("NOT_POOL_ADMIN");
-        circuitBreaker.unfreezeMarket(ethUsdcMarketId);
+        circuitBreaker.unfreezeCollateral(ILPAdapter.LPType.UniswapV3);
 
         // PoolAdmin (deployer) can unfreeze
         vm.prank(deployer);
-        circuitBreaker.unfreezeMarket(ethUsdcMarketId);
-        assertFalse(circuitBreaker.marketFrozen(ethUsdcMarketId));
+        circuitBreaker.unfreezeCollateral(ILPAdapter.LPType.UniswapV3);
+        assertFalse(circuitBreaker.collateralFrozen(ILPAdapter.LPType.UniswapV3));
 
         console.log("=== Unfreeze Requires PoolAdmin ===");
     }
@@ -323,7 +316,7 @@ contract SecurityE2E is E2EBase {
 
         // Advance 1 hour (within Chainlink staleness window)
         _advanceTime(1 hours);
-        lendingEngine.accrueInterest(ethUsdcMarketId);
+        lendingEngine.accrueInterest(usdcBorrowAsset);
 
         uint256 debtAfter = _getDebt(positionId);
         assertGe(debtAfter, debtBefore, "Debt should not decrease");

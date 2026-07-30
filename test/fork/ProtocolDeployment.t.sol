@@ -51,16 +51,18 @@ contract ProtocolDeploymentTest is ForkTestBase {
         assertFalse(core.isPoolSupported(address(0x1234)));
     }
 
-    function test_marketCreated() public view {
-        address marketAddr = core.markets(ethUsdcMarketId);
-        assertTrue(marketAddr != address(0));
+    function test_poolCreated() public view {
+        address poolAddr = core.pools(usdcBorrowAsset);
+        assertTrue(poolAddr != address(0));
+        assertEq(poolAddr, address(usdcPool));
+        assertEq(usdcPool.borrowAsset(), Constants.USDC);
 
-        IMarket.MarketConfig memory config = IMarket(marketAddr).getConfig();
-        assertEq(uint8(config.lpType), uint8(ILPAdapter.LPType.UniswapV3));
-        assertEq(config.borrowAsset, Constants.USDC);
-        assertEq(config.maxLtv, 6500);
-        assertEq(config.liquidationThreshold, 7500);
-        assertEq(config.liquidationBonus, 500);
+        // Collateral risk params live in RiskManager (source of truth)
+        RiskManager.CollateralConfig memory cc = riskManager.getCollateralConfig(ILPAdapter.LPType.UniswapV3);
+        assertTrue(cc.enabled);
+        assertEq(cc.maxLtv, 6500);
+        assertEq(cc.liquidationThreshold, 7500);
+        assertEq(cc.liquidationBonus, 500);
     }
 
     function test_authorization() public view {
