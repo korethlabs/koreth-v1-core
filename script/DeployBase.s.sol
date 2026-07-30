@@ -254,9 +254,10 @@ abstract contract DeployBase is Script {
         aclManager.addKeeper(address(priceValidator));
         aclManager.addKeeper(address(poolHealthMonitor));
 
-        // PoolFactory needs POOL_ADMIN (createPool→registerPool) and RISK_ADMIN
-        // (whitelistCollateral→setCollateralConfig + setReserveFactor on new pools).
-        aclManager.grantRole(aclManager.POOL_ADMIN(), address(poolFactory));
+        // PoolFactory needs RISK_ADMIN only: whitelistCollateral→setCollateralConfig, and
+        // setReserveFactor on freshly created pools (LendingPool.onlyRiskAdmin). It does NOT
+        // need POOL_ADMIN — core.registerPool authorizes `msg.sender == poolFactory` directly,
+        // so granting it would only widen the factory's blast radius if it were compromised.
         aclManager.addRiskAdmin(address(poolFactory));
     }
 

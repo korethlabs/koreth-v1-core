@@ -95,6 +95,10 @@ contract PoolFactory {
     /// @dev Does NOT upgrade existing pools — they keep their current impl
     function setPoolImplementation(address _impl) external onlyPoolAdmin {
         require(_impl != address(0), "ZERO_ADDRESS");
+        // A non-contract impl would not fail here but in createPool, where the ERC1967 proxy
+        // delegatecalls initialize() into empty code — every pool deployment reverts until an
+        // admin notices. Screen it at the setter, like every other address setter here.
+        require(_impl.code.length > 0, "NOT_CONTRACT");
         emit PoolImplementationUpdated(poolImplementation, _impl);
         poolImplementation = _impl;
     }
