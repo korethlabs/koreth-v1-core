@@ -43,7 +43,6 @@ contract LendingEngineTest is Test {
     // Events
     event Borrowed(uint256 indexed positionId, address indexed borrower, uint256 amount, uint256 totalDebt);
     event Repaid(uint256 indexed positionId, address indexed repayer, uint256 amount, uint256 remainingDebt);
-    event InterestAccrued(uint256 indexed marketId, uint256 interestAmount, uint256 timestamp);
 
     function setUp() public {
         // Deploy tokens

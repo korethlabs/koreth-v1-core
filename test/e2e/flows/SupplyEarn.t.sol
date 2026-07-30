@@ -10,14 +10,14 @@ contract SupplyEarn is E2EBase {
         super.setUp();
 
         // Set reserve factor so interest is split between lenders and protocol
-        address marketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
         vm.prank(deployer);
-        LendingPool(marketAddr).setReserveFactor(2000); // 20%
+        LendingPool(poolAddr).setReserveFactor(2000); // 20%
     }
 
     function test_lenderEarnsInterest() public {
-        address marketAddr = address(usdcPool);
-        LendingPool market = LendingPool(marketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
 
         // Record Bob's initial shares
         uint256 bobShares = market.shares(bob);
@@ -64,14 +64,14 @@ contract SupplyEarn is E2EBase {
     }
 
     function test_multipleSuppliers_earningProportionally() public {
-        address marketAddr = address(usdcPool);
-        LendingPool market = LendingPool(marketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
 
         // Carol supplies 50K USDC (same as Bob)
         address carol = makeAddr("carol");
         _fundUsdc(carol, 50_000e6);
         vm.startPrank(carol);
-        IERC20(Constants.USDC).approve(marketAddr, 50_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 50_000e6);
         market.supply(50_000e6);
         vm.stopPrank();
 
@@ -119,8 +119,8 @@ contract SupplyEarn is E2EBase {
     }
 
     function test_withdrawAfterEarning() public {
-        address marketAddr = address(usdcPool);
-        LendingPool market = LendingPool(marketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
 
         uint256 bobShares = market.shares(bob);
 
@@ -141,7 +141,7 @@ contract SupplyEarn is E2EBase {
         uint256 debt = lendingEngine.getDebt(positionId);
         _fundUsdc(alice, debt);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);
         vm.stopPrank();
 

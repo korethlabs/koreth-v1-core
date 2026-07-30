@@ -81,11 +81,11 @@ contract AdminOperations is E2EBase {
 
     /// @notice eliminateDeficit when no deficit reverts
     function test_revert_eliminateDeficit_noDeficit() public {
-        address marketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
 
         vm.prank(deployer);
         vm.expectRevert("NO_DEFICIT");
-        LendingPool(marketAddr).eliminateDeficit();
+        LendingPool(poolAddr).eliminateDeficit();
     }
 
     // ========== RiskManager supply cap ==========

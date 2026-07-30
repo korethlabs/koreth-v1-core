@@ -48,9 +48,9 @@ contract V2HappyPath is E2EBase {
 
         // 4. Repay
         _fundUsdc(alice, borrowAmount);
-        address v2MarketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(v2MarketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);
         vm.stopPrank();
 

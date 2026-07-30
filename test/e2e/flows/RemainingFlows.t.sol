@@ -147,8 +147,8 @@ contract RemainingFlows is E2EBase {
         vm.prank(alice);
         lendingEngine.borrow(positionId, borrowAmount);
 
-        address v2MarketAddr = address(usdcPool);
-        LendingPool market = LendingPool(v2MarketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
         uint256 deficitBefore = market.deficit();
         uint256 totalBorrowBefore = market.getPoolState().totalBorrow;
 
@@ -196,8 +196,8 @@ contract RemainingFlows is E2EBase {
     // ========================================================================
 
     function test_eliminateDeficit_reservesCoverBadDebt() public {
-        address v2MarketAddr = address(usdcPool);
-        LendingPool market = LendingPool(v2MarketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
 
         // First: generate some protocol reserves via interest
         uint256 lpAmount1 = _createV2Position(alice, 0.5 ether, 1000e6);
@@ -352,14 +352,14 @@ contract RemainingFlows is E2EBase {
     // ========================================================================
 
     function test_lenderEarnsProfit_withdrawsMore() public {
-        address marketAddr = address(usdcPool);
-        LendingPool market = LendingPool(marketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
 
         // Carol supplies 10K USDC
         address carol = makeAddr("carol");
         _fundUsdc(carol, 10_000e6);
         vm.startPrank(carol);
-        IERC20(Constants.USDC).approve(marketAddr, 10_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 10_000e6);
         market.supply(10_000e6);
         vm.stopPrank();
 
@@ -386,7 +386,7 @@ contract RemainingFlows is E2EBase {
         uint256 debt = lendingEngine.getDebt(positionId);
         _fundUsdc(alice, debt);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);
         vm.stopPrank();
 

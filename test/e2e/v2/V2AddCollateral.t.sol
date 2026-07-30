@@ -11,14 +11,11 @@ contract V2AddCollateral is E2EBase {
     function setUp() public override {
         super.setUp();
 
-        vm.startPrank(deployer);
-        vm.stopPrank();
-
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        ILendingPool(v2MarketAddr).supply(50_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 50_000e6);
+        ILendingPool(poolAddr).supply(50_000e6);
         vm.stopPrank();
     }
 

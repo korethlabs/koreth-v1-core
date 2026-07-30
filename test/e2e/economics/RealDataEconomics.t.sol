@@ -14,8 +14,6 @@ import {LendingPool} from "../../../src/markets/LendingPool.sol";
 ///      Uses `_crashEthPrice(dumpAmountEth)` to crash real Uniswap pool + mock Chainlink to match.
 ///      No oracle mocking except Chainlink staleness + the crash helper.
 contract RealDataEconomics is E2EBase {
-    address public v2MarketAddr;
-
     function setUp() public override {
         super.setUp();
 
@@ -24,28 +22,15 @@ contract RealDataEconomics is E2EBase {
         liquidationEngine.setFeeCollector(address(feeCollector));
         feeCollector.setTreasury(makeAddr("treasury"));
         feeCollector.setInsuranceFund(makeAddr("insurance"));
-        address marketAddr = address(usdcPool);
-        ILendingPool(marketAddr).setReserveFactor(2000); // 20%
-        ILendingPool(marketAddr).setFeeCollector(address(feeCollector));
+        ILendingPool(address(usdcPool)).setReserveFactor(2000); // 20%
+        ILendingPool(address(usdcPool)).setFeeCollector(address(feeCollector));
         vm.stopPrank();
 
-        // Create V2 market for V2 tests (pool already whitelisted in E2EBase)
-        vm.startPrank(deployer);
-        vm.stopPrank();
-
-        // Fund V2 market with liquidity (bob supplies)
-        v2MarketAddr = address(usdcPool);
+        // Fund the shared USDC pool (bob supplies)
         _fundUsdc(bob, 50_000e6);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        ILendingPool(v2MarketAddr).supply(50_000e6);
-        vm.stopPrank();
-
-        // Wire FeeCollector to markets for reserve distribution
-        address v3MarketAddr = address(usdcPool);
-        vm.startPrank(deployer);
-        ILendingPool(v3MarketAddr).setFeeCollector(address(feeCollector));
-        ILendingPool(v2MarketAddr).setFeeCollector(address(feeCollector));
+        IERC20(Constants.USDC).approve(address(usdcPool), 50_000e6);
+        ILendingPool(address(usdcPool)).supply(50_000e6);
         vm.stopPrank();
     }
 
@@ -379,10 +364,10 @@ contract RealDataEconomics is E2EBase {
     // ========================================================================
 
     function test_lenderEarnings_realInterest() public {
-        address marketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
 
         // Bob already supplied 100K USDC in setUp
-        uint256 bobShares = LendingPool(marketAddr).shares(bob);
+        uint256 bobShares = LendingPool(poolAddr).shares(bob);
         assertGt(bobShares, 0, "Bob must have shares");
 
         // Alice creates position and borrows to generate interest
@@ -403,7 +388,7 @@ contract RealDataEconomics is E2EBase {
         // (shares * totalSupply / totalShares)
         uint256 bobValueBefore;
         {
-            LendingPool mkt = LendingPool(marketAddr);
+            LendingPool mkt = LendingPool(poolAddr);
             mkt.accrueInterest();
             bobValueBefore = (bobShares * mkt.getPoolState().totalSupply) / mkt.totalShares();
         }
@@ -412,7 +397,7 @@ contract RealDataEconomics is E2EBase {
         _advanceTime(1 hours);
 
         // Accrue interest
-        ILendingPool(marketAddr).accrueInterest();
+        ILendingPool(poolAddr).accrueInterest();
 
         uint256 debtAfter1h = _getDebt(positionId);
         uint256 interestAccrued = debtAfter1h - debtAtBorrow;
@@ -420,7 +405,7 @@ contract RealDataEconomics is E2EBase {
         // Bob's withdrawable amount after interest
         uint256 bobValueAfter;
         {
-            LendingPool mkt = LendingPool(marketAddr);
+            LendingPool mkt = LendingPool(poolAddr);
             bobValueAfter = (bobShares * mkt.getPoolState().totalSupply) / mkt.totalShares();
         }
 
@@ -433,7 +418,7 @@ contract RealDataEconomics is E2EBase {
         // Calculate implied APR
         // APR = (interestAccrued / borrowAmount) * (365 * 24) * 100
         uint256 annualizedRate = (interestAccrued * 365 * 24 * 10_000) / borrowAmount; // in bps
-        uint256 reserveFactorBps = LendingPool(marketAddr).reserveFactorBps();
+        uint256 reserveFactorBps = LendingPool(poolAddr).reserveFactorBps();
         uint256 protocolShare = (interestAccrued * reserveFactorBps) / 10_000;
         uint256 lenderShare = interestAccrued - protocolShare;
 
@@ -462,7 +447,7 @@ contract RealDataEconomics is E2EBase {
     // ========================================================================
 
     function test_protocolRevenue_endToEnd() public {
-        address marketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
         address treasury = feeCollector.treasury();
         address insurance = feeCollector.insuranceFund();
 
@@ -482,14 +467,14 @@ contract RealDataEconomics is E2EBase {
         _advanceTime(1 hours);
 
         // Accrue interest to generate reserves
-        ILendingPool(marketAddr).accrueInterest();
+        ILendingPool(poolAddr).accrueInterest();
 
-        uint256 reservesAccumulated = LendingPool(marketAddr).protocolReserves();
+        uint256 reservesAccumulated = LendingPool(poolAddr).protocolReserves();
         assertGt(reservesAccumulated, 0, "Reserves must accumulate");
 
         // Step 1: Distribute reserves from Market to FeeCollector
         uint256 feeCollectorBefore = IERC20(Constants.USDC).balanceOf(address(feeCollector));
-        LendingPool(marketAddr).distributeReserves();
+        LendingPool(poolAddr).distributeReserves();
         uint256 feeCollectorAfter = IERC20(Constants.USDC).balanceOf(address(feeCollector));
         uint256 reservesSent = feeCollectorAfter - feeCollectorBefore;
         assertGt(reservesSent, 0, "Reserves must be sent to FeeCollector");

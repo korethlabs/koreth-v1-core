@@ -145,8 +145,8 @@ contract SecurityE2E is E2EBase {
         lendingEngine.borrow(positionId, maxBorrow);
 
         // Market should have very low liquidity now
-        address marketAddr = address(usdcPool);
-        uint256 marketBalance = IERC20(Constants.USDC).balanceOf(marketAddr);
+        address poolAddr = address(usdcPool);
+        uint256 marketBalance = IERC20(Constants.USDC).balanceOf(poolAddr);
         console.log("Market balance after max borrow: %s USDC", marketBalance / 1e6);
 
         // Verify market is nearly drained
@@ -161,16 +161,12 @@ contract SecurityE2E is E2EBase {
         // Use V2 for liquidation test — V2 has pos.amount > 0 (required for ZERO_LIQUIDITY check)
         uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
 
-        // Create V2 market
-        vm.startPrank(deployer);
-        vm.stopPrank();
-
         // Fund and supply to V2 market
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        ILendingPool(v2MarketAddr).supply(50_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 50_000e6);
+        ILendingPool(poolAddr).supply(50_000e6);
         vm.stopPrank();
 
         // Deposit V2 LP
@@ -197,7 +193,7 @@ contract SecurityE2E is E2EBase {
         _fundUsdc(alice, maxRepay);
         vm.startPrank(alice);
         IERC20(Constants.USDC).approve(address(liquidationEngine), maxRepay);
-        IERC20(Constants.USDC).approve(v2MarketAddr, maxRepay);
+        IERC20(Constants.USDC).approve(poolAddr, maxRepay);
         liquidationEngine.liquidate(positionId, maxRepay, block.timestamp, 0, 0);
         vm.stopPrank();
 
@@ -256,9 +252,9 @@ contract SecurityE2E is E2EBase {
 
         // Repay should work (risk-reducing)
         _fundUsdc(alice, maxBorrow);
-        address marketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);
         vm.stopPrank();
         assertEq(_getDebt(positionId), 0, "Debt should be zero");

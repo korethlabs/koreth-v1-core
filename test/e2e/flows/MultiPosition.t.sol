@@ -10,16 +10,12 @@ contract MultiPosition is E2EBase {
     function setUp() public override {
         super.setUp();
 
-        // Create a V2 market
-        vm.startPrank(deployer);
-        vm.stopPrank();
-
         // Fund Bob for V2 market
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        ILendingPool(v2MarketAddr).supply(50_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 50_000e6);
+        ILendingPool(poolAddr).supply(50_000e6);
         vm.stopPrank();
     }
 
@@ -98,9 +94,9 @@ contract MultiPosition is E2EBase {
         // Repay and withdraw position 1
         uint256 debt = _getDebt(positionId1);
         _fundUsdc(alice, debt);
-        address marketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(positionId1, type(uint256).max);
         positionManager.withdraw(positionId1);
         vm.stopPrank();

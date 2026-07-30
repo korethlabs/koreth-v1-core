@@ -134,14 +134,11 @@ contract LiquidationCascade is E2EBase {
 
     /// @notice Cross-market: Alice borrows from V3 market AND V2 market - positions are independent
     function test_crossMarket_V3andV2() public {
-        vm.startPrank(deployer);
-        vm.stopPrank();
-
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        ILendingPool(v2MarketAddr).supply(50_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 50_000e6);
+        ILendingPool(poolAddr).supply(50_000e6);
         vm.stopPrank();
 
         // V3 position
@@ -169,9 +166,8 @@ contract LiquidationCascade is E2EBase {
 
         // Repay V3 - V2 should be unaffected
         _fundUsdc(alice, _getDebt(v3PosId));
-        address v3MarketAddr = address(usdcPool);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(v3MarketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(v3PosId, type(uint256).max);
         vm.stopPrank();
 

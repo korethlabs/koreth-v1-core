@@ -22,8 +22,8 @@ contract AccrualEdgeCaseE2E is E2EBase {
         vm.roll(block.number + 2);
 
         // 2. Set reserve factor so protocol gets interest share
-        address marketAddr = address(usdcPool);
-        LendingPool market = LendingPool(marketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
         vm.prank(deployer);
         market.setReserveFactor(2000); // 20%
 
@@ -86,8 +86,8 @@ contract AccrualEdgeCaseE2E is E2EBase {
         // 3. Advance 1 hour
         _advanceTime(1 hours);
 
-        address marketAddr = address(usdcPool);
-        LendingPool market = LendingPool(marketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
         market.accrueInterest();
 
         // 4. Debt should have grown
@@ -97,7 +97,7 @@ contract AccrualEdgeCaseE2E is E2EBase {
         // 5. Repay all
         _fundUsdc(alice, currentDebt);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);
         vm.stopPrank();
 
@@ -116,8 +116,8 @@ contract AccrualEdgeCaseE2E is E2EBase {
 
     /// @notice Verify accrual with zero borrows is a no-op (no index change)
     function test_accrual_zeroBorrows_noIndexChange() public {
-        address marketAddr = address(usdcPool);
-        LendingPool market = LendingPool(marketAddr);
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
         uint256 indexBefore = market.borrowIndex();
 
         // Advance time with no borrows

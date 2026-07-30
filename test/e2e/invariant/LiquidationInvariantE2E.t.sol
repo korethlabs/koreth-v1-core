@@ -181,8 +181,8 @@ contract LiquidationInvariantE2E is E2EBase {
         (bool isLiq, uint256 maxRepay) = liquidationEngine.isLiquidatable(posId);
         if (!isLiq || maxRepay == 0) return;
 
-        address marketAddr = address(usdcPool);
-        ILendingPool.PoolState memory sBefore = ILendingPool(marketAddr).getPoolState();
+        address poolAddr = address(usdcPool);
+        ILendingPool.PoolState memory sBefore = ILendingPool(poolAddr).getPoolState();
 
         _fundUsdc(liquidator, maxRepay);
         vm.startPrank(liquidator);
@@ -190,7 +190,7 @@ contract LiquidationInvariantE2E is E2EBase {
         liquidationEngine.liquidate(posId, maxRepay, block.timestamp + 300, 0, 0);
         vm.stopPrank();
 
-        ILendingPool.PoolState memory sAfter = ILendingPool(marketAddr).getPoolState();
+        ILendingPool.PoolState memory sAfter = ILendingPool(poolAddr).getPoolState();
         assertLt(sAfter.totalBorrow, sBefore.totalBorrow, "Market totalBorrow must decrease after liquidation");
     }
 

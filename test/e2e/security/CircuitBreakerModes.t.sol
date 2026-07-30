@@ -66,9 +66,9 @@ contract CircuitBreakerModes is E2EBase {
 
         // Repay should still work (risk-reducing)
         _fundUsdc(alice, debtBefore);
-        address marketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         lendingEngine.repay(positionId, type(uint256).max);
         vm.stopPrank();
 
@@ -152,9 +152,9 @@ contract CircuitBreakerModes is E2EBase {
 
         // Repay should revert
         _fundUsdc(alice, 1000e6);
-        address marketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
         vm.startPrank(alice);
-        IERC20(Constants.USDC).approve(marketAddr, type(uint256).max);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
         vm.expectRevert("PAUSED");
         lendingEngine.repay(positionId, 100e6);
         vm.stopPrank();

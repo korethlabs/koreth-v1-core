@@ -22,17 +22,17 @@ contract InterestStressE2E is E2EBase {
         lendingEngine.borrow(posId, borrowAmt);
 
         uint256 debtAtStart = _getDebt(posId);
-        address marketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
 
         // Accrue monthly for 12 months
         for (uint256 m = 1; m <= 12; m++) {
             _advanceTime(30 days);
             _refreshChainlinkMocks();
-            ILendingPool(marketAddr).accrueInterest();
+            ILendingPool(poolAddr).accrueInterest();
         }
 
         uint256 debtAfterYear = _getDebt(posId);
-        ILendingPool.PoolState memory s = ILendingPool(marketAddr).getPoolState();
+        ILendingPool.PoolState memory s = ILendingPool(poolAddr).getPoolState();
 
         console.log("Debt start: %s USDC", debtAtStart / 1e6);
         console.log("Debt 1 year: %s USDC", debtAfterYear / 1e6);
@@ -42,8 +42,8 @@ contract InterestStressE2E is E2EBase {
         // Solvency incl. protocol reserves: cash + outstanding borrows must cover
         // lender obligations (totalSupply) plus the protocol's accrued reserves.
         assertGe(
-            IERC20(Constants.USDC).balanceOf(marketAddr) + s.totalBorrow,
-            s.totalSupply + LendingPool(marketAddr).protocolReserves(),
+            IERC20(Constants.USDC).balanceOf(poolAddr) + s.totalBorrow,
+            s.totalSupply + LendingPool(poolAddr).protocolReserves(),
             "Market must remain solvent after 1 year (incl. reserves)"
         );
     }
@@ -58,27 +58,27 @@ contract InterestStressE2E is E2EBase {
         vm.prank(alice);
         lendingEngine.borrow(posId, maxBorrow / 3);
 
-        address marketAddr = address(usdcPool);
-        uint256 indexBefore = ILendingPool(marketAddr).borrowIndex();
+        address poolAddr = address(usdcPool);
+        uint256 indexBefore = ILendingPool(poolAddr).borrowIndex();
 
         // Accrue quarterly for 5 years (20 quarters)
         for (uint256 q = 0; q < 20; q++) {
             _advanceTime(90 days);
             _refreshChainlinkMocks();
-            ILendingPool(marketAddr).accrueInterest();
+            ILendingPool(poolAddr).accrueInterest();
         }
 
-        uint256 indexAfter = ILendingPool(marketAddr).borrowIndex();
+        uint256 indexAfter = ILendingPool(poolAddr).borrowIndex();
         uint256 debtAfter = _getDebt(posId);
 
         assertGt(indexAfter, indexBefore, "Borrow index must increase over 5 years");
         assertGt(debtAfter, 0, "Debt must still be trackable after 5 years");
 
         // Market solvency after 5 years: cash + borrows cover lender obligations + reserves
-        ILendingPool.PoolState memory s = ILendingPool(marketAddr).getPoolState();
+        ILendingPool.PoolState memory s = ILendingPool(poolAddr).getPoolState();
         assertGe(
-            IERC20(Constants.USDC).balanceOf(marketAddr) + s.totalBorrow,
-            s.totalSupply + LendingPool(marketAddr).protocolReserves(),
+            IERC20(Constants.USDC).balanceOf(poolAddr) + s.totalBorrow,
+            s.totalSupply + LendingPool(poolAddr).protocolReserves(),
             "Market must remain solvent after 5 years (incl. reserves)"
         );
     }
@@ -87,10 +87,10 @@ contract InterestStressE2E is E2EBase {
     function test_interestAccrual_highUtilization() public {
         // Add more supply first
         _fundUsdc(bob, 200_000e6);
-        address marketAddr = address(usdcPool);
+        address poolAddr = address(usdcPool);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(marketAddr, 200_000e6);
-        ILendingPool(marketAddr).supply(200_000e6);
+        IERC20(Constants.USDC).approve(poolAddr, 200_000e6);
+        ILendingPool(poolAddr).supply(200_000e6);
         vm.stopPrank();
 
         // Create a large position and borrow heavily
@@ -104,16 +104,16 @@ contract InterestStressE2E is E2EBase {
         vm.prank(alice);
         lendingEngine.borrow(posId, (maxBorrow * 80) / 100);
 
-        ILendingPool.PoolState memory sBefore = ILendingPool(marketAddr).getPoolState();
+        ILendingPool.PoolState memory sBefore = ILendingPool(poolAddr).getPoolState();
         console.log("Utilization: %s bps", sBefore.utilization);
         console.log("Borrow rate: %s", sBefore.borrowRate);
 
         // Accrue 30 days at high utilization
         _advanceTime(30 days);
         _refreshChainlinkMocks();
-        ILendingPool(marketAddr).accrueInterest();
+        ILendingPool(poolAddr).accrueInterest();
 
-        ILendingPool.PoolState memory sAfter = ILendingPool(marketAddr).getPoolState();
+        ILendingPool.PoolState memory sAfter = ILendingPool(poolAddr).getPoolState();
         assertGt(sAfter.borrowRate, 0, "Borrow rate must be positive at high utilization");
         assertGt(sAfter.totalBorrow, sBefore.totalBorrow, "totalBorrow must grow from interest");
     }

@@ -12,9 +12,9 @@ contract RiskManagement is E2EBase {
 
         // Set reserve factor + fee collector for the market (needed for liquidation test)
         vm.startPrank(deployer);
-        address marketAddr = address(usdcPool);
-        LendingPool(marketAddr).setReserveFactor(2000);
-        LendingPool(marketAddr).setFeeCollector(address(feeCollector));
+        address poolAddr = address(usdcPool);
+        LendingPool(poolAddr).setReserveFactor(2000);
+        LendingPool(poolAddr).setFeeCollector(address(feeCollector));
         vm.stopPrank();
     }
 
@@ -148,18 +148,12 @@ contract RiskManagement is E2EBase {
     // ========================================================================
 
     function test_circuitBreaker_freezeMarket_allowsLiquidation() public {
-        // Create a V2 market for liquidation (V2 uses amount-based positions)
-        vm.startPrank(deployer);
-        LendingPool(address(usdcPool)).setReserveFactor(2000);
-        LendingPool(address(usdcPool)).setFeeCollector(address(feeCollector));
-        vm.stopPrank();
-
-        // Fund V2 market with liquidity
+        // Reserve factor and fee collector are already wired in setUp.
+        // Fund the shared USDC pool
         _fundUsdc(bob, 50_000e6);
-        address v2MarketAddr = address(usdcPool);
         vm.startPrank(bob);
-        IERC20(Constants.USDC).approve(v2MarketAddr, 50_000e6);
-        ILendingPool(v2MarketAddr).supply(50_000e6);
+        IERC20(Constants.USDC).approve(address(usdcPool), 50_000e6);
+        ILendingPool(address(usdcPool)).supply(50_000e6);
         vm.stopPrank();
 
         // Alice creates position and borrows aggressively
