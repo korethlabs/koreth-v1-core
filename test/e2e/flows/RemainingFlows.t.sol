@@ -9,7 +9,6 @@ import {IPositionManager} from "../../../src/interfaces/IPositionManager.sol";
 ///         and remaining coverage gaps.
 /// @dev All tests run against real Uniswap on forked mainnet via Anvil.
 contract RemainingFlows is E2EBase {
-
     function setUp() public override {
         super.setUp();
 

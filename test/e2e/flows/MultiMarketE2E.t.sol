@@ -6,7 +6,6 @@ import "../E2EBase.t.sol";
 /// @title MultiMarketE2E
 /// @notice E2E tests for same user borrowing across multiple markets (V3 + V2)
 contract MultiMarketE2E is E2EBase {
-
     function setUp() public override {
         super.setUp();
 

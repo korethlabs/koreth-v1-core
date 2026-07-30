@@ -7,7 +7,6 @@ import {IUniswapV2Pair} from "../../../src/interfaces/external/IUniswapV2.sol";
 /// @title V2AddCollateral
 /// @notice E2E tests for addCollateral on V2 LP positions.
 contract V2AddCollateral is E2EBase {
-
     function setUp() public override {
         super.setUp();
 

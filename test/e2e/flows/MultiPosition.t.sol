@@ -6,7 +6,6 @@ import "../E2EBase.t.sol";
 /// @title MultiPosition
 /// @notice Tests multiple positions from the same user across V2 and V3
 contract MultiPosition is E2EBase {
-
     function setUp() public override {
         super.setUp();
 

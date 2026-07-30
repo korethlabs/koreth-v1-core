@@ -10,7 +10,6 @@ import {INonfungiblePositionManager} from "../../../src/interfaces/external/IUni
 ///         (not via transform). Also covers V2 removeCollateral, health factor enforcement,
 ///         and circuit breaker blocking.
 contract CollateralManagement is E2EBase {
-
     function setUp() public override {
         super.setUp();
 

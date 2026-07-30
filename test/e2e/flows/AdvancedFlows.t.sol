@@ -9,7 +9,6 @@ import {IPositionManager} from "../../../src/interfaces/IPositionManager.sol";
 ///         protocol fees, addCollateral, long-duration interest, and state transitions.
 /// @dev All tests run against real Uniswap on forked mainnet via Anvil.
 contract AdvancedFlows is E2EBase {
-
     function setUp() public override {
         super.setUp();
 

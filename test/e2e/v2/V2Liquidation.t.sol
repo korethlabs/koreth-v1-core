@@ -6,7 +6,6 @@ import "../E2EBase.t.sol";
 /// @title V2Liquidation
 /// @notice Liquidation tests with real V2 LP positions on forked mainnet
 contract V2Liquidation is E2EBase {
-
     function setUp() public override {
         super.setUp();
 
