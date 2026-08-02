@@ -71,7 +71,6 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     // --- Events ---
     event CollateralAdded(uint256 indexed positionId, uint256 addedLiquidity, uint256 used0, uint256 used1);
     event CollateralRemoved(uint256 indexed positionId, uint128 liquidityRemoved, uint256 amount0, uint256 amount1);
-    event CircuitBreakerNotConfigured(address indexed borrowAsset, address pool);
     event PositionAmountReduced(uint256 indexed positionId, uint256 amountRemoved, uint256 newAmount);
     event LendingEngineUpdated(address indexed oldEngine, address indexed newEngine);
     event CircuitBreakerUpdated(address indexed oldBreaker, address indexed newBreaker);
@@ -146,8 +145,13 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     }
 
     /// @notice Set CircuitBreaker for pool-level pause enforcement
+    /// @dev Cannot be unset. Every freeze check reads it, so clearing it would not disable one
+    ///      lever — it would silently disable the whole circuit breaker across deposits, borrows
+    ///      and collateral changes, leaving a paused pool or a frozen collateral type accepting new
+    ///      risk with nothing but an event to say so.
     function setCircuitBreaker(address _circuitBreaker) external onlyPoolAdmin {
-        require(_circuitBreaker == address(0) || _circuitBreaker.code.length > 0, "NOT_CONTRACT");
+        require(_circuitBreaker != address(0), "ZERO_ADDRESS");
+        require(_circuitBreaker.code.length > 0, "NOT_CONTRACT");
         emit CircuitBreakerUpdated(address(circuitBreaker), _circuitBreaker);
         circuitBreaker = CircuitBreaker(_circuitBreaker);
     }
@@ -192,12 +196,8 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
 
         // Verify pool is whitelisted and not circuit-broken
         require(core.isPoolSupported(info.pool), "POOL_NOT_SUPPORTED");
-        if (address(circuitBreaker) != address(0)) {
-            require(!circuitBreaker.poolPaused(info.pool), "POOL_CIRCUIT_BREAKER");
-            require(!circuitBreaker.collateralFrozen(lpType), "COLLATERAL_FROZEN");
-        } else {
-            emit CircuitBreakerNotConfigured(borrowAsset, info.pool);
-        }
+        require(!circuitBreaker.poolPaused(info.pool), "POOL_CIRCUIT_BREAKER");
+        require(!circuitBreaker.collateralFrozen(lpType), "COLLATERAL_FROZEN");
 
         // Get oracle price to validate position has value
         ILPOracleHub.PriceResult memory price = oracleHub.getPrice(lpToken, tokenId, amount, lpType);
@@ -299,9 +299,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         require(amount0 > 0 || amount1 > 0, "ZERO_AMOUNTS");
 
         // Frozen collateral types block new collateral (risk-taking)
-        if (address(circuitBreaker) != address(0)) {
-            require(!circuitBreaker.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
-        }
+        require(!circuitBreaker.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
 
         address adapterAddr = core.adapters(pos.lpType);
         require(adapterAddr != address(0), "ADAPTER_NOT_FOUND");
@@ -388,9 +386,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         require(adapterAddr != address(0), "ADAPTER_NOT_FOUND");
 
         // Circuit breaker: block collateral removal on frozen collateral types (oracle may be manipulated)
-        if (address(circuitBreaker) != address(0)) {
-            require(!circuitBreaker.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
-        }
+        require(!circuitBreaker.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
 
         // Validate liquidity bounds before calling adapter
         if (pos.lpType == ILPAdapter.LPType.UniswapV2 || pos.lpType == ILPAdapter.LPType.PancakeSwapV2) {
@@ -645,7 +641,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         // Always through the registry — see LendingEngine._toUsd. A guessed debt value here is a
         // guessed health factor, which is the number liquidation is gated on.
         uint8 borrowDecimals = TokenUtils.safeDecimals(borrowAsset);
-        uint256 debtUsd = PriceFeedRegistry(core.priceFeedRegistryAddr()).getUsdValue(borrowAsset, debt, borrowDecimals);
+        uint256 debtUsd = PriceFeedRegistry(core.getPriceFeedRegistry()).getUsdValue(borrowAsset, debt, borrowDecimals);
 
         if (debtUsd == 0) return type(uint256).max;
         uint256 numerator = Math.mulDiv(collateralValue, cc.liquidationThreshold, 10_000);

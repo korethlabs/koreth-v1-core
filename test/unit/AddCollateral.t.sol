@@ -19,6 +19,7 @@ import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {TestPricing} from "../helpers/TestPricing.sol";
 import {TestPools} from "../helpers/TestPools.sol";
+import {TestSecurity} from "../helpers/TestSecurity.sol";
 
 /// @title AddCollateralTest
 /// @notice Unit tests for PositionManager.addCollateral()
@@ -115,6 +116,7 @@ contract AddCollateralTest is Test {
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
+        TestSecurity.wireBreaker(core, pm);
         pm.setLendingEngine(address(le));
         vm.stopPrank();
 

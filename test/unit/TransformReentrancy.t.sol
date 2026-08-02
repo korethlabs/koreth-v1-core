@@ -20,6 +20,7 @@ import {RiskManager} from "../../src/security/RiskManager.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {TestPricing} from "../helpers/TestPricing.sol";
 import {TestPools} from "../helpers/TestPools.sol";
+import {TestSecurity} from "../helpers/TestSecurity.sol";
 
 /// @notice Transformer that re-enters PositionManager.transform() while a transform is in progress.
 ///         It owns its OWN position so the nested call passes the owner check and reaches the
@@ -139,6 +140,7 @@ contract TransformReentrancyTest is Test {
         core.whitelistPool(TestPools.asContract(lpToken));
         TestPricing.wireStable(core, address(usdc));
         core.registerPool(address(usdc), address(market));
+        TestSecurity.wireBreaker(core, pm);
         pm.setLendingEngine(address(le));
         // RiskManager is the collateral registry in the shared-pool model; deposits require it.
         RiskManager rm = new RiskManager(address(core));

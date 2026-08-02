@@ -440,7 +440,7 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     ///      protocol can afford it.
     function _getRepayValueUsd(address borrowAsset, uint256 amount, uint8 decimals) internal view returns (uint256) {
         require(decimals <= 36, "INVALID_DECIMALS");
-        return PriceFeedRegistry(core.priceFeedRegistryAddr()).getUsdValue(borrowAsset, amount, decimals);
+        return PriceFeedRegistry(core.getPriceFeedRegistry()).getUsdValue(borrowAsset, amount, decimals);
     }
 
     // --- Storage Gap (UUPS upgrade safety) ---

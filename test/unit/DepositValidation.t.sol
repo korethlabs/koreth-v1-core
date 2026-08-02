@@ -38,8 +38,6 @@ contract DepositValidationTest is Test {
     address public lpToken = makeAddr("lpToken");
     address public borrowAsset;
 
-    event CircuitBreakerNotConfigured(address indexed borrowAsset, address pool);
-
     function setUp() public {
         MockERC20 usdc = new MockERC20("USDC", "USDC", 18);
         borrowAsset = address(usdc);
@@ -90,6 +88,7 @@ contract DepositValidationTest is Test {
         core.setRiskManager(address(riskManager));
         // Enable UniswapV2 collateral (the type the mock adapter detects)
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
+        pm.setCircuitBreaker(address(circuitBreaker));
         pm.setLendingEngine(address(le));
         vm.stopPrank();
     }
@@ -130,32 +129,30 @@ contract DepositValidationTest is Test {
         pm.deposit(lpToken, 0, 100e18, borrowAsset);
     }
 
-    // ========== CircuitBreaker Warning ==========
+    // ========== CircuitBreaker ==========
 
-    function test_deposit_emitsCircuitBreakerNotConfigured() public {
-        vm.expectEmit(true, false, false, true);
-        emit CircuitBreakerNotConfigured(borrowAsset, lpToken);
+    /// @dev A deposit used to proceed with no circuit breaker attached, warning via an event that
+    ///      nothing reads. It cannot happen any more: the breaker is mandatory, so there is no
+    ///      configuration in which a paused pool or a frozen collateral type still takes deposits.
+    function test_setCircuitBreaker_rejectsZero() public {
+        vm.prank(owner);
+        vm.expectRevert("ZERO_ADDRESS");
+        pm.setCircuitBreaker(address(0));
 
-        vm.prank(alice);
-        pm.deposit(lpToken, 0, 100e18, borrowAsset);
+        assertTrue(address(pm.circuitBreaker()) != address(0), "breaker must survive the attempt");
     }
 
-    function test_deposit_noEventWhenCircuitBreakerSet() public {
+    function test_deposit_blockedWhenCollateralFrozen() public {
+        // Resolved before the prank: as part of the call it would consume it, and freezeCollateral
+        // would arrive from the test contract rather than from the admin.
+        CircuitBreaker breaker = pm.circuitBreaker();
+
         vm.prank(owner);
-        pm.setCircuitBreaker(address(circuitBreaker));
+        breaker.freezeCollateral(ILPAdapter.LPType.UniswapV2, "oracle under review");
 
-        vm.recordLogs();
         vm.prank(alice);
+        vm.expectRevert("COLLATERAL_FROZEN");
         pm.deposit(lpToken, 0, 100e18, borrowAsset);
-
-        // Verify CircuitBreakerNotConfigured was NOT emitted
-        Vm.Log[] memory logs = vm.getRecordedLogs();
-        bytes32 cbEventSig = keccak256("CircuitBreakerNotConfigured(address,address)");
-        for (uint256 i = 0; i < logs.length; i++) {
-            if (logs[i].topics.length > 0) {
-                assertFalse(logs[i].topics[0] == cbEventSig, "Should not emit CircuitBreakerNotConfigured");
-            }
-        }
     }
 
     // ========== Oracle Health Check ==========

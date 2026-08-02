@@ -20,6 +20,7 @@ import {TestPricing} from "../helpers/TestPricing.sol";
 import {RiskManager} from "../../src/security/RiskManager.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {TestPools} from "../helpers/TestPools.sol";
+import {TestSecurity} from "../helpers/TestSecurity.sol";
 
 /// @title LiquidationDecimalTest
 /// @notice Full liquidation flow tests with REAL decimal configurations
@@ -104,6 +105,7 @@ contract LiquidationDecimalTest is Test {
         core.whitelistPool(TestPools.asContract(lpToken));
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
+        TestSecurity.wireBreaker(core, pm);
         pm.setLendingEngine(address(le));
         vm.stopPrank();
     }

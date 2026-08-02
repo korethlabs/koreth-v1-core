@@ -19,6 +19,7 @@ import {RiskManager} from "../../src/security/RiskManager.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {TestPricing} from "../helpers/TestPricing.sol";
 import {TestPools} from "../helpers/TestPools.sol";
+import {TestSecurity} from "../helpers/TestSecurity.sol";
 
 contract LendingEngineTest is Test {
     ProtocolCore public core;
@@ -101,6 +102,7 @@ contract LendingEngineTest is Test {
         core.whitelistPool(TestPools.asContract(lpToken));
         TestPricing.wireStable(core, address(usdc));
         core.registerPool(address(usdc), address(market));
+        TestSecurity.wireBreaker(core, pm);
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         vm.stopPrank();

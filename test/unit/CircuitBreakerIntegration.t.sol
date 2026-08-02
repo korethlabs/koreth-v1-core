@@ -201,13 +201,16 @@ contract CircuitBreakerIntegrationTest is Test {
         pm.setCircuitBreaker(address(cb));
     }
 
-    function test_worksWithoutCircuitBreaker() public {
-        // Remove circuit breaker
+    /// @dev The breaker used to be detachable, and every freeze check sat behind a null test — so
+    ///      clearing it did not disable one lever, it disabled the entire circuit breaker across
+    ///      deposits, borrows and collateral changes, with only an event to say so.
+    function test_circuitBreakerCannotBeDetached() public {
+        address attached = address(pm.circuitBreaker());
+
         vm.prank(owner);
+        vm.expectRevert("ZERO_ADDRESS");
         pm.setCircuitBreaker(address(0));
 
-        // Deposit works
-        vm.prank(alice);
-        pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        assertEq(address(pm.circuitBreaker()), attached, "breaker must survive the attempt");
     }
 }

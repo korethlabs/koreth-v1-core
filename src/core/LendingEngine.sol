@@ -118,15 +118,12 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
             "POSITION_NOT_ACTIVE"
         );
 
-        // Circuit breaker: no new borrows against paused pools or frozen collateral types.
-        // Optional by design (setCircuitBreaker accepts address(0)) — it is the fast emergency
-        // lever, not the offboarding one. Permanently retiring a collateral type goes through
-        // RiskManager's `enabled` flag, which validateAndRecordBorrow enforces unconditionally.
+        // Circuit breaker: no new borrows against paused pools or frozen collateral types. It is
+        // the fast emergency lever, not the offboarding one — permanently retiring a collateral
+        // type goes through RiskManager's `enabled` flag, which validateAndRecordBorrow enforces.
         CircuitBreaker cb = positionManager.circuitBreaker();
-        if (address(cb) != address(0)) {
-            require(!cb.poolPaused(pos.pool), "POOL_CIRCUIT_BREAKER");
-            require(!cb.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
-        }
+        require(!cb.poolPaused(pos.pool), "POOL_CIRCUIT_BREAKER");
+        require(!cb.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
 
         require(block.number > pos.depositBlock + borrowCooldownBlocks, "BORROW_COOLDOWN");
 
@@ -274,7 +271,7 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
 
         uint8 borrowDecimals = TokenUtils.safeDecimals(borrowAsset);
 
-        uint256 borrowAssetPrice = PriceFeedRegistry(core.priceFeedRegistryAddr()).getPrice(borrowAsset);
+        uint256 borrowAssetPrice = PriceFeedRegistry(core.getPriceFeedRegistry()).getPrice(borrowAsset);
         require(borrowAssetPrice > 0, "ZERO_PRICE");
         return Math.mulDiv(maxBorrowUsd, 10 ** borrowDecimals, borrowAssetPrice);
     }
@@ -285,7 +282,7 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
     ///      here. If one is not, getPrice() reverts rather than guessing.
     function _toUsd(uint256 amount, address borrowAsset) internal view returns (uint256) {
         uint8 dec = TokenUtils.safeDecimals(borrowAsset);
-        return PriceFeedRegistry(core.priceFeedRegistryAddr()).getUsdValue(borrowAsset, amount, dec);
+        return PriceFeedRegistry(core.getPriceFeedRegistry()).getUsdValue(borrowAsset, amount, dec);
     }
 
     /// @dev RiskManager is the collateral registry in the shared-pool model — required, not

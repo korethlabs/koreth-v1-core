@@ -267,6 +267,16 @@ contract ProtocolCore {
         return oracle;
     }
 
+    /// @notice Resolve the price registry (reverts if it was never configured).
+    /// @dev The borrow-side consumers read it through here rather than off the raw storage slot, so
+    ///      a deployment that reaches them before wiring fails by name instead of as a call into an
+    ///      empty address. Same shape as getPool/getAdapter/getOracle above.
+    function getPriceFeedRegistry() external view returns (address) {
+        address registry = priceFeedRegistryAddr;
+        require(registry != address(0), "PRICE_REGISTRY_UNSET");
+        return registry;
+    }
+
     function isPoolSupported(address pool) external view returns (bool) {
         return supportedPools[pool];
     }

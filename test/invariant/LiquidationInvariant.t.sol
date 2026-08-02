@@ -22,6 +22,7 @@ import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {TestPricing} from "../helpers/TestPricing.sol";
 import {TestPools} from "../helpers/TestPools.sol";
+import {TestSecurity} from "../helpers/TestSecurity.sol";
 
 /// @title LiquidationInvariantTest
 /// @notice Fuzz-driven invariant tests for liquidation logic.
@@ -119,6 +120,7 @@ contract LiquidationInvariantTest is Test {
         core.setRiskManager(address(riskManager));
         aclManager.addRiskAdmin(owner);
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
+        TestSecurity.wireBreaker(core, pm);
         pm.setLendingEngine(address(le));
         liq.setFeeCollector(address(fc));
         vm.stopPrank();

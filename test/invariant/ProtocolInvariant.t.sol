@@ -21,6 +21,7 @@ import {FeeCollector} from "../../src/core/FeeCollector.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {TestPricing} from "../helpers/TestPricing.sol";
 import {TestPools} from "../helpers/TestPools.sol";
+import {TestSecurity} from "../helpers/TestSecurity.sol";
 
 /// @title ProtocolInvariantTest
 /// @notice Fuzz-driven invariant tests that verify protocol-wide properties hold
@@ -117,6 +118,7 @@ contract ProtocolInvariantTest is Test {
         aclManager.addRiskAdmin(owner);
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
+        TestSecurity.wireBreaker(core, pm);
         pm.setLendingEngine(address(le));
         vm.stopPrank();
 

@@ -21,6 +21,7 @@ import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {TestPricing} from "../helpers/TestPricing.sol";
 import {TestPools} from "../helpers/TestPools.sol";
+import {TestSecurity} from "../helpers/TestSecurity.sol";
 
 /// @title MarketShareInvariantTest
 /// @notice Fuzz-driven invariant tests for Market supply/withdraw share math.
@@ -98,6 +99,7 @@ contract MarketShareInvariantTest is Test {
         core.registerPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
+        TestSecurity.wireBreaker(core, pm);
         pm.setLendingEngine(address(le));
         vm.stopPrank();
     }

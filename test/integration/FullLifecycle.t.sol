@@ -22,6 +22,7 @@ import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {TestPricing} from "../helpers/TestPricing.sol";
 import {TestPools} from "../helpers/TestPools.sol";
+import {TestSecurity} from "../helpers/TestSecurity.sol";
 
 /// @title FullLifecycleTest
 /// @notice End-to-end integration tests exercising complete protocol flows
@@ -153,6 +154,7 @@ contract FullLifecycleTest is Test {
         );
         // Raise position value cap above the borrow-cap test's $15M collateral.
         riskManager.setMaxPositionValue(1_000_000_000e18);
+        TestSecurity.wireBreaker(core, pm);
         pm.setLendingEngine(address(le));
         liq.setFeeCollector(address(fc));
         vm.stopPrank();

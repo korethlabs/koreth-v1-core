@@ -255,6 +255,18 @@ contract ProtocolCoreTest is Test {
         vm.stopPrank();
     }
 
+    /// @dev Mirrors getPool/getAdapter/getOracle: the borrow-side consumers resolve the registry
+    ///      through here, so a deployment that reaches them before wiring fails by name rather than
+    ///      as a call into an empty address.
+    function test_getPriceFeedRegistry_revertsWhenUnset() public {
+        ProtocolCore fresh = new ProtocolCore(owner, address(aclManager));
+
+        vm.expectRevert("PRICE_REGISTRY_UNSET");
+        fresh.getPriceFeedRegistry();
+
+        assertEq(core.getPriceFeedRegistry(), address(priceRegistry), "a configured core resolves it");
+    }
+
     /// @dev Listing and pricing are atomic. A market whose borrow asset has no price source can be
     ///      borrowed from but not valued, so its debt would never count against a health factor —
     ///      the position would read as healthy no matter how much was drawn against it.

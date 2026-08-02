@@ -22,6 +22,7 @@ import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {TestPools} from "../helpers/TestPools.sol";
 import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
+import {TestSecurity} from "../helpers/TestSecurity.sol";
 
 /// @title EdgeCasesTest
 /// @notice Tests for edge cases: different decimals, dust amounts, extreme values,
@@ -141,6 +142,7 @@ contract EdgeCasesTest is Test {
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         // Raise the position value cap so the large-amount edge cases aren't capped at $10M default.
         riskManager.setMaxPositionValue(1_000_000_000e18);
+        TestSecurity.wireBreaker(core, pm);
         pm.setLendingEngine(address(le));
         liq.setFeeCollector(address(fc));
         vm.stopPrank();
