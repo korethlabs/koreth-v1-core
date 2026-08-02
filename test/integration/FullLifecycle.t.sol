@@ -20,6 +20,8 @@ import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {TestPricing} from "../helpers/TestPricing.sol";
+import {TestPools} from "../helpers/TestPools.sol";
 
 /// @title FullLifecycleTest
 /// @notice End-to-end integration tests exercising complete protocol flows
@@ -141,7 +143,8 @@ contract FullLifecycleTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistPool(lpToken);
+        core.whitelistPool(TestPools.asContract(lpToken));
+        TestPricing.wireStable(core, address(usdc));
         core.registerPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         // V2 collateral: 65% LTV / 75% liq / 5% bonus / no haircut / $10M borrow cap

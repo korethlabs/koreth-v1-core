@@ -5,6 +5,13 @@ import {ILPAdapter} from "../interfaces/ILPAdapter.sol";
 import {ILendingPool} from "../interfaces/ILendingPool.sol";
 import {ACLManager} from "./ACLManager.sol";
 
+/// @notice The single call ProtocolCore needs from the price registry. Declared here rather than
+///         imported because PriceFeedRegistry already imports ProtocolCore, and this is the whole
+///         of the dependency in this direction.
+interface IPriceSource {
+    function isPriceable(address token) external view returns (bool);
+}
+
 /// @title ProtocolCore
 /// @notice Central registry and access control for the Koreth protocol
 /// @dev All core contracts reference this for shared state and permissions.
@@ -40,8 +47,10 @@ contract ProtocolCore {
     // --- Events ---
     event PriceFeedRegistryUpdated(address indexed oldRegistry, address indexed newRegistry);
     event RiskManagerUpdated(address indexed oldManager, address indexed newManager);
-    event AdapterRegistered(ILPAdapter.LPType indexed lpType, address indexed adapter);
-    event OracleRegistered(ILPAdapter.LPType indexed lpType, address indexed oracle);
+    // Carry the previous address: re-registering silently replaces a live adapter/oracle, and an
+    // event that only reports the new one makes a swap indistinguishable from a first-time setup.
+    event AdapterRegistered(ILPAdapter.LPType indexed lpType, address indexed oldAdapter, address indexed adapter);
+    event OracleRegistered(ILPAdapter.LPType indexed lpType, address indexed oldOracle, address indexed oracle);
     event PoolRegistered(address indexed borrowAsset, address indexed pool);
     event PoolFactoryUpdated(address indexed oldFactory, address indexed newFactory);
     event PoolWhitelisted(address indexed pool);
@@ -95,18 +104,18 @@ contract ProtocolCore {
     function registerAdapter(ILPAdapter.LPType lpType, address adapter) external onlyPoolAdmin {
         require(adapter != address(0), "ZERO_ADDRESS");
         require(adapter.code.length > 0, "NOT_CONTRACT");
+        emit AdapterRegistered(lpType, adapters[lpType], adapter);
         adapters[lpType] = adapter;
         if (uint8(lpType) > maxRegisteredLPType) {
             maxRegisteredLPType = uint8(lpType);
         }
-        emit AdapterRegistered(lpType, adapter);
     }
 
     function registerOracle(ILPAdapter.LPType lpType, address oracle) external onlyPoolAdmin {
         require(oracle != address(0), "ZERO_ADDRESS");
         require(oracle.code.length > 0, "NOT_CONTRACT");
+        emit OracleRegistered(lpType, oracles[lpType], oracle);
         oracles[lpType] = oracle;
-        emit OracleRegistered(lpType, oracle);
     }
 
     function setPoolFactory(address _factory) external onlyPoolAdmin {
@@ -135,6 +144,13 @@ contract ProtocolCore {
         // The key must match the pool's own borrow asset, otherwise every downstream
         // `pools[asset]` lookup would resolve to a pool that lends a different token.
         require(ILendingPool(pool).borrowAsset() == borrowAsset, "BORROW_ASSET_MISMATCH");
+        // Listing is atomic with pricing: a market whose borrow asset has no price source can be
+        // borrowed against but not valued, so its debt would never register against the health
+        // factor. Checked for existence rather than health — a feed that is merely stale must not
+        // block listing, and getPrice() rejects it at the point money actually moves.
+        address registry = priceFeedRegistryAddr;
+        require(registry != address(0), "PRICE_REGISTRY_UNSET");
+        require(IPriceSource(registry).isPriceable(borrowAsset), "BORROW_ASSET_NOT_PRICEABLE");
         registeredPools[pool] = true;
         pools[borrowAsset] = pool;
         emit PoolRegistered(borrowAsset, pool);
@@ -149,8 +165,13 @@ contract ProtocolCore {
 
     // --- Pool Management ---
 
+    /// @notice Curate an AMM pool as acceptable collateral backing.
+    /// @dev Distinct from registerPool, which lists a *lending* market. This is the curation layer
+    ///      over the adapters' authenticity check: they already refuse an LP token whose pool does
+    ///      not come from the configured factory, so this decides which authentic pools we want.
     function whitelistPool(address pool) external onlyPoolAdmin {
         require(pool != address(0), "ZERO_ADDRESS");
+        require(pool.code.length > 0, "NOT_CONTRACT");
         require(!supportedPools[pool], "ALREADY_WHITELISTED");
         supportedPools[pool] = true;
         poolAddedAt[pool] = block.timestamp;
@@ -210,8 +231,14 @@ contract ProtocolCore {
 
     // --- Shared Registry Management ---
 
+    /// @dev Cannot be unset, for the same reason RiskManager cannot: every borrow-side consumer
+    ///      reads prices through here, so clearing it would leave them with no source for the debt
+    ///      side of the health factor. It used to be clearable, and the consumers answered by
+    ///      assuming $1 — which silently over-issues against any asset that is not worth a dollar
+    ///      and hides a depeg on the ones that are. Pricing now fails closed, so this must hold.
     function setPriceFeedRegistry(address _registry) external onlyPoolAdmin {
-        require(_registry == address(0) || _registry.code.length > 0, "NOT_CONTRACT");
+        require(_registry != address(0), "ZERO_ADDRESS");
+        require(_registry.code.length > 0, "NOT_CONTRACT");
         emit PriceFeedRegistryUpdated(priceFeedRegistryAddr, _registry);
         priceFeedRegistryAddr = _registry;
     }

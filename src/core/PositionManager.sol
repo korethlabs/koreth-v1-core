@@ -642,20 +642,10 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         }
 
         // Convert debt from borrow asset decimals to 18-dec USD value (Aave-style)
-        uint256 debtUsd;
+        // Always through the registry — see LendingEngine._toUsd. A guessed debt value here is a
+        // guessed health factor, which is the number liquidation is gated on.
         uint8 borrowDecimals = TokenUtils.safeDecimals(borrowAsset);
-        address registryAddr = core.priceFeedRegistryAddr();
-        if (registryAddr != address(0)) {
-            debtUsd = PriceFeedRegistry(registryAddr).getUsdValue(borrowAsset, debt, borrowDecimals);
-        } else {
-            if (borrowDecimals < 18) {
-                debtUsd = Math.mulDiv(debt, 10 ** (18 - borrowDecimals), 1);
-            } else if (borrowDecimals > 18) {
-                debtUsd = debt / (10 ** (borrowDecimals - 18));
-            } else {
-                debtUsd = debt;
-            }
-        }
+        uint256 debtUsd = PriceFeedRegistry(core.priceFeedRegistryAddr()).getUsdValue(borrowAsset, debt, borrowDecimals);
 
         if (debtUsd == 0) return type(uint256).max;
         uint256 numerator = Math.mulDiv(collateralValue, cc.liquidationThreshold, 10_000);

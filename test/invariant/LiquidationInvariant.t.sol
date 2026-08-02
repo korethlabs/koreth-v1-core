@@ -20,6 +20,8 @@ import {FeeCollector} from "../../src/core/FeeCollector.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {TestPricing} from "../helpers/TestPricing.sol";
+import {TestPools} from "../helpers/TestPools.sol";
 
 /// @title LiquidationInvariantTest
 /// @notice Fuzz-driven invariant tests for liquidation logic.
@@ -110,8 +112,9 @@ contract LiquidationInvariantTest is Test {
         aclManager.addPositionManager(address(pm));
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
-        core.whitelistPool(lpToken);
+        core.whitelistPool(TestPools.asContract(lpToken));
         borrowAsset = address(usdc);
+        TestPricing.wireStable(core, address(usdc));
         core.registerPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         aclManager.addRiskAdmin(owner);

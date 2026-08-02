@@ -19,6 +19,8 @@ import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {FeeCollector} from "../../src/core/FeeCollector.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {TestPricing} from "../helpers/TestPricing.sol";
+import {TestPools} from "../helpers/TestPools.sol";
 
 /// @title ProtocolInvariantTest
 /// @notice Fuzz-driven invariant tests that verify protocol-wide properties hold
@@ -104,11 +106,12 @@ contract ProtocolInvariantTest is Test {
         aclManager.addPositionManager(address(pm));
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
-        core.whitelistPool(lpToken);
+        core.whitelistPool(TestPools.asContract(lpToken));
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapterV2));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracleV2));
-        core.whitelistPool(lpTokenV2);
+        core.whitelistPool(TestPools.asContract(lpTokenV2));
         borrowAsset = address(usdc);
+        TestPricing.wireStable(core, address(usdc));
         core.registerPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         aclManager.addRiskAdmin(owner);

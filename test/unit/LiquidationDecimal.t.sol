@@ -16,9 +16,10 @@ import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
-import {MockPriceFeedRegistry} from "../mocks/MockPriceFeedRegistry.sol";
+import {TestPricing} from "../helpers/TestPricing.sol";
 import {RiskManager} from "../../src/security/RiskManager.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
+import {TestPools} from "../helpers/TestPools.sol";
 
 /// @title LiquidationDecimalTest
 /// @notice Full liquidation flow tests with REAL decimal configurations
@@ -100,7 +101,7 @@ contract LiquidationDecimalTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistPool(lpToken);
+        core.whitelistPool(TestPools.asContract(lpToken));
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
         pm.setLendingEngine(address(le));
@@ -113,13 +114,12 @@ contract LiquidationDecimalTest is Test {
         // Setup: 6-decimal USDC market with PriceFeedRegistry
         MockERC20 usdc6 = new MockERC20("USDC", "USDC", 6);
         MockLendingPool market6 = new MockLendingPool(address(usdc6), address(irm));
-        MockPriceFeedRegistry registry = new MockPriceFeedRegistry();
-        registry.setPrice(address(usdc6), 1e18); // $1.00
-
         vm.startPrank(owner);
         address borrowAsset = address(usdc6);
+        // The price has to exist before the market can be listed -- ProtocolCore refuses to open
+        // one it cannot value.
+        TestPricing.wire(core, address(usdc6), 1e18); // $1.00
         core.registerPool(borrowAsset, address(market6));
-        core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 
         // Fund: market + adapter
@@ -184,53 +184,20 @@ contract LiquidationDecimalTest is Test {
         assertGt(wethAfter, wethBefore, "Liquidator must receive WETH from unwind");
     }
 
-    function test_fullFlow_6decUSDC_withoutRegistry_fallback() public {
-        // Same flow but WITHOUT PriceFeedRegistry — tests fallback normalization
+    /// @dev This used to assert that a market with no price source still worked, by normalizing
+    ///      decimals and calling the result USD — i.e. pricing the borrow asset at $1 whatever it
+    ///      was. For a 6-dec stablecoin the answer happened to be right, which is exactly why the
+    ///      behaviour survived; for anything else it over-issues debt and then reports the
+    ///      position as healthy. The market can no longer be opened at all.
+    function test_registerPool_revertsWhenBorrowAssetHasNoPrice() public {
         MockERC20 usdc6 = new MockERC20("USDC", "USDC", 6);
         MockLendingPool market6 = new MockLendingPool(address(usdc6), address(irm));
 
         vm.startPrank(owner);
-        address borrowAsset = address(usdc6);
-        core.registerPool(borrowAsset, address(market6));
-        // NO setPriceFeedRegistry — testing fallback path
+        TestPricing.wire(core, address(weth), 3000e18); // a registry exists, just not for usdc6
+        vm.expectRevert("BORROW_ASSET_NOT_PRICEABLE");
+        core.registerPool(address(usdc6), address(market6));
         vm.stopPrank();
-
-        usdc6.mint(address(market6), 10_000_000e6);
-        usdc6.mint(address(adapter), 10_000_000e6);
-        weth.mint(address(adapter), 10_000_000e18);
-
-        adapter.setTokenReturns(address(weth), address(usdc6));
-        adapter.setUnwindAmounts(25e18, 25_000e6);
-        adapter.setTotalLiquidity(100e18);
-
-        oracle.setPrice(50_000e18);
-        vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 0, 100e18, borrowAsset);
-        vm.roll(block.number + 2);
-
-        // Borrow — fallback _getMaxBorrow normalizes to 6-dec
-        vm.prank(alice);
-        le.borrow(posId, 30_000e6);
-
-        // Drop price → liquidatable
-        oracle.setPrice(39_000e18);
-
-        // Fallback HF: debt=30_000e6, normalized=30_000e18
-        uint256 hf = pm.getHealthFactor(posId);
-        assertLt(hf, 1e18, "Should be liquidatable via fallback");
-
-        (bool canLiq, uint256 maxRepay) = liq.isLiquidatable(posId);
-        assertTrue(canLiq);
-
-        usdc6.mint(liquidator, maxRepay);
-        vm.prank(liquidator);
-        usdc6.approve(address(liq), maxRepay);
-
-        vm.prank(liquidator);
-        liq.liquidate(posId, maxRepay, block.timestamp + 1 hours, 0, 0);
-
-        assertLt(pm.getPosition(posId).amount, 100e18, "Position amount must decrease");
-        assertLt(le.getDebt(posId), 30_000e6, "Debt must decrease");
     }
 
     // ========== 8-Decimal WBTC Full Liquidation Flow ==========
@@ -239,13 +206,12 @@ contract LiquidationDecimalTest is Test {
         // WBTC at $60K as borrow asset — exercises non-$1 price conversion
         MockERC20 wbtc = new MockERC20("WBTC", "WBTC", 8);
         MockLendingPool marketBtc = new MockLendingPool(address(wbtc), address(irm));
-        MockPriceFeedRegistry registry = new MockPriceFeedRegistry();
-        registry.setPrice(address(wbtc), 60_000e18); // $60K per BTC
-
         vm.startPrank(owner);
         address borrowAsset = address(wbtc);
+        // The price has to exist before the market can be listed -- ProtocolCore refuses to open
+        // one it cannot value.
+        TestPricing.wire(core, address(wbtc), 60_000e18); // $60K per BTC
         core.registerPool(borrowAsset, address(marketBtc));
-        core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 
         wbtc.mint(address(marketBtc), 100e8); // 100 BTC
@@ -301,13 +267,12 @@ contract LiquidationDecimalTest is Test {
         // Critically underwater position (HF < 0.95) with 6-dec USDC
         MockERC20 usdc6 = new MockERC20("USDC", "USDC", 6);
         MockLendingPool market6 = new MockLendingPool(address(usdc6), address(irm));
-        MockPriceFeedRegistry registry = new MockPriceFeedRegistry();
-        registry.setPrice(address(usdc6), 1e18);
-
         vm.startPrank(owner);
         address borrowAsset = address(usdc6);
+        // The price has to exist before the market can be listed -- ProtocolCore refuses to open
+        // one it cannot value.
+        TestPricing.wire(core, address(usdc6), 1e18);
         core.registerPool(borrowAsset, address(market6));
-        core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 
         usdc6.mint(address(market6), 10_000_000e6);
@@ -353,13 +318,12 @@ contract LiquidationDecimalTest is Test {
     function test_maxBorrow_6dec_respectsLTV() public {
         MockERC20 usdc6 = new MockERC20("USDC", "USDC", 6);
         MockLendingPool market6 = new MockLendingPool(address(usdc6), address(irm));
-        MockPriceFeedRegistry registry = new MockPriceFeedRegistry();
-        registry.setPrice(address(usdc6), 1e18);
-
         vm.startPrank(owner);
         address borrowAsset = address(usdc6);
+        // The price has to exist before the market can be listed -- ProtocolCore refuses to open
+        // one it cannot value.
+        TestPricing.wire(core, address(usdc6), 1e18);
         core.registerPool(borrowAsset, address(market6));
-        core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 
         usdc6.mint(address(market6), 10_000_000e6);
@@ -390,13 +354,12 @@ contract LiquidationDecimalTest is Test {
     function test_maxBorrow_8decWBTC_respectsLTV() public {
         MockERC20 wbtc = new MockERC20("WBTC", "WBTC", 8);
         MockLendingPool marketBtc = new MockLendingPool(address(wbtc), address(irm));
-        MockPriceFeedRegistry registry = new MockPriceFeedRegistry();
-        registry.setPrice(address(wbtc), 60_000e18);
-
         vm.startPrank(owner);
         address borrowAsset = address(wbtc);
+        // The price has to exist before the market can be listed -- ProtocolCore refuses to open
+        // one it cannot value.
+        TestPricing.wire(core, address(wbtc), 60_000e18);
         core.registerPool(borrowAsset, address(marketBtc));
-        core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 
         wbtc.mint(address(marketBtc), 1000e8);

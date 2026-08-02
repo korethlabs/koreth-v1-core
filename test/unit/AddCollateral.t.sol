@@ -17,6 +17,8 @@ import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
+import {TestPricing} from "../helpers/TestPricing.sol";
+import {TestPools} from "../helpers/TestPools.sol";
 
 /// @title AddCollateralTest
 /// @notice Unit tests for PositionManager.addCollateral()
@@ -106,8 +108,9 @@ contract AddCollateralTest is Test {
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(v2Adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistPool(lpToken);
-        core.whitelistPool(v2LpToken);
+        core.whitelistPool(TestPools.asContract(lpToken));
+        core.whitelistPool(TestPools.asContract(v2LpToken));
+        TestPricing.wireStable(core, address(usdc));
         core.registerPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());

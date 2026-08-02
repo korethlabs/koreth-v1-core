@@ -17,6 +17,8 @@ import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
+import {TestPricing} from "../helpers/TestPricing.sol";
+import {TestPools} from "../helpers/TestPools.sol";
 
 /// @title DepositValidationTest
 /// @notice Tests for deposit-time validations: circuit breaker warning, oracle health check
@@ -82,7 +84,8 @@ contract DepositValidationTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistPool(lpToken);
+        core.whitelistPool(TestPools.asContract(lpToken));
+        TestPricing.wireStable(core, address(usdc));
         core.registerPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         // Enable UniswapV2 collateral (the type the mock adapter detects)

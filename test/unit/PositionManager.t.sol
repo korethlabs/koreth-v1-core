@@ -14,10 +14,12 @@ import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
-import {MockPriceFeedRegistry} from "../mocks/MockPriceFeedRegistry.sol";
+import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {RiskManager} from "../../src/security/RiskManager.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
+import {TestPricing} from "../helpers/TestPricing.sol";
+import {TestPools} from "../helpers/TestPools.sol";
 
 contract PositionManagerTest is Test {
     ProtocolCore public core;
@@ -27,6 +29,7 @@ contract PositionManagerTest is Test {
     MockLPAdapter public adapter;
     MockLPOracle public oracle;
     MockLendingPool public market;
+    PriceFeedRegistry public priceRegistry;
     RiskManager public riskManager;
     MockERC20 public usdc;
     address public borrowAsset;
@@ -104,7 +107,8 @@ contract PositionManagerTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
-        core.whitelistPool(lpToken);
+        core.whitelistPool(TestPools.asContract(lpToken));
+        priceRegistry = TestPricing.wireStable(core, address(usdc));
         core.registerPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
@@ -731,17 +735,15 @@ contract PositionManagerTest is Test {
     // ========== Health Factor with PriceFeedRegistry (Aave-style) ==========
 
     function test_getHealthFactor_withPriceFeedRegistry_6decUSDC() public {
-        // Set up a MockPriceFeedRegistry with USDC at $1
-        MockPriceFeedRegistry registry = new MockPriceFeedRegistry();
         MockERC20 usdc6 = new MockERC20("USDC", "USDC", 6);
-        registry.setPrice(address(usdc6), 1e18); // $1.00
 
-        // Create a market with 6-decimal USDC
+        // Create a market with 6-decimal USDC. The price has to be declared before the market can
+        // be listed at all — ProtocolCore refuses to open one it cannot value.
         InterestRateModel irm6 = new InterestRateModel(200, 600, 10_000, 8000);
         MockLendingPool market6 = new MockLendingPool(address(usdc6), address(irm6));
         vm.startPrank(owner);
+        priceRegistry.setPeggedPrice(address(usdc6), 1e18); // $1.00
         core.registerPool(address(usdc6), address(market6));
-        core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 
         oracle.setPrice(10_000e18); // $10K collateral
@@ -764,15 +766,13 @@ contract PositionManagerTest is Test {
 
     function test_getHealthFactor_withPriceFeedRegistry_8decWBTC() public {
         // WBTC at $60,000 as borrow asset
-        MockPriceFeedRegistry registry = new MockPriceFeedRegistry();
         MockERC20 wbtc = new MockERC20("WBTC", "WBTC", 8);
-        registry.setPrice(address(wbtc), 60_000e18); // $60K per BTC
 
         InterestRateModel irm8 = new InterestRateModel(200, 600, 10_000, 8000);
         MockLendingPool market8 = new MockLendingPool(address(wbtc), address(irm8));
         vm.startPrank(owner);
+        priceRegistry.setPeggedPrice(address(wbtc), 60_000e18); // $60K per BTC
         core.registerPool(address(wbtc), address(market8));
-        core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 
         oracle.setPrice(100_000e18); // $100K collateral
@@ -793,43 +793,28 @@ contract PositionManagerTest is Test {
         vm.clearMockedCalls();
     }
 
-    function test_getHealthFactor_fallbackWithoutRegistry() public {
-        // Without PriceFeedRegistry, fallback normalizes 6-dec debt to 18-dec USD
-        oracle.setPrice(10_000e18);
-
-        vm.prank(alice);
-        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
-
-        // Market uses 6-dec USDC, so mock debt in 6 decimals
-        vm.mockCall(
-            lendingEngine, abi.encodeWithSelector(LendingEngine.getDebt.selector, posId), abi.encode(uint256(5000e6))
-        );
-
-        uint256 hf = pm.getHealthFactor(posId);
-        assertEq(hf, 1.5e18, "Fallback must normalize 6-dec debt correctly");
-
-        vm.clearMockedCalls();
-    }
-
     function test_setPriceFeedRegistry_onlyPoolAdmin() public {
         vm.prank(alice);
         vm.expectRevert("NOT_POOL_ADMIN");
         core.setPriceFeedRegistry(makeAddr("registry"));
     }
 
-    function test_setPriceFeedRegistry_allowsZero() public {
-        // Can set to address(0) to revert to fallback normalization mode
-        MockPriceFeedRegistry registry = new MockPriceFeedRegistry();
-        registry.setPrice(address(0x1), 1e18);
+    /// @dev The registry used to be clearable, and the engines answered a missing one by valuing
+    ///      every borrow asset at $1 — which over-issues against anything worth more and hides a
+    ///      depeg on anything meant to be worth exactly that. Pricing now fails closed, so the
+    ///      pointer it depends on has to stay populated.
+    function test_setPriceFeedRegistry_rejectsZero() public {
+        PriceFeedRegistry registry = new PriceFeedRegistry(address(core));
 
         vm.prank(owner);
         core.setPriceFeedRegistry(address(registry));
         assertEq(core.priceFeedRegistryAddr(), address(registry));
 
-        // Unset → fallback mode
         vm.prank(owner);
+        vm.expectRevert("ZERO_ADDRESS");
         core.setPriceFeedRegistry(address(0));
-        assertEq(core.priceFeedRegistryAddr(), address(0));
+
+        assertEq(core.priceFeedRegistryAddr(), address(registry), "registry must survive the attempt");
     }
 
     // ========== getActivePositionsByOwner ==========

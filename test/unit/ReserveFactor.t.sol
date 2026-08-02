@@ -11,6 +11,7 @@ import {ILendingPool} from "../../src/interfaces/ILendingPool.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {TestPricing} from "../helpers/TestPricing.sol";
 
 /// @title ReserveFactorTest
 /// @notice Tests the interest reserve factor flow: Market → FeeCollector → Treasury
@@ -51,6 +52,7 @@ contract ReserveFactorTest is Test {
         // Grant LENDING_ENGINE to this test contract so we can call transferOut/transferIn
         vm.startPrank(owner);
         aclManager.addLendingEngine(address(this));
+        TestPricing.wireStable(core, address(usdc));
         core.registerPool(address(usdc), address(market));
         market.setReserveFactor(2000); // 20%
         market.setFeeCollector(address(fc));
