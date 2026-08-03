@@ -95,6 +95,16 @@ jobs:
           key: forge-fork-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'foundry.toml', 'remappings.txt') }}
           restore-keys: forge-fork-${{ runner.os }}-
 
+      # The suite reads mainnet at a pinned block, so the responses are identical every run and can
+      # be replayed from disk. Without this each run pulls thousands of state slots live, which is
+      # what was exhausting the provider and failing tests on timed-out reads.
+      - name: Cache fork RPC responses
+        uses: actions/cache@v4
+        with:
+          path: ~/.foundry/cache/rpc
+          key: rpc-${{ runner.os }}-${{ hashFiles('test/**/*.sol') }}
+          restore-keys: rpc-${{ runner.os }}-
+
       - name: Fork tests
         env:
           ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
