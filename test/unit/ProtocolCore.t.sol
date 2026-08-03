@@ -98,7 +98,7 @@ contract ProtocolCoreTest is Test {
     function test_registerAdapter_success() public {
         address adapter = _stub();
 
-        vm.expectEmit(true, true, false, false);
+        vm.expectEmit(true, true, true, false);
         emit AdapterRegistered(ILPAdapter.LPType.UniswapV3, address(0), adapter);
 
         vm.prank(owner);
@@ -154,7 +154,7 @@ contract ProtocolCoreTest is Test {
     function test_registerOracle_success() public {
         address oracle = _stub();
 
-        vm.expectEmit(true, true, false, false);
+        vm.expectEmit(true, true, true, false);
         emit OracleRegistered(ILPAdapter.LPType.UniswapV3, address(0), oracle);
 
         vm.prank(owner);
