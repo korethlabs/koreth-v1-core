@@ -29,7 +29,22 @@ library TestPricing {
     }
 
     /// @notice Give `token` a constant feed at `priceE18` on an already-installed registry.
-    function priceAsset(PriceFeedRegistry registry, address token, uint256 priceE18) internal {
-        registry.setPriceFeed(token, address(new MockConstantFeed(int256(priceE18))));
+    /// @return feed The aggregator, so a test can move the price with setAnswer — a borrow asset
+    ///         that never moves is the case the fail-closed pricing work exists to handle.
+    function priceAsset(
+        PriceFeedRegistry registry,
+        address token,
+        uint256 priceE18
+    )
+        internal
+        returns (MockConstantFeed feed)
+    {
+        feed = new MockConstantFeed(int256(priceE18));
+        registry.setPriceFeed(token, address(feed));
+    }
+
+    /// @notice The feed backing `token`, for suites that wired it through wire()/wireStable().
+    function feedFor(PriceFeedRegistry registry, address token) internal view returns (MockConstantFeed) {
+        return MockConstantFeed(registry.priceFeeds(token));
     }
 }

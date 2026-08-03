@@ -20,6 +20,7 @@ import {RiskManager} from "../../src/security/RiskManager.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {TestPricing} from "../helpers/TestPricing.sol";
 import {TestPools} from "../helpers/TestPools.sol";
+import {TestSecurity} from "../helpers/TestSecurity.sol";
 
 /// @title AttackVectorTests
 /// @notice Security tests covering the 10 Tier 2 attack vectors from docs/security/attack-vectors.md
@@ -116,6 +117,7 @@ contract AttackVectorTests is Test {
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         pm.setLendingEngine(address(le));
         pm.setCircuitBreaker(address(circuitBreaker));
+        TestSecurity.wireFeeCollector(core, liq, makeAddr("treasury"));
         vm.stopPrank();
 
         // Fund market with liquidity

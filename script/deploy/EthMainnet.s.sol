@@ -34,6 +34,8 @@ contract DeployEthMainnet is DeployBase {
             // Chainlink feeds
             clNativeUsd: 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419, // ETH/USD
             clStablecoinUsd: 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6, // USDC/USD
+            // No sequencer on this chain — L1 and its testnets order their own blocks.
+            clSequencerUptime: address(0),
             // Pools
             v2Pool: 0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc, // WETH/USDC V2
             v3Pool: 0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8, // WETH/USDC 0.3% V3

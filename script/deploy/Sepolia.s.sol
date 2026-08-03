@@ -27,6 +27,8 @@ contract DeploySepolia is DeployBase {
             // Chainlink feeds (Sepolia)
             clNativeUsd: 0x694AA1769357215DE4FAC081bf1f309aDC325306, // ETH/USD
             clStablecoinUsd: 0xA2F78ab2355fe2f984D808B5CeE7FD0A93D5270E, // USDC/USD
+            // No sequencer on this chain — L1 and its testnets order their own blocks.
+            clSequencerUptime: address(0),
             // Pools — use a real Sepolia V3 pool (WETH/USDC 0.3%)
             v2Pool: address(0), // no V2
             v3Pool: 0x6cE0896Ee9f20e55E1CDaF1cc234A36e27e8f42e, // WETH/USDC Sepolia

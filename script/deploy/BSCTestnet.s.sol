@@ -27,6 +27,8 @@ contract DeployBSCTestnet is DeployBase {
             // Chainlink feeds (BSC Testnet)
             clNativeUsd: 0x2514895c72f50D8bd4B4F9b1110F0D6bD2c97526, // BNB/USD
             clStablecoinUsd: 0x9331b55D9830EF609A2aBCfAc0FBCE050A52fdEa, // BUSD/USD
+            // No sequencer on this chain — L1 and its testnets order their own blocks.
+            clSequencerUptime: address(0),
             // Pools — PancakeSwap V2 WBNB/BUSD pair
             v2Pool: 0xe0e92035077c39594793e61802a350347c320cf2, // WBNB/BUSD testnet
             v3Pool: address(0),

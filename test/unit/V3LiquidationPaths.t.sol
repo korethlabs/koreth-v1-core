@@ -128,6 +128,7 @@ contract V3LiquidationPaths is Test {
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
         TestSecurity.wireBreaker(core, pm);
+        TestSecurity.wireFeeCollector(core, liq, makeAddr("treasury"));
         pm.setLendingEngine(address(le));
         vm.stopPrank();
 

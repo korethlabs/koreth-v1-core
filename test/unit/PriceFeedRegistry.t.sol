@@ -192,6 +192,48 @@ contract PriceFeedRegistryTest is Test {
         assertEq(registry.sequencerUptimeFeed(), address(0));
     }
 
+    // ========== getUsdValue ==========
+
+    /// @dev Every borrow-side conversion funnels through here — LendingEngine._toUsd and
+    ///      ._maxBorrow, LiquidationEngine._getRepayValueUsd, PositionManager's health factor —
+    ///      yet it was only ever covered transitively. The decimals that matter in practice are
+    ///      6 (USDC/USDT), 8 (WBTC) and 18 (DAI/WETH); the extremes are here because nothing in
+    ///      the protocol stops an admin listing a market in one.
+    function test_getUsdValue_acrossDecimals() public {
+        MockAggregator assetFeed = new MockAggregator(8, 2000e8); // $2,000
+        address asset = makeAddr("asset");
+        vm.prank(owner);
+        registry.setPriceFeed(asset, address(assetFeed));
+
+        assertEq(registry.getUsdValue(asset, 1e18, 18), 2000e18, "18 decimals");
+        assertEq(registry.getUsdValue(asset, 1e8, 8), 2000e18, "8 decimals");
+        assertEq(registry.getUsdValue(asset, 1e6, 6), 2000e18, "6 decimals");
+        assertEq(registry.getUsdValue(asset, 1e2, 2), 2000e18, "2 decimals");
+        assertEq(registry.getUsdValue(asset, 1e24, 24), 2000e18, "24 decimals");
+
+        // Fractions of a unit scale the same way, in both directions.
+        assertEq(registry.getUsdValue(asset, 5e5, 6), 1000e18, "half a 6-dec unit");
+        assertEq(registry.getUsdValue(asset, 3e18, 18), 6000e18, "three 18-dec units");
+    }
+
+    /// @dev Truncation must round *down*: the protocol under-credits a borrower rather than
+    ///      over-crediting, so the error can never open a position it should have refused.
+    function test_getUsdValue_roundsTowardZero() public {
+        MockAggregator assetFeed = new MockAggregator(8, 3e8); // $3
+        address asset = makeAddr("odd");
+        vm.prank(owner);
+        registry.setPriceFeed(asset, address(assetFeed));
+
+        // 1 wei-unit of a 2-dec token at $3 = $0.03, which is 3e16 in 18-dec USD.
+        assertEq(registry.getUsdValue(asset, 1, 2), 3e16);
+        assertEq(registry.getUsdValue(asset, 0, 18), 0, "no amount, no value");
+    }
+
+    function test_getUsdValue_revertsAboveMaxDecimals() public {
+        vm.expectRevert("INVALID_DECIMALS");
+        registry.getUsdValue(token, 1, 37);
+    }
+
     // ========== No price source ==========
 
     /// @dev There is no way to assert a price without a feed. A token nobody configured a source

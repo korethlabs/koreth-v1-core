@@ -21,6 +21,11 @@ contract DeployLocal is DeployBase {
     // Anvil default account #0 ADDRESS (public — the deployer must be this on the local fork)
     address internal constant ANVIL_ACCT0 = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
 
+    /// @dev Start anvil with `--chain-id 1337`. A mainnet fork otherwise inherits chainid 1, and
+    ///      every address in this profile is a real mainnet address, so nothing about the script
+    ///      itself says "local".
+    uint256 internal constant LOCAL_CHAIN_ID = 1337;
+
     // Extra borrow-asset stablecoins + their Chainlink USD feeds (mainnet)
     address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
     address internal constant DAI = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
@@ -30,6 +35,11 @@ contract DeployLocal is DeployBase {
     function _config() internal override returns (ChainConfig memory) {
         address deployer = vm.addr(vm.envUint("DEPLOYER_PRIVATE_KEY"));
         require(deployer == ANVIL_ACCT0, "USE_ANVIL_ACCT0");
+        // This profile installs price feeds frozen at deploy time and skips the timelock handoff,
+        // leaving the deployer with every role. Until now the only thing between a mistyped RPC
+        // and shipping that to mainnet was the anvil key holding no real ETH — an accident, not a
+        // safeguard.
+        require(block.chainid == LOCAL_CHAIN_ID, "NOT_A_LOCAL_CHAIN");
 
         return ChainConfig({
             // Roles — deployer wears every hat on a local fork
@@ -48,6 +58,8 @@ contract DeployLocal is DeployBase {
             // Chainlink feeds (mainnet)
             clNativeUsd: 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419, // ETH/USD
             clStablecoinUsd: 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6, // USDC/USD
+            // No sequencer on this chain — L1 and its testnets order their own blocks.
+            clSequencerUptime: address(0),
             // Pools to whitelist (mainnet WETH/USDC)
             v2Pool: 0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc, // V2 WETH/USDC pair
             v3Pool: 0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8, // V3 WETH/USDC 0.3%
