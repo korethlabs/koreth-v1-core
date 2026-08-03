@@ -39,6 +39,9 @@ library TestPricing {
         internal
         returns (MockConstantFeed feed)
     {
+        // Checked rather than cast blind: above int256 max the value wraps negative and the feed
+        // rejects it as NON_POSITIVE_ANSWER, which reads as a broken mock instead of a bad price.
+        require(priceE18 <= uint256(type(int256).max), "PRICE_OUT_OF_RANGE");
         feed = new MockConstantFeed(int256(priceE18));
         registry.setPriceFeed(token, address(feed));
     }

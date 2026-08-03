@@ -21,7 +21,12 @@ contract MockConstantFeed {
         answer = _answer;
     }
 
+    /// @dev Holds the same invariant as the constructor. A feed that reports zero or a negative
+    ///      answer makes getPrice() revert INVALID_PRICE, which would surface as an unexplained
+    ///      failure several calls away from the setter that caused it. Tests that want to exercise
+    ///      a broken feed should mock latestRoundData directly, so the intent is visible.
     function setAnswer(int256 _answer) external {
+        require(_answer > 0, "NON_POSITIVE_ANSWER");
         answer = _answer;
     }
 
