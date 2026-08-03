@@ -121,7 +121,7 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
         // Circuit breaker: no new borrows against paused pools or frozen collateral types. It is
         // the fast emergency lever, not the offboarding one — permanently retiring a collateral
         // type goes through RiskManager's `enabled` flag, which validateAndRecordBorrow enforces.
-        CircuitBreaker cb = positionManager.circuitBreaker();
+        CircuitBreaker cb = positionManager.getCircuitBreaker();
         require(!cb.poolPaused(pos.pool), "POOL_CIRCUIT_BREAKER");
         require(!cb.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
 

@@ -156,6 +156,16 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         circuitBreaker = CircuitBreaker(_circuitBreaker);
     }
 
+    /// @notice Resolve the circuit breaker (reverts if it was never configured).
+    /// @dev Mirrors ProtocolCore.getPriceFeedRegistry(). Now that the breaker is mandatory, the
+    ///      only way to meet an unset one is a deployment that is still being wired — and that
+    ///      should say which wire is missing rather than revert as a call into an empty address.
+    function getCircuitBreaker() public view returns (CircuitBreaker) {
+        CircuitBreaker breaker = circuitBreaker;
+        require(address(breaker) != address(0), "CIRCUIT_BREAKER_UNSET");
+        return breaker;
+    }
+
     // --- Core Logic ---
 
     /// @inheritdoc IPositionManager
@@ -196,8 +206,9 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
 
         // Verify pool is whitelisted and not circuit-broken
         require(core.isPoolSupported(info.pool), "POOL_NOT_SUPPORTED");
-        require(!circuitBreaker.poolPaused(info.pool), "POOL_CIRCUIT_BREAKER");
-        require(!circuitBreaker.collateralFrozen(lpType), "COLLATERAL_FROZEN");
+        CircuitBreaker breaker = getCircuitBreaker();
+        require(!breaker.poolPaused(info.pool), "POOL_CIRCUIT_BREAKER");
+        require(!breaker.collateralFrozen(lpType), "COLLATERAL_FROZEN");
 
         // Get oracle price to validate position has value
         ILPOracleHub.PriceResult memory price = oracleHub.getPrice(lpToken, tokenId, amount, lpType);
@@ -299,7 +310,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         require(amount0 > 0 || amount1 > 0, "ZERO_AMOUNTS");
 
         // Frozen collateral types block new collateral (risk-taking)
-        require(!circuitBreaker.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
+        require(!getCircuitBreaker().collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
 
         address adapterAddr = core.adapters(pos.lpType);
         require(adapterAddr != address(0), "ADAPTER_NOT_FOUND");
@@ -386,7 +397,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         require(adapterAddr != address(0), "ADAPTER_NOT_FOUND");
 
         // Circuit breaker: block collateral removal on frozen collateral types (oracle may be manipulated)
-        require(!circuitBreaker.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
+        require(!getCircuitBreaker().collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
 
         // Validate liquidity bounds before calling adapter
         if (pos.lpType == ILPAdapter.LPType.UniswapV2 || pos.lpType == ILPAdapter.LPType.PancakeSwapV2) {

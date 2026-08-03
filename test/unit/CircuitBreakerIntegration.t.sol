@@ -204,6 +204,22 @@ contract CircuitBreakerIntegrationTest is Test {
     /// @dev The breaker used to be detachable, and every freeze check sat behind a null test — so
     ///      clearing it did not disable one lever, it disabled the entire circuit breaker across
     ///      deposits, borrows and collateral changes, with only an event to say so.
+    /// @dev Mirrors ProtocolCore.getPriceFeedRegistry(): a mandatory dependency that is not yet
+    ///      wired says so, instead of reverting as a call into an empty address.
+    function test_getCircuitBreaker_revertsWhenUnset() public {
+        PositionManager bare = PositionManager(
+            address(
+                new ERC1967Proxy(
+                    address(new PositionManager()),
+                    abi.encodeCall(PositionManager.initialize, (address(core), address(oracleHub)))
+                )
+            )
+        );
+
+        vm.expectRevert("CIRCUIT_BREAKER_UNSET");
+        bare.getCircuitBreaker();
+    }
+
     function test_circuitBreakerCannotBeDetached() public {
         address attached = address(pm.circuitBreaker());
 
