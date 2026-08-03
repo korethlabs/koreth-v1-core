@@ -18,6 +18,8 @@ import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {RiskManager} from "../../src/security/RiskManager.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
+import {TestPricing} from "../helpers/TestPricing.sol";
+import {TestPools} from "../helpers/TestPools.sol";
 
 contract CircuitBreakerIntegrationTest is Test {
     ACLManager public aclManager;
@@ -86,7 +88,8 @@ contract CircuitBreakerIntegrationTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
-        core.whitelistPool(lpToken);
+        core.whitelistPool(TestPools.asContract(lpToken));
+        TestPricing.wireStable(core, address(usdc));
         core.registerPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
@@ -198,13 +201,32 @@ contract CircuitBreakerIntegrationTest is Test {
         pm.setCircuitBreaker(address(cb));
     }
 
-    function test_worksWithoutCircuitBreaker() public {
-        // Remove circuit breaker
+    /// @dev The breaker used to be detachable, and every freeze check sat behind a null test — so
+    ///      clearing it did not disable one lever, it disabled the entire circuit breaker across
+    ///      deposits, borrows and collateral changes, with only an event to say so.
+    /// @dev Mirrors ProtocolCore.getPriceFeedRegistry(): a mandatory dependency that is not yet
+    ///      wired says so, instead of reverting as a call into an empty address.
+    function test_getCircuitBreaker_revertsWhenUnset() public {
+        PositionManager bare = PositionManager(
+            address(
+                new ERC1967Proxy(
+                    address(new PositionManager()),
+                    abi.encodeCall(PositionManager.initialize, (address(core), address(oracleHub)))
+                )
+            )
+        );
+
+        vm.expectRevert("CIRCUIT_BREAKER_UNSET");
+        bare.getCircuitBreaker();
+    }
+
+    function test_circuitBreakerCannotBeDetached() public {
+        address attached = address(pm.circuitBreaker());
+
         vm.prank(owner);
+        vm.expectRevert("ZERO_ADDRESS");
         pm.setCircuitBreaker(address(0));
 
-        // Deposit works
-        vm.prank(alice);
-        pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        assertEq(address(pm.circuitBreaker()), attached, "breaker must survive the attempt");
     }
 }

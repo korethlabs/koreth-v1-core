@@ -7,6 +7,7 @@ import {ACLManager} from "../../src/core/ACLManager.sol";
 import {ProtocolCore} from "../../src/core/ProtocolCore.sol";
 import {RiskManager} from "../../src/security/RiskManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
+import {TestPools} from "../helpers/TestPools.sol";
 
 /// @title Stub contract for registration tests
 contract StubContract {}
@@ -78,7 +79,7 @@ contract TimelockTest is Test {
     }
 
     function test_whitelistPool_throughTimelock() public {
-        address pool = makeAddr("pool");
+        address pool = TestPools.asContract(makeAddr("pool"));
         bytes memory data = abi.encodeCall(ProtocolCore.whitelistPool, (pool));
 
         vm.prank(deployer);
@@ -144,7 +145,7 @@ contract TimelockTest is Test {
 
         vm.prank(deployer);
         vm.expectRevert("NOT_POOL_ADMIN");
-        core.whitelistPool(makeAddr("pool"));
+        core.whitelistPool(TestPools.asContract(makeAddr("pool")));
     }
 
     /// @dev Helper: schedule + execute revocation of deployer's POOL_ADMIN and DEFAULT_ADMIN
@@ -268,7 +269,7 @@ contract TimelockTest is Test {
 
     function test_batchOperation_registerAdapterAndWhitelistPool() public {
         address adapter = address(new StubContract());
-        address pool = makeAddr("pool");
+        address pool = TestPools.asContract(makeAddr("pool"));
 
         address[] memory targets = new address[](2);
         targets[0] = address(core);
@@ -312,7 +313,7 @@ contract TimelockTest is Test {
 
         vm.prank(deployer);
         vm.expectRevert("NOT_POOL_ADMIN");
-        core.whitelistPool(makeAddr("pool2"));
+        core.whitelistPool(TestPools.asContract(makeAddr("pool2")));
     }
 
     // ========== Ownership Transfer ==========

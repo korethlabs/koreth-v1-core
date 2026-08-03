@@ -38,10 +38,12 @@ contract AdminOperations is E2EBase {
 
         // Admin reduces LTV from 65% to 50% and liq threshold 75% -> 60% (via RiskManager).
         // An enabled type must state a cap — 0 means "blocked", so it would revert ZERO_BORROW_CAP.
+        // NO_BORROW_CAP() is read before the prank on purpose: as an argument it is itself an
+        // external call, and it would consume the prank so setCollateralConfig arrived from the
+        // test contract instead of the admin.
+        uint256 noCap = riskManager.NO_BORROW_CAP();
         vm.prank(deployer);
-        riskManager.setCollateralConfig(
-            ILPAdapter.LPType.UniswapV3, RiskConfig.config(5000, 6000, 500, 0, riskManager.NO_BORROW_CAP(), true)
-        );
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.config(5000, 6000, 500, 0, noCap, true));
 
         // HF should change (liquidation threshold changed from 75% to 60%)
         uint256 hfAfter = _getHealthFactor(positionId);
@@ -65,11 +67,13 @@ contract AdminOperations is E2EBase {
         vm.expectRevert("LTV_GE_THRESHOLD");
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.config(8000, 7500, 500, 0, noCap, true));
 
-        // Liquidation threshold above the allowed maximum
+        // Liquidation threshold above the allowed maximum. maxLtv stays within MAX_LTV_BPS (9500)
+        // deliberately: at 9600 the LTV_TOO_HIGH check fires first, the threshold bound is never
+        // reached, and the case this line exists to cover goes untested.
         vm.prank(deployer);
         vm.expectRevert("THRESHOLD_TOO_HIGH");
         riskManager.setCollateralConfig(
-            ILPAdapter.LPType.UniswapV3, RiskConfig.config(9600, 10_001, 500, 0, noCap, true)
+            ILPAdapter.LPType.UniswapV3, RiskConfig.config(9000, 10_001, 500, 0, noCap, true)
         );
 
         // Non-admin blocked

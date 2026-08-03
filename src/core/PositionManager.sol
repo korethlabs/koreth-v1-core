@@ -71,7 +71,6 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     // --- Events ---
     event CollateralAdded(uint256 indexed positionId, uint256 addedLiquidity, uint256 used0, uint256 used1);
     event CollateralRemoved(uint256 indexed positionId, uint128 liquidityRemoved, uint256 amount0, uint256 amount1);
-    event CircuitBreakerNotConfigured(address indexed borrowAsset, address pool);
     event PositionAmountReduced(uint256 indexed positionId, uint256 amountRemoved, uint256 newAmount);
     event LendingEngineUpdated(address indexed oldEngine, address indexed newEngine);
     event CircuitBreakerUpdated(address indexed oldBreaker, address indexed newBreaker);
@@ -146,10 +145,28 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     }
 
     /// @notice Set CircuitBreaker for pool-level pause enforcement
+    /// @dev Cannot be unset. Every freeze check reads it, so clearing it would not disable one
+    ///      lever — it would silently disable the whole circuit breaker across deposits, borrows
+    ///      and collateral changes, leaving a paused pool or a frozen collateral type accepting new
+    ///      risk with nothing but an event to say so.
     function setCircuitBreaker(address _circuitBreaker) external onlyPoolAdmin {
-        require(_circuitBreaker == address(0) || _circuitBreaker.code.length > 0, "NOT_CONTRACT");
+        require(_circuitBreaker != address(0), "ZERO_ADDRESS");
+        require(_circuitBreaker.code.length > 0, "NOT_CONTRACT");
+        // A breaker bound to a different core reads that core's roles, so the guardians who can
+        // trip it would not be ours — and it can no longer be detached once set.
+        require(address(CircuitBreaker(_circuitBreaker).core()) == address(core), "WRONG_CORE");
         emit CircuitBreakerUpdated(address(circuitBreaker), _circuitBreaker);
         circuitBreaker = CircuitBreaker(_circuitBreaker);
+    }
+
+    /// @notice Resolve the circuit breaker (reverts if it was never configured).
+    /// @dev Mirrors ProtocolCore.getPriceFeedRegistry(). Now that the breaker is mandatory, the
+    ///      only way to meet an unset one is a deployment that is still being wired — and that
+    ///      should say which wire is missing rather than revert as a call into an empty address.
+    function getCircuitBreaker() public view returns (CircuitBreaker) {
+        CircuitBreaker breaker = circuitBreaker;
+        require(address(breaker) != address(0), "CIRCUIT_BREAKER_UNSET");
+        return breaker;
     }
 
     // --- Core Logic ---
@@ -192,12 +209,9 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
 
         // Verify pool is whitelisted and not circuit-broken
         require(core.isPoolSupported(info.pool), "POOL_NOT_SUPPORTED");
-        if (address(circuitBreaker) != address(0)) {
-            require(!circuitBreaker.poolPaused(info.pool), "POOL_CIRCUIT_BREAKER");
-            require(!circuitBreaker.collateralFrozen(lpType), "COLLATERAL_FROZEN");
-        } else {
-            emit CircuitBreakerNotConfigured(borrowAsset, info.pool);
-        }
+        CircuitBreaker breaker = getCircuitBreaker();
+        require(!breaker.poolPaused(info.pool), "POOL_CIRCUIT_BREAKER");
+        require(!breaker.collateralFrozen(lpType), "COLLATERAL_FROZEN");
 
         // Get oracle price to validate position has value
         ILPOracleHub.PriceResult memory price = oracleHub.getPrice(lpToken, tokenId, amount, lpType);
@@ -299,9 +313,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         require(amount0 > 0 || amount1 > 0, "ZERO_AMOUNTS");
 
         // Frozen collateral types block new collateral (risk-taking)
-        if (address(circuitBreaker) != address(0)) {
-            require(!circuitBreaker.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
-        }
+        require(!getCircuitBreaker().collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
 
         address adapterAddr = core.adapters(pos.lpType);
         require(adapterAddr != address(0), "ADAPTER_NOT_FOUND");
@@ -388,9 +400,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         require(adapterAddr != address(0), "ADAPTER_NOT_FOUND");
 
         // Circuit breaker: block collateral removal on frozen collateral types (oracle may be manipulated)
-        if (address(circuitBreaker) != address(0)) {
-            require(!circuitBreaker.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
-        }
+        require(!getCircuitBreaker().collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
 
         // Validate liquidity bounds before calling adapter
         if (pos.lpType == ILPAdapter.LPType.UniswapV2 || pos.lpType == ILPAdapter.LPType.PancakeSwapV2) {
@@ -642,20 +652,10 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         }
 
         // Convert debt from borrow asset decimals to 18-dec USD value (Aave-style)
-        uint256 debtUsd;
+        // Always through the registry — see LendingEngine._toUsd. A guessed debt value here is a
+        // guessed health factor, which is the number liquidation is gated on.
         uint8 borrowDecimals = TokenUtils.safeDecimals(borrowAsset);
-        address registryAddr = core.priceFeedRegistryAddr();
-        if (registryAddr != address(0)) {
-            debtUsd = PriceFeedRegistry(registryAddr).getUsdValue(borrowAsset, debt, borrowDecimals);
-        } else {
-            if (borrowDecimals < 18) {
-                debtUsd = Math.mulDiv(debt, 10 ** (18 - borrowDecimals), 1);
-            } else if (borrowDecimals > 18) {
-                debtUsd = debt / (10 ** (borrowDecimals - 18));
-            } else {
-                debtUsd = debt;
-            }
-        }
+        uint256 debtUsd = PriceFeedRegistry(core.getPriceFeedRegistry()).getUsdValue(borrowAsset, debt, borrowDecimals);
 
         if (debtUsd == 0) return type(uint256).max;
         uint256 numerator = Math.mulDiv(collateralValue, cc.liquidationThreshold, 10_000);

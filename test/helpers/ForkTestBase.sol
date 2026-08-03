@@ -78,9 +78,21 @@ abstract contract ForkTestBase is Test {
     // --- Fork ---
     uint256 public forkId;
 
+    /// @dev The block every fork test reads mainnet at.
+    ///
+    ///      Left unpinned these ran against whatever the chain head happened to be, so each run
+    ///      refetched thousands of state slots: Foundry's RPC cache is keyed by block, and a moving
+    ///      head never hits it. CI leaned on the provider hard enough to start timing out mid-suite,
+    ///      failing tests that had nothing wrong with them.
+    ///
+    ///      Pinning also makes a red run reproducible — same block, same state, same answer
+    ///      tomorrow.
+    uint256 internal constant FORK_BLOCK = 25_600_000;
+
     function setUp() public virtual {
         // Reuse existing fork from --fork-url (Anvil in CI, or local Anvil)
         forkId = vm.activeFork();
+        vm.rollFork(FORK_BLOCK);
 
         vm.startPrank(deployer);
 

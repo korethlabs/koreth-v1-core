@@ -5,6 +5,8 @@ import "forge-std/Test.sol";
 import {ProtocolCore} from "../../src/core/ProtocolCore.sol";
 import {ACLManager} from "../../src/core/ACLManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
+import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
+import {TestPools} from "../helpers/TestPools.sol";
 
 /// @notice Minimal contract used to satisfy code.length > 0 checks in ProtocolCore
 contract Stub {}
@@ -21,13 +23,14 @@ contract PoolStub {
 contract ProtocolCoreTest is Test {
     ProtocolCore public core;
     ACLManager public aclManager;
+    PriceFeedRegistry public priceRegistry;
     address public owner = makeAddr("owner");
     address public guardian = makeAddr("guardian");
     address public user = makeAddr("user");
 
     // Events — must redeclare to test with vm.expectEmit
-    event AdapterRegistered(ILPAdapter.LPType indexed lpType, address indexed adapter);
-    event OracleRegistered(ILPAdapter.LPType indexed lpType, address indexed oracle);
+    event AdapterRegistered(ILPAdapter.LPType indexed lpType, address indexed oldAdapter, address indexed adapter);
+    event OracleRegistered(ILPAdapter.LPType indexed lpType, address indexed oldOracle, address indexed oracle);
     event PoolRegistered(address indexed borrowAsset, address indexed pool);
     event PoolWhitelisted(address indexed pool);
     event PoolRemoved(address indexed pool);
@@ -41,6 +44,11 @@ contract ProtocolCoreTest is Test {
 
         vm.startPrank(owner);
         aclManager.addEmergencyAdmin(guardian);
+        // The suite declares its own asset prices, so give it the role directly rather than
+        // wrapping every helper in a prank that would clash with the tests' startPrank blocks.
+        aclManager.addPoolAdmin(address(this));
+        priceRegistry = new PriceFeedRegistry(address(core));
+        core.setPriceFeedRegistry(address(priceRegistry));
         vm.stopPrank();
     }
 
@@ -52,6 +60,18 @@ contract ProtocolCoreTest is Test {
     /// @dev Deploy a pool stub that reports `borrowAsset` as its own borrow asset
     function _poolStub(address borrowAsset) internal returns (address) {
         return address(new PoolStub(borrowAsset));
+    }
+
+    /// @dev A borrow asset the protocol can price. registerPool refuses to list a market it cannot
+    ///      value, so a bare stub is no longer a usable borrow asset.
+    function _borrowAsset() internal returns (address asset) {
+        asset = address(new Stub());
+        priceRegistry.setPeggedPrice(asset, 1e18);
+    }
+
+    /// @dev A whitelistable pool: an AMM pool is a contract, and ProtocolCore now insists.
+    function _pool(string memory label) internal returns (address) {
+        return TestPools.asContract(makeAddr(label));
     }
 
     // ========== Constructor ==========
@@ -78,8 +98,8 @@ contract ProtocolCoreTest is Test {
     function test_registerAdapter_success() public {
         address adapter = _stub();
 
-        vm.expectEmit(true, true, false, false);
-        emit AdapterRegistered(ILPAdapter.LPType.UniswapV3, adapter);
+        vm.expectEmit(true, true, true, false);
+        emit AdapterRegistered(ILPAdapter.LPType.UniswapV3, address(0), adapter);
 
         vm.prank(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, adapter);
@@ -87,12 +107,18 @@ contract ProtocolCoreTest is Test {
         assertEq(core.adapters(ILPAdapter.LPType.UniswapV3), adapter);
     }
 
+    /// @dev Replacing a live adapter has to be distinguishable from configuring one for the first
+    ///      time: the event is the only record that a component handling real collateral was
+    ///      swapped underneath the protocol.
     function test_registerAdapter_overwriteExisting() public {
         address adapter1 = _stub();
         address adapter2 = _stub();
 
         vm.startPrank(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, adapter1);
+
+        vm.expectEmit(true, true, true, false);
+        emit AdapterRegistered(ILPAdapter.LPType.UniswapV3, adapter1, adapter2);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, adapter2);
         vm.stopPrank();
 
@@ -128,8 +154,8 @@ contract ProtocolCoreTest is Test {
     function test_registerOracle_success() public {
         address oracle = _stub();
 
-        vm.expectEmit(true, true, false, false);
-        emit OracleRegistered(ILPAdapter.LPType.UniswapV3, oracle);
+        vm.expectEmit(true, true, true, false);
+        emit OracleRegistered(ILPAdapter.LPType.UniswapV3, address(0), oracle);
 
         vm.prank(owner);
         core.registerOracle(ILPAdapter.LPType.UniswapV3, oracle);
@@ -192,7 +218,7 @@ contract ProtocolCoreTest is Test {
     // ========== registerPool ==========
 
     function test_registerPool_success() public {
-        address borrowAsset = _stub();
+        address borrowAsset = _borrowAsset();
         address pool = _poolStub(borrowAsset);
 
         vm.expectEmit(true, true, false, false);
@@ -207,8 +233,8 @@ contract ProtocolCoreTest is Test {
 
     function test_registerPool_multipleAssets() public {
         vm.startPrank(owner);
-        address a1 = _stub();
-        address a2 = _stub();
+        address a1 = _borrowAsset();
+        address a2 = _borrowAsset();
         address p1 = _poolStub(a1);
         address p2 = _poolStub(a2);
         core.registerPool(a1, p1);
@@ -220,13 +246,51 @@ contract ProtocolCoreTest is Test {
     }
 
     function test_registerPool_revertsDuplicateAsset() public {
-        address borrowAsset = _stub();
+        address borrowAsset = _borrowAsset();
         address stub2 = _poolStub(borrowAsset);
         vm.startPrank(owner);
         core.registerPool(borrowAsset, _poolStub(borrowAsset));
         vm.expectRevert("POOL_ALREADY_REGISTERED");
         core.registerPool(borrowAsset, stub2);
         vm.stopPrank();
+    }
+
+    /// @dev A satellite bound to another core would read that core's admin roles, and neither the
+    ///      registry nor the risk manager can be unset once wrong — so the link is checked here
+    ///      rather than discovered at the next borrow.
+    function test_setPriceFeedRegistry_rejectsForeignCore() public {
+        ProtocolCore otherCore = new ProtocolCore(owner, address(aclManager));
+        PriceFeedRegistry foreign = new PriceFeedRegistry(address(otherCore));
+
+        vm.prank(owner);
+        vm.expectRevert("WRONG_CORE");
+        core.setPriceFeedRegistry(address(foreign));
+    }
+
+    /// @dev Mirrors getPool/getAdapter/getOracle: the borrow-side consumers resolve the registry
+    ///      through here, so a deployment that reaches them before wiring fails by name rather than
+    ///      as a call into an empty address.
+    function test_getPriceFeedRegistry_revertsWhenUnset() public {
+        ProtocolCore fresh = new ProtocolCore(owner, address(aclManager));
+
+        vm.expectRevert("PRICE_REGISTRY_UNSET");
+        fresh.getPriceFeedRegistry();
+
+        assertEq(core.getPriceFeedRegistry(), address(priceRegistry), "a configured core resolves it");
+    }
+
+    /// @dev Listing and pricing are atomic. A market whose borrow asset has no price source can be
+    ///      borrowed from but not valued, so its debt would never count against a health factor —
+    ///      the position would read as healthy no matter how much was drawn against it.
+    function test_registerPool_revertsWhenBorrowAssetNotPriceable() public {
+        address borrowAsset = _stub(); // deliberately never declared priceable
+        address pool = _poolStub(borrowAsset);
+
+        vm.prank(owner);
+        vm.expectRevert("BORROW_ASSET_NOT_PRICEABLE");
+        core.registerPool(borrowAsset, pool);
+
+        assertEq(core.pools(borrowAsset), address(0), "no market may exist for an unpriceable asset");
     }
 
     /// @dev The key must match the pool's own borrow asset, or every `pools[asset]` lookup
@@ -279,7 +343,7 @@ contract ProtocolCoreTest is Test {
     // ========== whitelistPool ==========
 
     function test_whitelistPool_success() public {
-        address pool = makeAddr("pool");
+        address pool = _pool("pool");
 
         vm.expectEmit(true, false, false, false);
         emit PoolWhitelisted(pool);
@@ -292,7 +356,7 @@ contract ProtocolCoreTest is Test {
     }
 
     function test_whitelistPool_revertsAlreadyWhitelisted() public {
-        address pool = makeAddr("pool");
+        address pool = _pool("pool");
         vm.startPrank(owner);
         core.whitelistPool(pool);
 
@@ -310,13 +374,13 @@ contract ProtocolCoreTest is Test {
     function test_whitelistPool_revertsNotPoolAdmin() public {
         vm.prank(user);
         vm.expectRevert("NOT_POOL_ADMIN");
-        core.whitelistPool(makeAddr("pool"));
+        core.whitelistPool(_pool("pool"));
     }
 
     // ========== removePool ==========
 
     function test_removePool_success() public {
-        address pool = makeAddr("pool");
+        address pool = _pool("pool");
 
         vm.startPrank(owner);
         core.whitelistPool(pool);
@@ -340,7 +404,7 @@ contract ProtocolCoreTest is Test {
     }
 
     function test_removePool_revertsNotPoolAdmin() public {
-        address pool = makeAddr("pool");
+        address pool = _pool("pool");
         vm.prank(owner);
         core.whitelistPool(pool);
 
@@ -350,7 +414,7 @@ contract ProtocolCoreTest is Test {
     }
 
     function test_removePool_canReWhitelistAfterRemoval() public {
-        address pool = makeAddr("pool");
+        address pool = _pool("pool");
 
         vm.startPrank(owner);
         core.whitelistPool(pool);
@@ -672,14 +736,14 @@ contract ProtocolCoreTest is Test {
     }
 
     function test_isPoolSupported_trueAfterWhitelist() public {
-        address pool = makeAddr("pool");
+        address pool = _pool("pool");
         vm.prank(owner);
         core.whitelistPool(pool);
         assertTrue(core.isPoolSupported(pool));
     }
 
     function test_isPoolSupported_falseAfterRemoval() public {
-        address pool = makeAddr("pool");
+        address pool = _pool("pool");
         vm.startPrank(owner);
         core.whitelistPool(pool);
         core.removePool(pool);
@@ -694,7 +758,7 @@ contract ProtocolCoreTest is Test {
     }
 
     function test_getPoolAge_returnsCorrectAge() public {
-        address pool = makeAddr("pool");
+        address pool = _pool("pool");
         vm.prank(owner);
         core.whitelistPool(pool);
 
@@ -703,7 +767,7 @@ contract ProtocolCoreTest is Test {
     }
 
     function test_getPoolAge_zeroAfterRemoval() public {
-        address pool = makeAddr("pool");
+        address pool = _pool("pool");
         vm.startPrank(owner);
         core.whitelistPool(pool);
         vm.stopPrank();
@@ -752,7 +816,7 @@ contract ProtocolCoreTest is Test {
         count = uint8(bound(count, 1, 10));
         vm.startPrank(owner);
         for (uint8 i = 0; i < count; i++) {
-            address borrowAsset = address(new Stub());
+            address borrowAsset = _borrowAsset();
             address pool = address(new PoolStub(borrowAsset));
             core.registerPool(borrowAsset, pool);
             assertEq(core.pools(borrowAsset), pool);
@@ -760,16 +824,31 @@ contract ProtocolCoreTest is Test {
         vm.stopPrank();
     }
 
-    function testFuzz_whitelistPool_anyAddress(address pool) public {
-        vm.assume(pool != address(0));
+    /// @dev Any contract may be curated as collateral backing — the adapters, not this registry,
+    ///      decide whether it is an authentic pool from the configured factory.
+    function testFuzz_whitelistPool_anyContract(address pool) public {
+        // Precompiles cannot be etched, and are not addresses a pool would ever live at.
+        vm.assume(pool > address(0x0a) && pool.code.length == 0);
+        TestPools.asContract(pool);
+
         vm.prank(owner);
         core.whitelistPool(pool);
         assertTrue(core.isPoolSupported(pool));
     }
 
+    /// @dev An address with no code cannot be a pool, so accepting it would only defer the failure
+    ///      to the first call made against it.
+    function testFuzz_whitelistPool_rejectsNonContract(address pool) public {
+        vm.assume(pool != address(0) && pool.code.length == 0);
+
+        vm.prank(owner);
+        vm.expectRevert("NOT_CONTRACT");
+        core.whitelistPool(pool);
+    }
+
     function testFuzz_getPoolAge_increases(uint256 elapsed) public {
         elapsed = bound(elapsed, 1, 365 days);
-        address pool = makeAddr("pool");
+        address pool = _pool("pool");
 
         vm.prank(owner);
         core.whitelistPool(pool);

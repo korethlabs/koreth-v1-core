@@ -435,22 +435,12 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     // --- Internal ---
 
     /// @notice Convert borrow asset amount to 18-dec USD value
-    /// @dev Uses PriceFeedRegistry when available. Fallback normalizes decimals (assumes $1 peg).
-    ///      WARNING: Fallback is only safe for USD-pegged stablecoins (USDC, DAI, USDT).
-    ///      Non-stablecoin borrow assets MUST have PriceFeedRegistry configured.
+    /// @dev Always through the registry — see LendingEngine._toUsd. Mispricing the repay leg is
+    ///      what decides how much collateral gets seized, so guessing here is the last place the
+    ///      protocol can afford it.
     function _getRepayValueUsd(address borrowAsset, uint256 amount, uint8 decimals) internal view returns (uint256) {
         require(decimals <= 36, "INVALID_DECIMALS");
-        PriceFeedRegistry registry = PriceFeedRegistry(core.priceFeedRegistryAddr());
-        if (address(registry) != address(0)) {
-            return registry.getUsdValue(borrowAsset, amount, decimals);
-        }
-        // Fallback: decimal normalization (assumes $1 peg — safe for stablecoins only)
-        if (decimals < 18) {
-            return Math.mulDiv(amount, 10 ** (18 - decimals), 1);
-        } else if (decimals > 18) {
-            return amount / (10 ** (decimals - 18));
-        }
-        return amount;
+        return PriceFeedRegistry(core.getPriceFeedRegistry()).getUsdValue(borrowAsset, amount, decimals);
     }
 
     // --- Storage Gap (UUPS upgrade safety) ---

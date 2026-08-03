@@ -20,6 +20,9 @@ import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {TestPools} from "../helpers/TestPools.sol";
+import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
+import {TestSecurity} from "../helpers/TestSecurity.sol";
 
 /// @title EdgeCasesTest
 /// @notice Tests for edge cases: different decimals, dust amounts, extreme values,
@@ -36,6 +39,7 @@ contract EdgeCasesTest is Test {
     MockLPAdapter public adapter;
     MockLPOracle public oracle;
     RiskManager public riskManager;
+    PriceFeedRegistry public priceRegistry;
 
     address public owner = makeAddr("owner");
     address public guardian = makeAddr("guardian");
@@ -64,8 +68,12 @@ contract EdgeCasesTest is Test {
         );
 
         borrowAsset = address(borrowToken);
-        vm.prank(owner);
+        // Every market must be priceable before it can be listed; these flows all use
+        // dollar-denominated borrow assets.
+        vm.startPrank(owner);
+        priceRegistry.setPeggedPrice(address(borrowToken), 1e18);
         core.registerPool(address(borrowToken), address(market));
+        vm.stopPrank();
 
         // Supply liquidity
         borrowToken.mint(address(this), 10_000_000e18);
@@ -126,12 +134,15 @@ contract EdgeCasesTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
-        core.whitelistPool(lpToken);
+        core.whitelistPool(TestPools.asContract(lpToken));
+        priceRegistry = new PriceFeedRegistry(address(core));
+        core.setPriceFeedRegistry(address(priceRegistry));
         core.setRiskManager(address(riskManager));
         // V3 collateral: 65% LTV / 75% liq / 5% bonus / no haircut / uncapped
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         // Raise the position value cap so the large-amount edge cases aren't capped at $10M default.
         riskManager.setMaxPositionValue(1_000_000_000e18);
+        TestSecurity.wireBreaker(core, pm);
         pm.setLendingEngine(address(le));
         liq.setFeeCollector(address(fc));
         vm.stopPrank();
@@ -240,8 +251,10 @@ contract EdgeCasesTest is Test {
                 )
             )
         );
-        vm.prank(owner);
+        vm.startPrank(owner);
+        priceRegistry.setPeggedPrice(address(token), 1e18);
         core.registerPool(address(token), address(m));
+        vm.stopPrank();
         address mId = address(token);
         token.mint(address(this), 100_000_000e18);
         token.approve(address(m), 100_000_000e18);

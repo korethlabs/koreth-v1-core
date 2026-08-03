@@ -18,6 +18,10 @@ import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {RiskManager} from "../../src/security/RiskManager.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
+import {TestPricing} from "../helpers/TestPricing.sol";
+import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
+import {TestPools} from "../helpers/TestPools.sol";
+import {TestSecurity} from "../helpers/TestSecurity.sol";
 
 contract LiquidationEngineTest is Test {
     ProtocolCore public core;
@@ -29,6 +33,7 @@ contract LiquidationEngineTest is Test {
     MockLPAdapter public adapter;
     MockLPOracle public oracle;
     MockLendingPool public market;
+    PriceFeedRegistry public priceRegistry;
     MockERC20 public usdc;
     MockERC20 public weth;
     InterestRateModel public irm;
@@ -115,10 +120,12 @@ contract LiquidationEngineTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistPool(lpToken);
+        core.whitelistPool(TestPools.asContract(lpToken));
+        priceRegistry = TestPricing.wireStable(core, address(usdc));
         core.registerPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
+        TestSecurity.wireBreaker(core, pm);
         pm.setLendingEngine(address(le));
         vm.stopPrank();
 
@@ -524,9 +531,12 @@ contract LiquidationEngineTest is Test {
         InterestRateModel irm6 = new InterestRateModel(200, 600, 10_000, 8000);
         MockLendingPool market6 = new MockLendingPool(address(usdc6), address(irm6));
 
-        // Register the new pool (keyed by its borrow asset)
-        vm.prank(owner);
+        // Register the new pool (keyed by its borrow asset). Declaring its price first is not
+        // optional: a market the protocol cannot value cannot be listed.
+        vm.startPrank(owner);
+        priceRegistry.setPeggedPrice(address(usdc6), 1e18);
         core.registerPool(address(usdc6), address(market6));
+        vm.stopPrank();
 
         // Fund market
         usdc6.mint(address(market6), 1_000_000e6);

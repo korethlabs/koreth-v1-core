@@ -118,15 +118,12 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
             "POSITION_NOT_ACTIVE"
         );
 
-        // Circuit breaker: no new borrows against paused pools or frozen collateral types.
-        // Optional by design (setCircuitBreaker accepts address(0)) — it is the fast emergency
-        // lever, not the offboarding one. Permanently retiring a collateral type goes through
-        // RiskManager's `enabled` flag, which validateAndRecordBorrow enforces unconditionally.
-        CircuitBreaker cb = positionManager.circuitBreaker();
-        if (address(cb) != address(0)) {
-            require(!cb.poolPaused(pos.pool), "POOL_CIRCUIT_BREAKER");
-            require(!cb.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
-        }
+        // Circuit breaker: no new borrows against paused pools or frozen collateral types. It is
+        // the fast emergency lever, not the offboarding one — permanently retiring a collateral
+        // type goes through RiskManager's `enabled` flag, which validateAndRecordBorrow enforces.
+        CircuitBreaker cb = positionManager.getCircuitBreaker();
+        require(!cb.poolPaused(pos.pool), "POOL_CIRCUIT_BREAKER");
+        require(!cb.collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
 
         require(block.number > pos.depositBlock + borrowCooldownBlocks, "BORROW_COOLDOWN");
 
@@ -274,35 +271,18 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
 
         uint8 borrowDecimals = TokenUtils.safeDecimals(borrowAsset);
 
-        PriceFeedRegistry registry = PriceFeedRegistry(core.priceFeedRegistryAddr());
-        if (address(registry) != address(0)) {
-            uint256 borrowAssetPrice = registry.getPrice(borrowAsset);
-            require(borrowAssetPrice > 0, "ZERO_PRICE");
-            return Math.mulDiv(maxBorrowUsd, 10 ** borrowDecimals, borrowAssetPrice);
-        }
-        if (borrowDecimals < 18) {
-            return maxBorrowUsd / (10 ** (18 - borrowDecimals));
-        } else if (borrowDecimals > 18) {
-            return Math.mulDiv(maxBorrowUsd, 10 ** (borrowDecimals - 18), 1);
-        }
-        return maxBorrowUsd;
+        uint256 borrowAssetPrice = PriceFeedRegistry(core.getPriceFeedRegistry()).getPrice(borrowAsset);
+        require(borrowAssetPrice > 0, "ZERO_PRICE");
+        return Math.mulDiv(maxBorrowUsd, 10 ** borrowDecimals, borrowAssetPrice);
     }
 
     /// @notice Convert borrow asset amount to 18-dec USD
-    /// @dev DEPLOY INVARIANT: when core.priceFeedRegistryAddr() is unset, every market's
-    ///      borrowAsset MUST be a USD-pegged stablecoin (the decimal-only fallback prices it at
-    ///      $1). To use a non-pegged borrow asset (e.g. WETH), a PriceFeedRegistry with a feed for
-    ///      that asset MUST be configured first, otherwise debt/LTV/health-factor are mispriced.
+    /// @dev Always through the registry: ProtocolCore refuses to list a market whose borrow asset
+    ///      has no price source, and refuses to unset the registry, so a price is always reachable
+    ///      here. If one is not, getPrice() reverts rather than guessing.
     function _toUsd(uint256 amount, address borrowAsset) internal view returns (uint256) {
         uint8 dec = TokenUtils.safeDecimals(borrowAsset);
-        PriceFeedRegistry registry = PriceFeedRegistry(core.priceFeedRegistryAddr());
-        if (address(registry) != address(0)) {
-            return registry.getUsdValue(borrowAsset, amount, dec);
-        }
-        // Fallback: normalize to 18 dec (assumes USD-pegged — see DEPLOY INVARIANT above)
-        if (dec < 18) return Math.mulDiv(amount, 10 ** (18 - dec), 1);
-        if (dec > 18) return amount / (10 ** (dec - 18));
-        return amount;
+        return PriceFeedRegistry(core.getPriceFeedRegistry()).getUsdValue(borrowAsset, amount, dec);
     }
 
     /// @dev RiskManager is the collateral registry in the shared-pool model — required, not
