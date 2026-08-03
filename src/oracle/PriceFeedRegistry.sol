@@ -21,11 +21,13 @@ interface IAggregatorV3 {
 ///
 ///      Registry address consistency:
 ///        LP oracles (V2/V3) hold this registry as `immutable` — set once at deployment.
-///        PositionManager/LiquidationEngine read from `core.priceFeedRegistryAddr()` — mutable.
-///        If governance rotates the registry address on ProtocolCore, oracles still use the old one.
+///        The borrow-side consumers (PositionManager/LendingEngine/LiquidationEngine) resolve it
+///        per call through `core.getPriceFeedRegistry()` — mutable.
+///        If governance rotates the registry on ProtocolCore, oracles still use the old one.
 ///        This is intentional: rotating the registry requires redeploying oracles (not upgradeable),
-///        registering them via `core.registerOracle()`, and updating `core.priceFeedRegistryAddr()`
-///        as a coordinated multi-step governance action.
+///        registering them via `core.registerOracle()`, and calling `core.setPriceFeedRegistry()`
+///        as a coordinated multi-step governance action. Note the new registry must already price
+///        every listed borrow asset, since the borrow side fails closed rather than assuming.
 ///
 ///      Fail-closed design:
 ///        getPrice() reverts on stale/invalid feeds, and on tokens with no price source at all.
