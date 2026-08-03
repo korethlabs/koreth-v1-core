@@ -106,6 +106,7 @@ contract LiquidationDecimalTest is Test {
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
         TestSecurity.wireBreaker(core, pm);
+        TestSecurity.wireFeeCollector(core, liq, makeAddr("treasury"));
         pm.setLendingEngine(address(le));
         vm.stopPrank();
     }
@@ -246,8 +247,12 @@ contract LiquidationDecimalTest is Test {
         (bool canLiq, uint256 maxRepay) = liq.isLiquidatable(posId);
         assertTrue(canLiq, "Must be liquidatable");
 
-        // maxRepay is in 8-dec WBTC
-        assertGt(maxRepay, 0);
+        // Asserted exactly, the way the 6-dec sibling does. `assertGt(maxRepay, 0)` accepted
+        // whatever the repay maths produced, so _getRepayValueUsd was never actually checked at a
+        // price other than $1 — invert its multiply and divide and the old assertion still passed.
+        // HF 0.95 is above the critical threshold, so this is a partial liquidation: 50% of a
+        // 0.5 WBTC debt, in 8-dec units.
+        assertEq(maxRepay, 25_000_000, "half of a 0.5 WBTC debt in 8-dec units");
 
         wbtc.mint(liquidator, maxRepay);
         vm.prank(liquidator);

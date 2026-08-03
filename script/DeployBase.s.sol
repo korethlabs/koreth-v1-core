@@ -48,6 +48,11 @@ abstract contract DeployBase is Script {
         // Chainlink feeds
         address clNativeUsd; // ETH/USD, BNB/USD, etc.
         address clStablecoinUsd; // USDC/USD, BUSD/USD, etc.
+        // L2 sequencer uptime feed. A required field, not an optional setter, because the check it
+        // drives disables itself when unset: an L2 deployment that simply forgot it would price
+        // through an outage with no revert, no event and no failing test. Stating address(0) is a
+        // decision ("this chain has no sequencer"); omitting it was an accident waiting to happen.
+        address clSequencerUptime;
         // Pools to whitelist
         address v2Pool; // V2 pair to whitelist (address(0) = skip)
         address v3Pool; // V3 pool to whitelist (address(0) = skip)
@@ -198,6 +203,10 @@ abstract contract DeployBase is Script {
         // PriceFeedRegistry (for cross-decimal HF/LTV)
         priceFeedRegistry.setPriceFeed(cfg.stablecoin, cfg.clStablecoinUsd);
         priceFeedRegistry.setPriceFeed(cfg.weth, cfg.clNativeUsd);
+        // Called unconditionally, including with address(0). Skipping it when disabled would leave
+        // no event and no way to tell a deliberate "this chain has no sequencer" apart from someone
+        // forgetting the field — which is the whole distinction this config exists to record.
+        priceFeedRegistry.setSequencerUptimeFeed(cfg.clSequencerUptime);
 
         _afterOracles(cfg);
     }
@@ -244,6 +253,10 @@ abstract contract DeployBase is Script {
         // Wire references
         positionManager.setLendingEngine(address(lendingEngine));
         positionManager.setCircuitBreaker(address(circuitBreaker));
+        // Only LendingPool used to get this, so LiquidationEngine ran unwired on every deployment:
+        // the protocol's share of each liquidation bonus went entirely to the liquidator, and a
+        // bad-debt writeoff paid the swept fees to the defaulting borrower.
+        liquidationEngine.setFeeCollector(address(feeCollector));
         core.setPriceFeedRegistry(address(priceFeedRegistry));
         core.setRiskManager(address(riskManager));
 

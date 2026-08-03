@@ -216,6 +216,10 @@ abstract contract ForkTestBase is Test {
         aclManager.addPositionManager(address(positionManager));
         positionManager.setLendingEngine(address(lendingEngine));
         positionManager.setCircuitBreaker(address(circuitBreaker));
+        // The engine now requires a FeeCollector, matching the deploy script: without it the
+        // protocol share of every liquidation bonus was skipped and a bad-debt writeoff paid the
+        // swept fees to the defaulting borrower.
+        liquidationEngine.setFeeCollector(address(feeCollector));
 
         // 15. Grant KEEPER to PriceValidator (so it can call CircuitBreaker.pausePool)
         aclManager.addKeeper(address(priceValidator));

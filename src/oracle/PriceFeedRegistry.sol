@@ -35,9 +35,11 @@ interface IAggregatorV3 {
 ///        — pricing on bad data is worse than pausing. If Chainlink is down beyond maxStaleness,
 ///        emergency admin pauses the protocol. Same approach as Aave V3.
 ///
-///        An asset with no feed can still be priced, but only by an explicit per-token declaration
-///        (setPeggedPrice). That is the one sanctioned way to assert a price, and it is deliberately
-///        narrow: the protocol must never derive a price for an asset nobody vouched for.
+///        There is no way to assert a price without a feed. An asset whose price must be fixed —
+///        a stablecoin on a chain Chainlink does not cover — gets a deployed aggregator reporting
+///        that constant, so it is a visible contract and still subject to the staleness and
+///        sanity-bound checks below. A value declared inside this registry would be subject to
+///        neither, which is how an assumption becomes indistinguishable from a real price.
 contract PriceFeedRegistry {
     ProtocolCore public immutable core;
 
@@ -54,15 +56,7 @@ contract PriceFeedRegistry {
     mapping(address => uint256) public minPrice; // 18-dec USD lower bound (exclusive)
     mapping(address => uint256) public maxPrice; // 18-dec USD upper bound (exclusive)
 
-    /// @notice Declared 18-dec USD price for assets priced by assertion rather than by feed (0 = none).
-    /// @dev Only consulted when a token has no feed. This exists so that "USDC is worth $1" is a
-    ///      statement governance made on-chain, with an event and a revocation, instead of the
-    ///      silent consequence of a pointer nobody set. Prefer a feed wherever one exists: a peg
-    ///      cannot observe a depeg, which is precisely when the assumption stops holding.
-    mapping(address => uint256) public peggedPrice;
-
     event PriceFeedUpdated(address indexed token, address indexed feed);
-    event PeggedPriceUpdated(address indexed token, uint256 oldPrice, uint256 newPrice);
     event MaxStalenessUpdated(uint256 oldValue, uint256 newValue);
     event SequencerUptimeFeedUpdated(address indexed oldFeed, address indexed newFeed);
     event SequencerGracePeriodUpdated(uint256 oldValue, uint256 newValue);
@@ -98,17 +92,6 @@ contract PriceFeedRegistry {
         emit PriceFeedUpdated(token, feed);
     }
 
-    /// @notice Declare a fixed 18-dec USD price for a token that has no Chainlink feed (0 = clear).
-    /// @dev For assets the protocol prices by assertion — a stablecoin on a chain with no feed, or
-    ///      a test deployment. It is deliberately a per-token, evented, revocable declaration and
-    ///      not a global fallback: the protocol should never be able to invent a price for an asset
-    ///      nobody vouched for. A feed always wins over a peg, so declaring one cannot mask a feed.
-    function setPeggedPrice(address token, uint256 priceE18) external onlyPoolAdmin {
-        require(token != address(0), "ZERO_ADDRESS");
-        emit PeggedPriceUpdated(token, peggedPrice[token], priceE18);
-        peggedPrice[token] = priceE18;
-    }
-
     /// @notice Whether the protocol can price this token at all.
     /// @dev Existence, not health — a feed that is currently stale still counts. Callers that gate
     ///      configuration (ProtocolCore.registerPool) need to know a price source was configured;
@@ -116,7 +99,7 @@ contract PriceFeedRegistry {
     ///      stale or out-of-bounds data. Conflating the two would make listing a market fail
     ///      whenever a feed happened to be lagging.
     function isPriceable(address token) external view returns (bool) {
-        return priceFeeds[token] != address(0) || peggedPrice[token] > 0;
+        return priceFeeds[token] != address(0);
     }
 
     /// @notice Set max staleness for price feeds
@@ -171,16 +154,7 @@ contract PriceFeedRegistry {
         _checkSequencer();
 
         address feed = priceFeeds[token];
-        if (feed == address(0)) {
-            // No feed: the only remaining source is a price governance declared for this specific
-            // token. Absent that, refuse — an unpriceable asset must stop the caller, never fall
-            // back to an assumed value. The sanity bounds below are deliberately not applied: they
-            // exist to catch an aggregator pinned at its floor/ceiling, and a declared constant has
-            // no aggregator to pin.
-            price = peggedPrice[token];
-            require(price > 0, "NO_PRICE_FEED");
-            return price;
-        }
+        require(feed != address(0), "NO_PRICE_FEED");
 
         (uint80 roundId, int256 answer,, uint256 updatedAt, uint80 answeredInRound) =
             IAggregatorV3(feed).latestRoundData();

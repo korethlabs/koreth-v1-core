@@ -192,60 +192,58 @@ contract PriceFeedRegistryTest is Test {
         assertEq(registry.sequencerUptimeFeed(), address(0));
     }
 
-    // ========== Declared pegs ==========
+    // ========== getUsdValue ==========
 
-    /// @dev The one sanctioned way to price an asset without a feed. It replaced an implicit
-    ///      protocol-wide "assume $1", so the whole point is that it is per-token and stated.
-    function test_getPrice_usesDeclaredPeg() public {
-        address stable = makeAddr("stable");
-
+    /// @dev Every borrow-side conversion funnels through here — LendingEngine._toUsd and
+    ///      ._maxBorrow, LiquidationEngine._getRepayValueUsd, PositionManager's health factor —
+    ///      yet it was only ever covered transitively. The decimals that matter in practice are
+    ///      6 (USDC/USDT), 8 (WBTC) and 18 (DAI/WETH); the extremes are here because nothing in
+    ///      the protocol stops an admin listing a market in one.
+    function test_getUsdValue_acrossDecimals() public {
+        MockAggregator assetFeed = new MockAggregator(8, 2000e8); // $2,000
+        address asset = makeAddr("asset");
         vm.prank(owner);
-        registry.setPeggedPrice(stable, 1e18);
+        registry.setPriceFeed(asset, address(assetFeed));
 
-        assertEq(registry.getPrice(stable), 1e18);
-        assertTrue(registry.isPriceable(stable));
+        assertEq(registry.getUsdValue(asset, 1e18, 18), 2000e18, "18 decimals");
+        assertEq(registry.getUsdValue(asset, 1e8, 8), 2000e18, "8 decimals");
+        assertEq(registry.getUsdValue(asset, 1e6, 6), 2000e18, "6 decimals");
+        assertEq(registry.getUsdValue(asset, 1e2, 2), 2000e18, "2 decimals");
+        assertEq(registry.getUsdValue(asset, 1e24, 24), 2000e18, "24 decimals");
+
+        // Fractions of a unit scale the same way, in both directions.
+        assertEq(registry.getUsdValue(asset, 5e5, 6), 1000e18, "half a 6-dec unit");
+        assertEq(registry.getUsdValue(asset, 3e18, 18), 6000e18, "three 18-dec units");
     }
 
-    function test_getPrice_revertsWithNoFeedAndNoPeg() public {
+    /// @dev Truncation must round *down*: the protocol under-credits a borrower rather than
+    ///      over-crediting, so the error can never open a position it should have refused.
+    function test_getUsdValue_roundsTowardZero() public {
+        MockAggregator assetFeed = new MockAggregator(8, 3e8); // $3
+        address asset = makeAddr("odd");
+        vm.prank(owner);
+        registry.setPriceFeed(asset, address(assetFeed));
+
+        // 1 wei-unit of a 2-dec token at $3 = $0.03, which is 3e16 in 18-dec USD.
+        assertEq(registry.getUsdValue(asset, 1, 2), 3e16);
+        assertEq(registry.getUsdValue(asset, 0, 18), 0, "no amount, no value");
+    }
+
+    function test_getUsdValue_revertsAboveMaxDecimals() public {
+        vm.expectRevert("INVALID_DECIMALS");
+        registry.getUsdValue(token, 1, 37);
+    }
+
+    // ========== No price source ==========
+
+    /// @dev There is no way to assert a price without a feed. A token nobody configured a source
+    ///      for is simply not priceable, and every caller stops rather than assuming a value.
+    function test_getPrice_revertsWithNoFeed() public {
+        address unknown = makeAddr("unknown");
+
+        assertFalse(registry.isPriceable(unknown));
         vm.expectRevert("NO_PRICE_FEED");
-        registry.getPrice(makeAddr("unknown"));
-        assertFalse(registry.isPriceable(makeAddr("unknown")));
-    }
-
-    /// @dev A peg is an assertion that stops being true the moment the asset moves, so revoking it
-    ///      has to return the asset to unpriceable rather than to some previous value.
-    function test_setPeggedPrice_zeroRevokes() public {
-        address stable = makeAddr("stable");
-
-        vm.startPrank(owner);
-        registry.setPeggedPrice(stable, 1e18);
-        registry.setPeggedPrice(stable, 0);
-        vm.stopPrank();
-
-        assertFalse(registry.isPriceable(stable));
-        vm.expectRevert("NO_PRICE_FEED");
-        registry.getPrice(stable);
-    }
-
-    /// @dev A live feed must always beat a declared constant — otherwise a stale peg left behind
-    ///      by an earlier configuration would quietly override real market data.
-    function test_feedWinsOverPeg() public {
-        vm.prank(owner);
-        registry.setPeggedPrice(token, 1e18); // token already has the $2000 feed
-
-        assertEq(registry.getPrice(token), 2000e18);
-    }
-
-    function test_setPeggedPrice_onlyPoolAdmin() public {
-        vm.prank(stranger);
-        vm.expectRevert("NOT_POOL_ADMIN");
-        registry.setPeggedPrice(makeAddr("stable"), 1e18);
-    }
-
-    function test_setPeggedPrice_revertsZeroToken() public {
-        vm.prank(owner);
-        vm.expectRevert("ZERO_ADDRESS");
-        registry.setPeggedPrice(address(0), 1e18);
+        registry.getPrice(unknown);
     }
 
     function test_isPriceable_trueForStaleFeed() public {

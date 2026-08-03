@@ -6,6 +6,7 @@ import {ProtocolCore} from "../../src/core/ProtocolCore.sol";
 import {ACLManager} from "../../src/core/ACLManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
+import {TestPricing} from "../helpers/TestPricing.sol";
 import {TestPools} from "../helpers/TestPools.sol";
 
 /// @notice Minimal contract used to satisfy code.length > 0 checks in ProtocolCore
@@ -66,7 +67,7 @@ contract ProtocolCoreTest is Test {
     ///      value, so a bare stub is no longer a usable borrow asset.
     function _borrowAsset() internal returns (address asset) {
         asset = address(new Stub());
-        priceRegistry.setPeggedPrice(asset, 1e18);
+        TestPricing.priceAsset(priceRegistry, asset, 1e18);
     }
 
     /// @dev A whitelistable pool: an AMM pool is a contract, and ProtocolCore now insists.

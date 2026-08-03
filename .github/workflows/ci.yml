@@ -98,11 +98,21 @@ jobs:
       # The suite reads mainnet at a pinned block, so the responses are identical every run and can
       # be replayed from disk. Without this each run pulls thousands of state slots live, which is
       # what was exhausting the provider and failing tests on timed-out reads.
+      # Keyed on the forked block, because that is what the cached responses actually depend on.
+      # Keying it on the test sources meant every test edit threw away the whole cache and sent the
+      # suite back to fetching thousands of slots live, which is what the cache exists to prevent.
+      - name: Resolve fork block
+        id: forkblock
+        run: |
+          block=$(grep -oE 'FORK_BLOCK = [0-9_]+' test/helpers/ForkTestBase.sol | grep -oE '[0-9_]+$' | tr -d '_')
+          test -n "$block" || { echo "FORK_BLOCK not found in ForkTestBase.sol"; exit 1; }
+          echo "block=$block" >> "$GITHUB_OUTPUT"
+
       - name: Cache fork RPC responses
         uses: actions/cache@v4
         with:
           path: ~/.foundry/cache/rpc
-          key: rpc-${{ runner.os }}-${{ hashFiles('test/**/*.sol') }}
+          key: rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}
           restore-keys: rpc-${{ runner.os }}-
 
       - name: Fork tests
@@ -115,8 +125,12 @@ jobs:
           fi
           # Thousands of live state reads per run, so ride out a provider hiccup rather than
           # failing the suite on one dropped response.
+          # Throttled below Foundry's 330 default: on a cold cache the suite opens enough parallel
+          # state reads to trip the provider's rate limit, and a throttled request that times out
+          # costs far more than a slower one that succeeds.
           forge test \
             --fork-url "$ETH_RPC_URL" \
             --match-path "test/{e2e,fork,integration,invariant}/**" \
-            --fork-retries 5 --fork-retry-backoff 2 \
+            --fork-retries 5 --fork-retry-backoff 3 \
+            --compute-units-per-second 150 \
             -vvv

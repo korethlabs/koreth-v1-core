@@ -126,6 +126,7 @@ contract LiquidationEngineTest is Test {
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
         TestSecurity.wireBreaker(core, pm);
+        TestSecurity.wireFeeCollector(core, liq, makeAddr("treasury"));
         pm.setLendingEngine(address(le));
         vm.stopPrank();
 
@@ -523,6 +524,72 @@ contract LiquidationEngineTest is Test {
         assertEq(usdc.balanceOf(recipient), 1000e18);
     }
 
+    // ========== Borrow-asset price movement ==========
+
+    /// @dev The case the fail-closed pricing work exists for, and the one nothing covered: the
+    ///      collateral does not move at all — the *debt* becomes more valuable. Under the deleted
+    ///      $1 fallback this position stays healthy forever no matter what the borrow asset does,
+    ///      which is how a market could be drained without a single liquidation firing.
+    function test_borrowAssetAppreciation_makesPositionLiquidatable() public {
+        vm.prank(alice);
+        uint256 posId = pm.deposit(lpToken, 0, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+
+        vm.prank(alice);
+        le.borrow(posId, 30_000e18);
+
+        (bool canLiqBefore,) = liq.isLiquidatable(posId);
+        assertFalse(canLiqBefore, "healthy while the borrow asset is worth $1");
+
+        // Collateral untouched — only the debt is now worth more.
+        TestPricing.feedFor(priceRegistry, borrowAsset).setAnswer(1.5e18);
+
+        (bool canLiqAfter, uint256 maxRepay) = liq.isLiquidatable(posId);
+        assertTrue(canLiqAfter, "a 50% rise in the debt asset must be seen");
+        assertGt(maxRepay, 0);
+
+        // HF = collateral($50K) * 7500bps / debt(30_000 x $1.50 = $45K) = 0.833
+        assertApproxEqRel(pm.getHealthFactor(posId), 0.8333e18, 0.001e18, "HF must track the debt price");
+    }
+
+    /// @dev The mirror image: a depegging borrow asset makes the debt cheaper, so a position that
+    ///      was underwater recovers. Proves the health factor tracks the price in both directions
+    ///      rather than merely being sensitive to it.
+    function test_borrowAssetDepeg_healsPosition() public {
+        uint256 posId = _createLiquidatablePosition();
+
+        (bool canLiqBefore,) = liq.isLiquidatable(posId);
+        assertTrue(canLiqBefore, "underwater after the collateral drop");
+
+        TestPricing.feedFor(priceRegistry, borrowAsset).setAnswer(0.5e18);
+
+        (bool canLiqAfter,) = liq.isLiquidatable(posId);
+        assertFalse(canLiqAfter, "debt worth half as much must restore health");
+    }
+
+    /// @dev A borrow asset whose feed stops updating must stop the protocol, not be waved through:
+    ///      every borrow-side conversion goes through getPrice(), which rejects stale data.
+    function test_staleBorrowAssetFeed_blocksLiquidation() public {
+        uint256 posId = _createLiquidatablePosition();
+
+        // MockConstantFeed reports block.timestamp, so it can never go stale on its own — the whole
+        // point of this test is the case it cannot produce. Answer from a fixed early timestamp and
+        // move well past maxStaleness (1h). The collateral oracle is left live, so a revert here can
+        // only be coming from the borrow leg.
+        uint256 answeredAt = 1000;
+        vm.warp(answeredAt + 2 hours);
+        vm.mockCall(
+            address(TestPricing.feedFor(priceRegistry, borrowAsset)),
+            abi.encodeWithSignature("latestRoundData()"),
+            abi.encode(uint80(1), int256(1e18), answeredAt, answeredAt, uint80(1))
+        );
+
+        vm.expectRevert("STALE_PRICE");
+        liq.isLiquidatable(posId);
+
+        vm.clearMockedCalls();
+    }
+
     // ========== LIQ-3: Decimal normalization ==========
 
     function test_liquidate_worksWithSixDecimalUSDC() public {
@@ -534,7 +601,7 @@ contract LiquidationEngineTest is Test {
         // Register the new pool (keyed by its borrow asset). Declaring its price first is not
         // optional: a market the protocol cannot value cannot be listed.
         vm.startPrank(owner);
-        priceRegistry.setPeggedPrice(address(usdc6), 1e18);
+        TestPricing.priceAsset(priceRegistry, address(usdc6), 1e18);
         core.registerPool(address(usdc6), address(market6));
         vm.stopPrank();
 
@@ -561,35 +628,23 @@ contract LiquidationEngineTest is Test {
         // Price drops → position underwater
         oracle.setPrice(30_000e18);
 
+        // Asserted unconditionally on purpose. This used to sit inside `if (canLiq && maxRepay > 0)`
+        // and was followed by a test whose body was `assertTrue(true)` — so pricing broken badly
+        // enough that the position never became liquidatable would have passed both without
+        // executing a single meaningful assertion.
         (bool canLiq, uint256 maxRepay) = liq.isLiquidatable(posId);
+        assertTrue(canLiq, "position must be liquidatable once the collateral halves");
+        assertGt(maxRepay, 0, "a liquidatable position must have something to repay");
 
-        if (canLiq && maxRepay > 0) {
-            uint256 repayAmount = maxRepay > 1 ? maxRepay : 1;
+        usdc6.mint(liquidator, maxRepay);
+        vm.prank(liquidator);
+        usdc6.approve(address(liq), maxRepay);
 
-            usdc6.mint(liquidator, repayAmount);
-            vm.prank(liquidator);
-            usdc6.approve(address(liq), repayAmount);
+        vm.prank(liquidator);
+        liq.liquidate(posId, maxRepay, block.timestamp + 1 hours, 0, 0);
 
-            // This should NOT revert with "ZERO_LIQUIDITY" anymore
-            vm.prank(liquidator);
-            liq.liquidate(posId, repayAmount, block.timestamp + 1 hours, 0, 0);
-
-            // Position amount should have decreased
-            IPositionManager.Position memory pos = pm.getPosition(posId);
-            assertLt(pos.amount, 100e18, "Position amount must decrease after liquidation with 6-dec USDC");
-        }
-    }
-
-    function test_normalizeTo18_sixDecimals() public view {
-        // Test the normalization via a liquidation scenario
-        // 30_000 USDC (6 dec) = 30_000e6 → should become 30_000e18
-        // This is implicitly tested by test_liquidate_worksWithSixDecimalUSDC
-        // but we also verify the math doesn't overflow for large values
-
-        // The LiquidationEngine is the contract under test,
-        // _normalizeTo18 is internal, so we test it through behavior.
-        // If 6-dec liquidation works, normalization is correct.
-        assertTrue(true);
+        IPositionManager.Position memory pos = pm.getPosition(posId);
+        assertLt(pos.amount, 100e18, "Position amount must decrease after liquidation with 6-dec USDC");
     }
 
     function test_liquidate_worksWithEighteenDecimalDAI() public {

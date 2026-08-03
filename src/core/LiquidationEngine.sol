@@ -111,8 +111,22 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
 
     function setFeeCollector(address _feeCollector) external onlyPoolAdmin {
         require(_feeCollector != address(0), "ZERO_ADDRESS");
+        require(_feeCollector.code.length > 0, "NOT_CONTRACT");
         emit FeeCollectorUpdated(address(feeCollector), _feeCollector);
         feeCollector = FeeCollector(_feeCollector);
+    }
+
+    /// @notice Resolve the fee collector (reverts if it was never configured).
+    /// @dev Mirrors ProtocolCore.getPriceFeedRegistry(). It used to be treated as optional here,
+    ///      while LendingPool hard-required the same dependency — and the deploy script only wired
+    ///      the pool, so on a live protocol this was unset: the protocol's share of every
+    ///      liquidation bonus was skipped, and a bad-debt writeoff paid the swept fees to the
+    ///      defaulting borrower while lenders absorbed the loss. Refusing to liquidate until it is
+    ///      wired is the safe direction; paying the wrong party silently is not.
+    function getFeeCollector() public view returns (FeeCollector) {
+        FeeCollector collector = feeCollector;
+        require(address(collector) != address(0), "FEE_COLLECTOR_UNSET");
+        return collector;
     }
 
     // --- Core Logic ---
@@ -265,8 +279,9 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
         // Always applied when there are tokens to seize — if the liquidator profits,
         // the protocol should too. For truly worthless positions (amount0=amount1=0),
         // the fee is naturally 0.
-        if (address(feeCollector) != address(0) && bonus > 0) {
-            uint256 feeBps = feeCollector.liquidationFeeBps();
+        if (bonus > 0) {
+            FeeCollector collector = getFeeCollector();
+            uint256 feeBps = collector.liquidationFeeBps();
             // fee% of the bonus portion: (bonus / (10000 + bonus)) * feeBps / 10000
             // Simplified: feeBps * bonus / (10000 * (10000 + bonus))
             // Applied proportionally to each token amount.
@@ -277,16 +292,16 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
                 uint256 fee0 = Math.mulDiv(amount0, feeNumerator, denominator);
                 if (fee0 > 0) {
                     amount0 -= fee0;
-                    OZIERC20(pos.token0).forceApprove(address(feeCollector), fee0);
-                    feeCollector.collectFee(pos.token0, fee0, address(this), "liquidation");
+                    OZIERC20(pos.token0).forceApprove(address(collector), fee0);
+                    collector.collectFee(pos.token0, fee0, address(this), "liquidation");
                 }
             }
             if (amount1 > 0 && feeNumerator > 0) {
                 uint256 fee1 = Math.mulDiv(amount1, feeNumerator, denominator);
                 if (fee1 > 0) {
                     amount1 -= fee1;
-                    OZIERC20(pos.token1).forceApprove(address(feeCollector), fee1);
-                    feeCollector.collectFee(pos.token1, fee1, address(this), "liquidation");
+                    OZIERC20(pos.token1).forceApprove(address(collector), fee1);
+                    collector.collectFee(pos.token1, fee1, address(this), "liquidation");
                 }
             }
         }
@@ -352,16 +367,19 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
 
         // Route the swept V3 fees: to the borrower on a normal liquidation, to the protocol on a
         // bad-debt writeoff (policy b — a defaulting borrower shouldn't keep fees while lenders
-        // take a loss). Falls back to the borrower if no FeeCollector is configured.
+        // take a loss). The routing no longer degrades when the FeeCollector is missing: falling
+        // back to the borrower there inverted the policy exactly when it mattered, paying the
+        // defaulter out of a loss the lenders were absorbing.
         if (sweptFee0 > 0 || sweptFee1 > 0) {
-            if (badDebt && address(feeCollector) != address(0)) {
+            if (badDebt) {
+                FeeCollector collector = getFeeCollector();
                 if (sweptFee0 > 0) {
-                    OZIERC20(pos.token0).forceApprove(address(feeCollector), sweptFee0);
-                    feeCollector.collectFee(pos.token0, sweptFee0, address(this), "liquidation_baddebt");
+                    OZIERC20(pos.token0).forceApprove(address(collector), sweptFee0);
+                    collector.collectFee(pos.token0, sweptFee0, address(this), "liquidation_baddebt");
                 }
                 if (sweptFee1 > 0) {
-                    OZIERC20(pos.token1).forceApprove(address(feeCollector), sweptFee1);
-                    feeCollector.collectFee(pos.token1, sweptFee1, address(this), "liquidation_baddebt");
+                    OZIERC20(pos.token1).forceApprove(address(collector), sweptFee1);
+                    collector.collectFee(pos.token1, sweptFee1, address(this), "liquidation_baddebt");
                 }
             } else {
                 if (sweptFee0 > 0) OZIERC20(pos.token0).safeTransfer(pos.owner, sweptFee0);
