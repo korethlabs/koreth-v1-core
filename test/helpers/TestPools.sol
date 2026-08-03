@@ -14,7 +14,9 @@ library TestPools {
 
     /// @notice Put non-empty runtime code at `pool` so it passes the contract check.
     function asContract(address pool) internal returns (address) {
-        vm.etch(pool, hex"01");
+        // STOP: a call into the stub returns cleanly. `01` is ADD, which underflows the stack and
+        // reverts, so a test that ever touched the address would fail for an unrelated reason.
+        vm.etch(pool, hex"00");
         return pool;
     }
 }

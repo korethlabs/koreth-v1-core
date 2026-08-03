@@ -255,6 +255,18 @@ contract ProtocolCoreTest is Test {
         vm.stopPrank();
     }
 
+    /// @dev A satellite bound to another core would read that core's admin roles, and neither the
+    ///      registry nor the risk manager can be unset once wrong — so the link is checked here
+    ///      rather than discovered at the next borrow.
+    function test_setPriceFeedRegistry_rejectsForeignCore() public {
+        ProtocolCore otherCore = new ProtocolCore(owner, address(aclManager));
+        PriceFeedRegistry foreign = new PriceFeedRegistry(address(otherCore));
+
+        vm.prank(owner);
+        vm.expectRevert("WRONG_CORE");
+        core.setPriceFeedRegistry(address(foreign));
+    }
+
     /// @dev Mirrors getPool/getAdapter/getOracle: the borrow-side consumers resolve the registry
     ///      through here, so a deployment that reaches them before wiring fails by name rather than
     ///      as a call into an empty address.

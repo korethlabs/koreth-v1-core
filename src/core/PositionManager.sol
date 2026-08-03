@@ -152,6 +152,9 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     function setCircuitBreaker(address _circuitBreaker) external onlyPoolAdmin {
         require(_circuitBreaker != address(0), "ZERO_ADDRESS");
         require(_circuitBreaker.code.length > 0, "NOT_CONTRACT");
+        // A breaker bound to a different core reads that core's roles, so the guardians who can
+        // trip it would not be ours — and it can no longer be detached once set.
+        require(address(CircuitBreaker(_circuitBreaker).core()) == address(core), "WRONG_CORE");
         emit CircuitBreakerUpdated(address(circuitBreaker), _circuitBreaker);
         circuitBreaker = CircuitBreaker(_circuitBreaker);
     }

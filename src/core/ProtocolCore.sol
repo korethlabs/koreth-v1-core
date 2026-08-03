@@ -5,10 +5,17 @@ import {ILPAdapter} from "../interfaces/ILPAdapter.sol";
 import {ILendingPool} from "../interfaces/ILendingPool.sol";
 import {ACLManager} from "./ACLManager.sol";
 
-/// @notice The single call ProtocolCore needs from the price registry. Declared here rather than
-///         imported because PriceFeedRegistry already imports ProtocolCore, and this is the whole
-///         of the dependency in this direction.
-interface IPriceSource {
+/// @notice Satellite contracts bind to one ProtocolCore at construction and expose it. Pointing
+///         this core at a satellite wired to a *different* core produces a half-connected protocol
+///         that still answers calls, so the setters below check the link points back.
+interface ICoreBound {
+    function core() external view returns (address);
+}
+
+/// @notice The calls ProtocolCore needs from the price registry. Declared here rather than imported
+///         because PriceFeedRegistry already imports ProtocolCore, and this is the whole of the
+///         dependency in this direction.
+interface IPriceSource is ICoreBound {
     function isPriceable(address token) external view returns (bool);
 }
 
@@ -239,6 +246,9 @@ contract ProtocolCore {
     function setPriceFeedRegistry(address _registry) external onlyPoolAdmin {
         require(_registry != address(0), "ZERO_ADDRESS");
         require(_registry.code.length > 0, "NOT_CONTRACT");
+        // A registry bound to a different core would price against foreign admin roles and cannot
+        // be walked back by unsetting, so refuse the link rather than discover it at the next borrow.
+        require(IPriceSource(_registry).core() == address(this), "WRONG_CORE");
         emit PriceFeedRegistryUpdated(priceFeedRegistryAddr, _registry);
         priceFeedRegistryAddr = _registry;
     }
@@ -249,6 +259,7 @@ contract ProtocolCore {
     function setRiskManager(address _riskManager) external onlyPoolAdmin {
         require(_riskManager != address(0), "ZERO_ADDRESS");
         require(_riskManager.code.length > 0, "NOT_CONTRACT");
+        require(ICoreBound(_riskManager).core() == address(this), "WRONG_CORE");
         emit RiskManagerUpdated(riskManagerAddr, _riskManager);
         riskManagerAddr = _riskManager;
     }
