@@ -744,7 +744,7 @@ contract PositionManagerTest is Test {
         InterestRateModel irm6 = new InterestRateModel(200, 600, 10_000, 8000);
         MockLendingPool market6 = new MockLendingPool(address(usdc6), address(irm6));
         vm.startPrank(owner);
-        priceRegistry.setPeggedPrice(address(usdc6), 1e18); // $1.00
+        TestPricing.priceAsset(priceRegistry, address(usdc6), 1e18); // $1.00
         core.registerPool(address(usdc6), address(market6));
         vm.stopPrank();
 
@@ -773,7 +773,7 @@ contract PositionManagerTest is Test {
         InterestRateModel irm8 = new InterestRateModel(200, 600, 10_000, 8000);
         MockLendingPool market8 = new MockLendingPool(address(wbtc), address(irm8));
         vm.startPrank(owner);
-        priceRegistry.setPeggedPrice(address(wbtc), 60_000e18); // $60K per BTC
+        TestPricing.priceAsset(priceRegistry, address(wbtc), 60_000e18); // $60K per BTC
         core.registerPool(address(wbtc), address(market8));
         vm.stopPrank();
 

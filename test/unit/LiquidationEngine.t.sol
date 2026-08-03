@@ -534,7 +534,7 @@ contract LiquidationEngineTest is Test {
         // Register the new pool (keyed by its borrow asset). Declaring its price first is not
         // optional: a market the protocol cannot value cannot be listed.
         vm.startPrank(owner);
-        priceRegistry.setPeggedPrice(address(usdc6), 1e18);
+        TestPricing.priceAsset(priceRegistry, address(usdc6), 1e18);
         core.registerPool(address(usdc6), address(market6));
         vm.stopPrank();
 

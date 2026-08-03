@@ -192,60 +192,16 @@ contract PriceFeedRegistryTest is Test {
         assertEq(registry.sequencerUptimeFeed(), address(0));
     }
 
-    // ========== Declared pegs ==========
+    // ========== No price source ==========
 
-    /// @dev The one sanctioned way to price an asset without a feed. It replaced an implicit
-    ///      protocol-wide "assume $1", so the whole point is that it is per-token and stated.
-    function test_getPrice_usesDeclaredPeg() public {
-        address stable = makeAddr("stable");
+    /// @dev There is no way to assert a price without a feed. A token nobody configured a source
+    ///      for is simply not priceable, and every caller stops rather than assuming a value.
+    function test_getPrice_revertsWithNoFeed() public {
+        address unknown = makeAddr("unknown");
 
-        vm.prank(owner);
-        registry.setPeggedPrice(stable, 1e18);
-
-        assertEq(registry.getPrice(stable), 1e18);
-        assertTrue(registry.isPriceable(stable));
-    }
-
-    function test_getPrice_revertsWithNoFeedAndNoPeg() public {
+        assertFalse(registry.isPriceable(unknown));
         vm.expectRevert("NO_PRICE_FEED");
-        registry.getPrice(makeAddr("unknown"));
-        assertFalse(registry.isPriceable(makeAddr("unknown")));
-    }
-
-    /// @dev A peg is an assertion that stops being true the moment the asset moves, so revoking it
-    ///      has to return the asset to unpriceable rather than to some previous value.
-    function test_setPeggedPrice_zeroRevokes() public {
-        address stable = makeAddr("stable");
-
-        vm.startPrank(owner);
-        registry.setPeggedPrice(stable, 1e18);
-        registry.setPeggedPrice(stable, 0);
-        vm.stopPrank();
-
-        assertFalse(registry.isPriceable(stable));
-        vm.expectRevert("NO_PRICE_FEED");
-        registry.getPrice(stable);
-    }
-
-    /// @dev A live feed must always beat a declared constant — otherwise a stale peg left behind
-    ///      by an earlier configuration would quietly override real market data.
-    function test_feedWinsOverPeg() public {
-        vm.prank(owner);
-        registry.setPeggedPrice(token, 1e18); // token already has the $2000 feed
-
-        assertEq(registry.getPrice(token), 2000e18);
-    }
-
-    function test_setPeggedPrice_onlyPoolAdmin() public {
-        vm.prank(stranger);
-        vm.expectRevert("NOT_POOL_ADMIN");
-        registry.setPeggedPrice(makeAddr("stable"), 1e18);
-    }
-
-    function test_setPeggedPrice_revertsZeroToken() public {
-        vm.prank(owner);
-        vm.expectRevert("ZERO_ADDRESS");
-        registry.setPeggedPrice(address(0), 1e18);
+        registry.getPrice(unknown);
     }
 
     function test_isPriceable_trueForStaleFeed() public {

@@ -23,6 +23,7 @@ import {MockERC20} from "../mocks/MockERC20.sol";
 import {TestPools} from "../helpers/TestPools.sol";
 import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
 import {TestSecurity} from "../helpers/TestSecurity.sol";
+import {TestPricing} from "../helpers/TestPricing.sol";
 
 /// @title EdgeCasesTest
 /// @notice Tests for edge cases: different decimals, dust amounts, extreme values,
@@ -71,7 +72,7 @@ contract EdgeCasesTest is Test {
         // Every market must be priceable before it can be listed; these flows all use
         // dollar-denominated borrow assets.
         vm.startPrank(owner);
-        priceRegistry.setPeggedPrice(address(borrowToken), 1e18);
+        TestPricing.priceAsset(priceRegistry, address(borrowToken), 1e18);
         core.registerPool(address(borrowToken), address(market));
         vm.stopPrank();
 
@@ -252,7 +253,7 @@ contract EdgeCasesTest is Test {
             )
         );
         vm.startPrank(owner);
-        priceRegistry.setPeggedPrice(address(token), 1e18);
+        TestPricing.priceAsset(priceRegistry, address(token), 1e18);
         core.registerPool(address(token), address(m));
         vm.stopPrank();
         address mId = address(token);
