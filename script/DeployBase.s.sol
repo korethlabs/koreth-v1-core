@@ -203,9 +203,10 @@ abstract contract DeployBase is Script {
         // PriceFeedRegistry (for cross-decimal HF/LTV)
         priceFeedRegistry.setPriceFeed(cfg.stablecoin, cfg.clStablecoinUsd);
         priceFeedRegistry.setPriceFeed(cfg.weth, cfg.clNativeUsd);
-        if (cfg.clSequencerUptime != address(0)) {
-            priceFeedRegistry.setSequencerUptimeFeed(cfg.clSequencerUptime);
-        }
+        // Called unconditionally, including with address(0). Skipping it when disabled would leave
+        // no event and no way to tell a deliberate "this chain has no sequencer" apart from someone
+        // forgetting the field — which is the whole distinction this config exists to record.
+        priceFeedRegistry.setSequencerUptimeFeed(cfg.clSequencerUptime);
 
         _afterOracles(cfg);
     }
