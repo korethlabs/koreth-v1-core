@@ -33,6 +33,9 @@ library Handover {
     /// @dev Every line here is a one-way door, so the precondition is enforced on-chain instead of
     ///      being left to whoever runs the script to remember.
     function finalize(ACLManager aclManager, ProtocolCore core, address dao, address deployer) internal {
+        // Checked here and not only in the scripts' env loading, because this library is the shared
+        // unit: called with the two the same it would strip the DAO of the roles it was just given.
+        require(dao != deployer, "DAO_IS_DEPLOYER");
         require(core.owner() == dao, "DAO_HAS_NOT_ACCEPTED_OWNERSHIP");
         require(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), dao), "DAO_MISSING_DEFAULT_ADMIN");
         require(aclManager.isPoolAdmin(dao), "DAO_MISSING_POOL_ADMIN");
@@ -127,6 +130,7 @@ contract HandoverFinalize is HandoverBase {
 
         console.log("=== Handover complete ===");
         console.log("ProtocolCore owner: ", core.owner());
-        console.log("Deployer roles:      DEFAULT_ADMIN_ROLE, POOL_ADMIN, RISK_ADMIN and EMERGENCY_ADMIN revoked");
+        console.log("Deployer roles:      DEFAULT_ADMIN_ROLE, POOL_ADMIN and RISK_ADMIN revoked");
+        console.log("                     EMERGENCY_ADMIN revoked if the deployer held it");
     }
 }
