@@ -23,7 +23,6 @@ import {CircuitBreaker} from "../src/security/CircuitBreaker.sol";
 import {RiskManager} from "../src/security/RiskManager.sol";
 import {PoolHealthMonitor} from "../src/security/PoolHealthMonitor.sol";
 import {ILPAdapter} from "../src/interfaces/ILPAdapter.sol";
-import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 
 /// @title DeployBase
 /// @notice Shared deployment logic for all chains. Subclass sets chain-specific config.
@@ -65,9 +64,6 @@ abstract contract DeployBase is Script {
         // this against amounts converted by LendingEngine._toUsd, so a 6-dec value would cap the
         // type 1e12 too low and revert every borrow.
         uint256 borrowCap;
-        // Governance
-        address multisig; // proposer/executor for timelock (deployer on testnet)
-        uint256 timelockDelay; // 172800 (48h) for mainnet, 60 for testnet
     }
 
     // --- Deployed Contracts ---
@@ -84,7 +80,6 @@ abstract contract DeployBase is Script {
     PriceValidator public priceValidator;
     PoolHealthMonitor public poolHealthMonitor;
     PoolFactory public poolFactory;
-    TimelockController public timelock;
 
     // --- Abstract: subclass provides config ---
     function _config() internal virtual returns (ChainConfig memory);
@@ -106,8 +101,7 @@ abstract contract DeployBase is Script {
         _deployPoolFactory(cfg);
         _configureRoles(cfg);
         _createPools(cfg);
-        _beforeGovernance(cfg);
-        _deployTimelock(cfg);
+        _afterDeploy(cfg);
 
         vm.stopBroadcast();
 
@@ -119,10 +113,10 @@ abstract contract DeployBase is Script {
     ///         persist deployed addresses (e.g. Local writes a deployments JSON for tooling).
     function _afterRun(ChainConfig memory cfg) internal virtual {}
 
-    /// @notice Optional hook run AFTER market creation but BEFORE governance handoff, while the
-    ///         deployer still holds POOL_ADMIN (default no-op). Local uses it to relax oracle
-    ///         staleness for the fork (real feeds can lag well past the 1h default).
-    function _beforeGovernance(ChainConfig memory cfg) internal virtual {}
+    /// @notice Optional hook run after market creation, as the last step of the deploy (default
+    ///         no-op). Local uses it to relax oracle staleness for the fork, where real feeds can
+    ///         lag well past the 1h default.
+    function _afterDeploy(ChainConfig memory cfg) internal virtual {}
 
     /// @notice Optional hook run at the end of _deployOracles (default no-op). Local registers
     ///         extra stablecoin price feeds (USDT/DAI) here so their markets can be valued.
@@ -320,34 +314,6 @@ abstract contract DeployBase is Script {
         );
     }
 
-    function _deployTimelock(ChainConfig memory cfg) internal virtual {
-        require(cfg.multisig != address(0), "ZERO_MULTISIG");
-
-        address[] memory proposers = new address[](1);
-        proposers[0] = cfg.multisig;
-        address[] memory executors = new address[](1);
-        executors[0] = cfg.multisig;
-
-        // admin = deployer temporarily (so deployer can renounce its own timelock admin after setup)
-        timelock = new TimelockController(cfg.timelockDelay, proposers, executors, cfg.deployer);
-
-        // Grant timelock admin authority
-        aclManager.grantRole(aclManager.DEFAULT_ADMIN_ROLE(), address(timelock));
-        aclManager.grantRole(aclManager.POOL_ADMIN(), address(timelock));
-
-        // Revoke deployer privileges (timelock is now sole admin)
-        aclManager.revokeRole(aclManager.POOL_ADMIN(), cfg.deployer);
-        aclManager.revokeRole(aclManager.DEFAULT_ADMIN_ROLE(), cfg.deployer);
-
-        // Transfer ProtocolCore ownership to timelock (two-step transfer).
-        // acceptOwnership must be called by the timelock as its first scheduled operation.
-        // Until then, deployer retains onlyOwner (only used for setACLManager — nuclear op).
-        core.transferOwnership(address(timelock));
-
-        // Renounce deployer's admin role on the TimelockController itself
-        timelock.renounceRole(timelock.DEFAULT_ADMIN_ROLE(), cfg.deployer);
-    }
-
     function _logAddresses(ChainConfig memory) internal view {
         console.log("=== Koreth Protocol Deployed ===");
         console.log("");
@@ -364,6 +330,5 @@ abstract contract DeployBase is Script {
         console.log("PriceValidator:         ", address(priceValidator));
         console.log("PoolHealthMonitor:      ", address(poolHealthMonitor));
         console.log("PoolFactory:            ", address(poolFactory));
-        console.log("TimelockController:     ", address(timelock));
     }
 }

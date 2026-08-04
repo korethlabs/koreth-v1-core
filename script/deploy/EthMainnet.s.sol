@@ -6,22 +6,27 @@ import {DeployBase} from "../DeployBase.s.sol";
 /// @title DeployEthMainnet
 /// @notice Deploy Koreth on Ethereum Mainnet (Uniswap V2 + V3)
 /// @dev Run: forge script script/deploy/EthMainnet.s.sol --rpc-url $ETH_RPC --broadcast --verify
-///      IMPORTANT: Use multisig addresses for guardian/riskAdmin in production!
+///      The deployer holds every admin role after this runs. Handing the protocol to the DAO is
+///      a separate, deliberate step — see script/HandoverToDAO.s.sol.
 contract DeployEthMainnet is DeployBase {
     function _config() internal override returns (ChainConfig memory) {
-        // The deployer EOA becomes the initial owner and pool admin of all contracts.
-        // After deployment, transfer ownership of ACLManager, ProtocolCore, and all admin
-        // roles to a multisig. The deployer should hold no privileged roles post-deploy.
+        // The deployer holds DEFAULT_ADMIN, POOL_ADMIN, RISK_ADMIN and ProtocolCore ownership
+        // until the handover scripts run. That is the launch posture, stated rather than implied.
         address deployer = vm.addr(vm.envUint("DEPLOYER_PRIVATE_KEY"));
-        // TODO: Replace with actual multisig addresses before mainnet deployment
-        address guardian = vm.envOr("GUARDIAN_ADDRESS", deployer);
-        address riskAdmin = vm.envOr("RISK_ADMIN_ADDRESS", deployer);
+        // Required, not defaulted: the guardian being a separate key is the point, and an env var
+        // that silently falls back to the deployer would collapse that separation exactly when
+        // nobody is looking. Splitting it costs nothing — EMERGENCY_ADMIN can pause but not
+        // unpause, so moving the emergency brake off the deploying key weakens nothing. RISK_ADMIN is deliberately not configurable the same way — pointing
+        // it elsewhere would leave the deployer without a role the launch posture says it holds,
+        // and HandoverFinalize would then refuse to strip a deployer that never had it. An extra
+        // operational risk key can be granted after deploy, and revoked before handover.
+        address guardian = vm.envAddress("GUARDIAN_ADDRESS");
 
         return ChainConfig({
             // Roles
             deployer: deployer,
             guardian: guardian,
-            riskAdmin: riskAdmin,
+            riskAdmin: deployer,
             // V2 — Uniswap V2
             v2Factory: 0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f,
             v2Router: 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D,
@@ -44,10 +49,7 @@ contract DeployEthMainnet is DeployBase {
             liquidationThreshold: 7500,
             liquidationBonus: 500,
             haircut: 500, // 5% discount on collateral value
-            borrowCap: 10_000_000e18, // $10M (18-dec USD, not borrow-asset decimals)
-            // Governance — multisig required for mainnet (no fallback to deployer)
-            multisig: vm.envAddress("MULTISIG_ADDRESS"),
-            timelockDelay: 48 hours
+            borrowCap: 10_000_000e18 // $10M (18-dec USD, not borrow-asset decimals)
         });
     }
 }

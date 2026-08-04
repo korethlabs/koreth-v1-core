@@ -35,8 +35,8 @@ contract DeployLocal is DeployBase {
     function _config() internal override returns (ChainConfig memory) {
         address deployer = vm.addr(vm.envUint("DEPLOYER_PRIVATE_KEY"));
         require(deployer == ANVIL_ACCT0, "USE_ANVIL_ACCT0");
-        // This profile installs price feeds frozen at deploy time and skips the timelock handoff,
-        // leaving the deployer with every role. Until now the only thing between a mistyped RPC
+        // This profile installs price feeds frozen at deploy time and leaves the deployer holding
+        // every role. Until now the only thing between a mistyped RPC
         // and shipping that to mainnet was the anvil key holding no real ETH — an accident, not a
         // safeguard.
         require(block.chainid == LOCAL_CHAIN_ID, "NOT_A_LOCAL_CHAIN");
@@ -68,10 +68,7 @@ contract DeployLocal is DeployBase {
             liquidationThreshold: 7500, // 75%
             liquidationBonus: 500, // 5%
             haircut: 500, // 5% discount on collateral value
-            borrowCap: 100_000e18, // $100K (18-dec USD, not borrow-asset decimals)
-            // Governance — deployer as multisig, short delay
-            multisig: deployer,
-            timelockDelay: 60
+            borrowCap: 100_000e18 // $100K (18-dec USD, not borrow-asset decimals)
         });
     }
 
@@ -103,14 +100,9 @@ contract DeployLocal is DeployBase {
 
     /// @notice Fork tweak: real Chainlink feeds can lag the 1h default (e.g. USDC/USD updates
     ///         ~daily), so anvil's live block.timestamp trips STALE_PRICE. Raise to the 24h max.
-    function _beforeGovernance(ChainConfig memory) internal override {
+    function _afterDeploy(ChainConfig memory) internal override {
         priceFeedRegistry.setMaxStaleness(86_400);
     }
-
-    /// @notice LOCAL ONLY: skip the timelock handoff so the deployer keeps POOL_ADMIN/RISK_ADMIN.
-    ///         Seed scripts (e.g. SeedLiquidate) need admin to tweak market config on the fork.
-    ///         Production deploys (Sepolia/Eth/BSC) keep the real timelock.
-    function _deployTimelock(ChainConfig memory) internal override {}
 
     /// @notice Persist deployed addresses + deploy block to deployments/local.json.
     ///         Consumed by SeedLocal.s.sol and the subgraph tooling.
