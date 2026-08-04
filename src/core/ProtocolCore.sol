@@ -156,8 +156,8 @@ contract ProtocolCore {
         require(borrowAsset.code.length > 0, "BORROW_ASSET_NOT_CONTRACT");
         require(pool != address(0), "ZERO_ADDRESS");
         require(pool.code.length > 0, "NOT_CONTRACT");
-        require(lendingPool[borrowAsset] == address(0), "POOL_ALREADY_REGISTERED");
-        require(!isLendingPool[pool], "POOL_ALREADY_REGISTERED");
+        require(lendingPool[borrowAsset] == address(0), "LENDING_POOL_ALREADY_REGISTERED");
+        require(!isLendingPool[pool], "LENDING_POOL_ALREADY_REGISTERED");
         // The key must match the pool's own borrow asset, otherwise every downstream
         // `lendingPool[asset]` lookup would resolve to a pool that lends a different token.
         require(ILendingPool(pool).borrowAsset() == borrowAsset, "BORROW_ASSET_MISMATCH");
@@ -173,10 +173,10 @@ contract ProtocolCore {
         emit LendingPoolRegistered(borrowAsset, pool);
     }
 
-    /// @notice Resolve the shared pool for a borrow asset (reverts if none registered).
+    /// @notice Resolve the shared *lending* market for a borrow asset (reverts if none registered).
     function getLendingPool(address borrowAsset) external view returns (address) {
         address pool = lendingPool[borrowAsset];
-        require(pool != address(0), "POOL_NOT_FOUND");
+        require(pool != address(0), "LENDING_POOL_NOT_FOUND");
         return pool;
     }
 

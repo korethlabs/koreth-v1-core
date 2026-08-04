@@ -181,7 +181,7 @@ abstract contract ForkTestBase is Test {
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(v3Adapter));
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(v2Adapter));
 
-        // 10. Whitelist pools
+        // 10. Whitelist LP pools
         core.whitelistLpPool(Constants.UNI_V3_WETH_USDC_3000);
         core.whitelistLpPool(Constants.UNI_V2_WETH_USDC);
 

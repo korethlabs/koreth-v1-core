@@ -245,7 +245,7 @@ contract PositionManagerTest is Test {
         // newLP will be returned as pool by the mock adapter, but it's not whitelisted
 
         vm.prank(alice);
-        vm.expectRevert("POOL_NOT_SUPPORTED");
+        vm.expectRevert("LP_POOL_NOT_SUPPORTED");
         pm.deposit(newLP, 1, 100e18, borrowAsset);
     }
 

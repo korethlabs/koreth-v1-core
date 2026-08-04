@@ -506,7 +506,7 @@ contract EdgeCasesTest is Test {
         // But pool is NOT whitelisted in core
 
         vm.prank(alice);
-        vm.expectRevert("POOL_NOT_SUPPORTED");
+        vm.expectRevert("LP_POOL_NOT_SUPPORTED");
         pm.deposit(fakeLP, 1, 100e18, mId);
     }
 

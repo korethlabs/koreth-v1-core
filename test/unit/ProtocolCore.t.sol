@@ -251,7 +251,7 @@ contract ProtocolCoreTest is Test {
         address stub2 = _poolStub(borrowAsset);
         vm.startPrank(owner);
         core.registerLendingPool(borrowAsset, _poolStub(borrowAsset));
-        vm.expectRevert("POOL_ALREADY_REGISTERED");
+        vm.expectRevert("LENDING_POOL_ALREADY_REGISTERED");
         core.registerLendingPool(borrowAsset, stub2);
         vm.stopPrank();
     }

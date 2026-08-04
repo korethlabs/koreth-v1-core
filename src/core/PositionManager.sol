@@ -208,7 +208,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         ILPAdapter.LPInfo memory info = adapter.validateAndLock(lpToken, tokenId, amount, msg.sender);
 
         // Verify pool is whitelisted and not circuit-broken
-        require(core.isLpPoolSupported(info.pool), "POOL_NOT_SUPPORTED");
+        require(core.isLpPoolSupported(info.pool), "LP_POOL_NOT_SUPPORTED");
         CircuitBreaker breaker = getCircuitBreaker();
         require(!breaker.poolPaused(info.pool), "POOL_CIRCUIT_BREAKER");
         require(!breaker.collateralFrozen(lpType), "COLLATERAL_FROZEN");

@@ -186,7 +186,7 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
 
         // Step 3: Resolve shared pool + collateral risk config (liquidationBonus from RiskManager)
         address poolAddr = core.lendingPool(pos.borrowAsset);
-        require(poolAddr != address(0), "POOL_NOT_FOUND");
+        require(poolAddr != address(0), "LENDING_POOL_NOT_FOUND");
         address borrowAsset = pos.borrowAsset;
 
         // Step 4: Calculate collateral to seize in USD (18 decimals)
