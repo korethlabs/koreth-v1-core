@@ -13,7 +13,7 @@ import {LPOracleHub} from "../src/oracle/LPOracleHub.sol";
 import {UniswapV3Oracle} from "../src/oracle/UniswapV3Oracle.sol";
 import {UniswapV2Oracle} from "../src/oracle/UniswapV2Oracle.sol";
 import {PriceFeedRegistry} from "../src/oracle/PriceFeedRegistry.sol";
-import {PriceValidator} from "../src/oracle/PriceValidator.sol";
+import {PoolLiquidityMonitor} from "../src/oracle/PoolLiquidityMonitor.sol";
 import {UniswapV3Adapter} from "../src/adapters/UniswapV3Adapter.sol";
 import {UniswapV2Adapter} from "../src/adapters/UniswapV2Adapter.sol";
 import {InterestRateModel} from "../src/markets/InterestRateModel.sol";
@@ -77,7 +77,7 @@ abstract contract DeployBase is Script {
     CircuitBreaker public circuitBreaker;
     RiskManager public riskManager;
     PriceFeedRegistry public priceFeedRegistry;
-    PriceValidator public priceValidator;
+    PoolLiquidityMonitor public poolLiquidityMonitor;
     PoolHealthMonitor public poolHealthMonitor;
     PoolFactory public poolFactory;
 
@@ -178,7 +178,7 @@ abstract contract DeployBase is Script {
         riskManager = new RiskManager(address(core));
         poolHealthMonitor = new PoolHealthMonitor(address(core), address(circuitBreaker));
         priceFeedRegistry = new PriceFeedRegistry(address(core));
-        priceValidator = new PriceValidator(address(core), address(circuitBreaker));
+        poolLiquidityMonitor = new PoolLiquidityMonitor(address(core), address(circuitBreaker));
     }
 
     function _deployOracles(ChainConfig memory cfg) internal {
@@ -258,7 +258,7 @@ abstract contract DeployBase is Script {
         // FlashloanLiquidator (periphery) handles swaps outside the core protocol.
 
         // Grant KEEPER to security contracts so they can trigger CircuitBreaker.pausePool()
-        aclManager.addKeeper(address(priceValidator));
+        aclManager.addKeeper(address(poolLiquidityMonitor));
         aclManager.addKeeper(address(poolHealthMonitor));
 
         // PoolFactory needs RISK_ADMIN only: whitelistCollateral→setCollateralConfig, and
@@ -327,7 +327,7 @@ abstract contract DeployBase is Script {
         console.log("CircuitBreaker:         ", address(circuitBreaker));
         console.log("RiskManager:            ", address(riskManager));
         console.log("PriceFeedRegistry:      ", address(priceFeedRegistry));
-        console.log("PriceValidator:         ", address(priceValidator));
+        console.log("PoolLiquidityMonitor:         ", address(poolLiquidityMonitor));
         console.log("PoolHealthMonitor:      ", address(poolHealthMonitor));
         console.log("PoolFactory:            ", address(poolFactory));
     }

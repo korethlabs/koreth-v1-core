@@ -360,7 +360,7 @@ contract V3LiquidationPaths is Test {
     }
 
     // ========== 7. Ring buffer volatility after 100+ entries ==========
-    // (PriceValidator test — included here for completeness)
+    // (PoolLiquidityMonitor test — included here for completeness)
 
     // ========== 7. AMOUNT_OVERFLOW revert for V2 > uint128 ==========
 

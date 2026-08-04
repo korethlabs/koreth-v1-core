@@ -39,7 +39,7 @@ contract ACLManager is AccessControlEnumerable {
     ///         Exactly one instance.
     bytes32 public constant POSITION_MANAGER = keccak256("POSITION_MANAGER");
 
-    /// @notice Automation bots — can call compoundFees, PriceValidator.validatePrice,
+    /// @notice Automation bots — can call compoundFees, PoolLiquidityMonitor.validatePrice,
     ///         PoolHealthMonitor.checkPool. Multiple instances (bot fleet).
     bytes32 public constant KEEPER = keccak256("KEEPER");
 
