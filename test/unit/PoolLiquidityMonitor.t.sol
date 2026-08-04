@@ -212,6 +212,46 @@ contract PoolLiquidityMonitorTest is Test {
         monitor.setMinPoolTvl(1e18);
     }
 
+    /// @dev The bounds exist so that holding RISK_ADMIN is not the same as being able to switch the
+    ///      check off. A 0.1% threshold pauses every pool on noise; a 99% one pauses none.
+    function test_setTvlDropThreshold_rejectsValuesOutsideTheBounds() public {
+        // Read the bounds first: vm.prank and vm.expectRevert both apply to the next call, and a
+        // getter inlined into the argument would be that call.
+        uint256 min = monitor.MIN_TVL_DROP_BPS();
+        uint256 max = monitor.MAX_TVL_DROP_BPS();
+
+        vm.prank(owner);
+        vm.expectRevert("OUT_OF_BOUNDS");
+        monitor.setTvlDropThreshold(min - 1);
+
+        vm.prank(owner);
+        vm.expectRevert("OUT_OF_BOUNDS");
+        monitor.setTvlDropThreshold(max + 1);
+
+        vm.prank(owner);
+        monitor.setTvlDropThreshold(2000);
+        assertEq(monitor.tvlDropThresholdBps(), 2000, "a value inside the bounds still goes through");
+    }
+
+    /// @dev Same idea on the window: too short and every check finds no baseline to compare against,
+    ///      too long and a week-old reading counts as recent.
+    function test_setTvlDropWindow_rejectsValuesOutsideTheBounds() public {
+        uint256 min = monitor.MIN_TVL_DROP_WINDOW();
+        uint256 max = monitor.MAX_TVL_DROP_WINDOW();
+
+        vm.prank(owner);
+        vm.expectRevert("OUT_OF_BOUNDS");
+        monitor.setTvlDropWindow(min - 1);
+
+        vm.prank(owner);
+        vm.expectRevert("OUT_OF_BOUNDS");
+        monitor.setTvlDropWindow(max + 1);
+
+        vm.prank(owner);
+        monitor.setTvlDropWindow(1800);
+        assertEq(monitor.tvlDropWindow(), 1800, "a value inside the bounds still goes through");
+    }
+
     function test_constructor_rejectsABreakerFromAnotherCore() public {
         ProtocolCore otherCore = new ProtocolCore(owner, address(aclManager));
         CircuitBreaker foreign = new CircuitBreaker(address(otherCore));
