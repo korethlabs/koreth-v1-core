@@ -12,7 +12,7 @@ import {TestPools} from "../helpers/TestPools.sol";
 /// @notice Minimal contract used to satisfy code.length > 0 checks in ProtocolCore
 contract Stub {}
 
-/// @notice Minimal lending-pool stub — `registerPool` cross-checks `borrowAsset()` against the key
+/// @notice Minimal lending-pool stub — `registerLendingPool` cross-checks `borrowAsset()` against the key
 contract PoolStub {
     address public borrowAsset;
 
@@ -63,7 +63,7 @@ contract ProtocolCoreTest is Test {
         return address(new PoolStub(borrowAsset));
     }
 
-    /// @dev A borrow asset the protocol can price. registerPool refuses to list a market it cannot
+    /// @dev A borrow asset the protocol can price. registerLendingPool refuses to list a market it cannot
     ///      value, so a bare stub is no longer a usable borrow asset.
     function _borrowAsset() internal returns (address asset) {
         asset = address(new Stub());
@@ -294,7 +294,7 @@ contract ProtocolCoreTest is Test {
         assertEq(core.lendingPool(borrowAsset), address(0), "no market may exist for an unpriceable asset");
     }
 
-    /// @dev The key must match the pool's own borrow asset, or every `pools[asset]` lookup
+    /// @dev The key must match the pool's own borrow asset, or every `lendingPool[asset]` lookup
     ///      would resolve to a pool that lends a different token.
     function test_registerLendingPool_revertsBorrowAssetMismatch() public {
         address pool = _poolStub(_stub());
@@ -312,7 +312,7 @@ contract ProtocolCoreTest is Test {
     }
 
     /// @dev An EOA key would satisfy the borrowAsset() cross-check and only fail later, on the
-    ///      first transfer. PoolFactory screens this too; registerPool is the path that bypasses it.
+    ///      first transfer. PoolFactory screens this too; registerLendingPool is the path that bypasses it.
     function test_registerLendingPool_revertsBorrowAssetNotContract() public {
         address borrowAsset = makeAddr("eoa-usdc");
         address pool = _poolStub(borrowAsset);
@@ -394,7 +394,7 @@ contract ProtocolCoreTest is Test {
         vm.stopPrank();
 
         assertFalse(core.isLpPoolSupported(pool));
-        // poolAddedAt cleared on removal
+        // lpPoolAddedAt cleared on removal
         assertEq(core.lpPoolAddedAt(pool), 0);
     }
 
