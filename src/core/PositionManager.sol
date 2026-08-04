@@ -185,7 +185,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     {
         require(lpToken != address(0), "ZERO_LP_TOKEN");
         require(amount > 0 || tokenId > 0, "ZERO_AMOUNT");
-        require(core.pools(borrowAsset) != address(0), "INVALID_POOL");
+        require(core.lendingPool(borrowAsset) != address(0), "LENDING_POOL_NOT_FOUND");
 
         // Auto-detect LP type by querying each registered adapter
         ILPAdapter.LPType lpType = _detectLPType(lpToken);
@@ -207,8 +207,8 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         // Validate and lock the LP position
         ILPAdapter.LPInfo memory info = adapter.validateAndLock(lpToken, tokenId, amount, msg.sender);
 
-        // Verify pool is whitelisted and not circuit-broken
-        require(core.isPoolSupported(info.pool), "POOL_NOT_SUPPORTED");
+        // Verify the AMM pool backing this LP is curated collateral, and not circuit-broken
+        require(core.isLpPoolSupported(info.pool), "LP_POOL_NOT_SUPPORTED");
         CircuitBreaker breaker = getCircuitBreaker();
         require(!breaker.poolPaused(info.pool), "POOL_CIRCUIT_BREAKER");
         require(!breaker.collateralFrozen(lpType), "COLLATERAL_FROZEN");

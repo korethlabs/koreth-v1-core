@@ -49,9 +49,9 @@ contract SeedLocal is Script {
         IPositionManager positionManager = IPositionManager(json.readAddress(".positionManager"));
 
         // Shared-pool model: one lending pool per borrow asset (collateral type is not part of the key).
-        address usdcPoolAddr = core.getPool(USDC);
-        address usdtPoolAddr = core.getPool(USDT);
-        address daiPoolAddr = core.getPool(DAI);
+        address usdcPoolAddr = core.getLendingPool(USDC);
+        address usdtPoolAddr = core.getLendingPool(USDT);
+        address daiPoolAddr = core.getLendingPool(DAI);
         address adapter = core.adapters(ILPAdapter.LPType.UniswapV2);
         require(adapter != address(0), "NO_V2_ADAPTER");
 

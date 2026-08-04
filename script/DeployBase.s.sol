@@ -263,15 +263,15 @@ abstract contract DeployBase is Script {
 
         // PoolFactory needs RISK_ADMIN only: whitelistCollateral→setCollateralConfig, and
         // setReserveFactor on freshly created pools (LendingPool.onlyRiskAdmin). It does NOT
-        // need POOL_ADMIN — core.registerPool authorizes `msg.sender == poolFactory` directly,
+        // need POOL_ADMIN — core.registerLendingPool authorizes `msg.sender == poolFactory` directly,
         // so granting it would only widen the factory's blast radius if it were compromised.
         aclManager.addRiskAdmin(address(poolFactory));
     }
 
     function _createPools(ChainConfig memory cfg) internal {
         // Whitelist collateral pools (the underlying LP pools, not the lending pool)
-        if (cfg.v3Pool != address(0)) core.whitelistPool(cfg.v3Pool);
-        if (cfg.v2Pool != address(0)) core.whitelistPool(cfg.v2Pool);
+        if (cfg.v3Pool != address(0)) core.whitelistLpPool(cfg.v3Pool);
+        if (cfg.v2Pool != address(0)) core.whitelistLpPool(cfg.v2Pool);
 
         // Shared-pool model: create ONE lending pool for the primary stablecoin, then whitelist
         // each configured collateral type against it (borrow cap is per-collateral in RiskManager).
@@ -292,7 +292,7 @@ abstract contract DeployBase is Script {
     ///      does NOT need re-whitelisting per pool: CollateralConfig is keyed by LPType alone, so one
     ///      _whitelistCollateral call covers that type against every borrow asset.
     function _ensurePool(address borrowAsset) internal returns (address poolAddr) {
-        poolAddr = core.pools(borrowAsset);
+        poolAddr = core.lendingPool(borrowAsset);
         if (poolAddr == address(0)) {
             poolAddr = poolFactory.createPool(borrowAsset, "volatile", 0);
             LendingPool(poolAddr).setFeeCollector(address(feeCollector));

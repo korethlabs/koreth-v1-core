@@ -12,7 +12,7 @@ import {TestPools} from "../helpers/TestPools.sol";
 /// @notice Minimal contract used to satisfy code.length > 0 checks in ProtocolCore
 contract Stub {}
 
-/// @notice Minimal lending-pool stub — `registerPool` cross-checks `borrowAsset()` against the key
+/// @notice Minimal lending-pool stub — `registerLendingPool` cross-checks `borrowAsset()` against the key
 contract PoolStub {
     address public borrowAsset;
 
@@ -32,9 +32,9 @@ contract ProtocolCoreTest is Test {
     // Events — must redeclare to test with vm.expectEmit
     event AdapterRegistered(ILPAdapter.LPType indexed lpType, address indexed oldAdapter, address indexed adapter);
     event OracleRegistered(ILPAdapter.LPType indexed lpType, address indexed oldOracle, address indexed oracle);
-    event PoolRegistered(address indexed borrowAsset, address indexed pool);
-    event PoolWhitelisted(address indexed pool);
-    event PoolRemoved(address indexed pool);
+    event LendingPoolRegistered(address indexed borrowAsset, address indexed pool);
+    event LpPoolWhitelisted(address indexed pool);
+    event LpPoolRemoved(address indexed pool);
     event Paused(address indexed by);
     event Unpaused(address indexed by);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -63,7 +63,7 @@ contract ProtocolCoreTest is Test {
         return address(new PoolStub(borrowAsset));
     }
 
-    /// @dev A borrow asset the protocol can price. registerPool refuses to list a market it cannot
+    /// @dev A borrow asset the protocol can price. registerLendingPool refuses to list a market it cannot
     ///      value, so a bare stub is no longer a usable borrow asset.
     function _borrowAsset() internal returns (address asset) {
         asset = address(new Stub());
@@ -216,43 +216,43 @@ contract ProtocolCoreTest is Test {
         vm.stopPrank();
     }
 
-    // ========== registerPool ==========
+    // ========== registerLendingPool ==========
 
-    function test_registerPool_success() public {
+    function test_registerLendingPool_success() public {
         address borrowAsset = _borrowAsset();
         address pool = _poolStub(borrowAsset);
 
         vm.expectEmit(true, true, false, false);
-        emit PoolRegistered(borrowAsset, pool);
+        emit LendingPoolRegistered(borrowAsset, pool);
 
         vm.prank(owner);
-        core.registerPool(borrowAsset, pool);
+        core.registerLendingPool(borrowAsset, pool);
 
-        assertEq(core.pools(borrowAsset), pool);
-        assertTrue(core.registeredPools(pool));
+        assertEq(core.lendingPool(borrowAsset), pool);
+        assertTrue(core.isLendingPool(pool));
     }
 
-    function test_registerPool_multipleAssets() public {
+    function test_registerLendingPool_multipleAssets() public {
         vm.startPrank(owner);
         address a1 = _borrowAsset();
         address a2 = _borrowAsset();
         address p1 = _poolStub(a1);
         address p2 = _poolStub(a2);
-        core.registerPool(a1, p1);
-        core.registerPool(a2, p2);
+        core.registerLendingPool(a1, p1);
+        core.registerLendingPool(a2, p2);
         vm.stopPrank();
 
-        assertEq(core.pools(a1), p1);
-        assertEq(core.pools(a2), p2);
+        assertEq(core.lendingPool(a1), p1);
+        assertEq(core.lendingPool(a2), p2);
     }
 
-    function test_registerPool_revertsDuplicateAsset() public {
+    function test_registerLendingPool_revertsDuplicateAsset() public {
         address borrowAsset = _borrowAsset();
         address stub2 = _poolStub(borrowAsset);
         vm.startPrank(owner);
-        core.registerPool(borrowAsset, _poolStub(borrowAsset));
-        vm.expectRevert("POOL_ALREADY_REGISTERED");
-        core.registerPool(borrowAsset, stub2);
+        core.registerLendingPool(borrowAsset, _poolStub(borrowAsset));
+        vm.expectRevert("LENDING_POOL_ALREADY_REGISTERED");
+        core.registerLendingPool(borrowAsset, stub2);
         vm.stopPrank();
     }
 
@@ -268,7 +268,7 @@ contract ProtocolCoreTest is Test {
         core.setPriceFeedRegistry(address(foreign));
     }
 
-    /// @dev Mirrors getPool/getAdapter/getOracle: the borrow-side consumers resolve the registry
+    /// @dev Mirrors getLendingPool/getAdapter/getOracle: the borrow-side consumers resolve the registry
     ///      through here, so a deployment that reaches them before wiring fails by name rather than
     ///      as a call into an empty address.
     function test_getPriceFeedRegistry_revertsWhenUnset() public {
@@ -283,151 +283,151 @@ contract ProtocolCoreTest is Test {
     /// @dev Listing and pricing are atomic. A market whose borrow asset has no price source can be
     ///      borrowed from but not valued, so its debt would never count against a health factor —
     ///      the position would read as healthy no matter how much was drawn against it.
-    function test_registerPool_revertsWhenBorrowAssetNotPriceable() public {
+    function test_registerLendingPool_revertsWhenBorrowAssetNotPriceable() public {
         address borrowAsset = _stub(); // deliberately never declared priceable
         address pool = _poolStub(borrowAsset);
 
         vm.prank(owner);
         vm.expectRevert("BORROW_ASSET_NOT_PRICEABLE");
-        core.registerPool(borrowAsset, pool);
+        core.registerLendingPool(borrowAsset, pool);
 
-        assertEq(core.pools(borrowAsset), address(0), "no market may exist for an unpriceable asset");
+        assertEq(core.lendingPool(borrowAsset), address(0), "no market may exist for an unpriceable asset");
     }
 
-    /// @dev The key must match the pool's own borrow asset, or every `pools[asset]` lookup
+    /// @dev The key must match the pool's own borrow asset, or every `lendingPool[asset]` lookup
     ///      would resolve to a pool that lends a different token.
-    function test_registerPool_revertsBorrowAssetMismatch() public {
+    function test_registerLendingPool_revertsBorrowAssetMismatch() public {
         address pool = _poolStub(_stub());
         address otherAsset = _stub();
         vm.prank(owner);
         vm.expectRevert("BORROW_ASSET_MISMATCH");
-        core.registerPool(otherAsset, pool);
+        core.registerLendingPool(otherAsset, pool);
     }
 
-    function test_registerPool_revertsZeroAddress() public {
+    function test_registerLendingPool_revertsZeroAddress() public {
         address borrowAsset = _stub();
         vm.prank(owner);
         vm.expectRevert("ZERO_ADDRESS");
-        core.registerPool(borrowAsset, address(0));
+        core.registerLendingPool(borrowAsset, address(0));
     }
 
     /// @dev An EOA key would satisfy the borrowAsset() cross-check and only fail later, on the
-    ///      first transfer. PoolFactory screens this too; registerPool is the path that bypasses it.
-    function test_registerPool_revertsBorrowAssetNotContract() public {
+    ///      first transfer. PoolFactory screens this too; registerLendingPool is the path that bypasses it.
+    function test_registerLendingPool_revertsBorrowAssetNotContract() public {
         address borrowAsset = makeAddr("eoa-usdc");
         address pool = _poolStub(borrowAsset);
         vm.prank(owner);
         vm.expectRevert("BORROW_ASSET_NOT_CONTRACT");
-        core.registerPool(borrowAsset, pool);
+        core.registerLendingPool(borrowAsset, pool);
     }
 
-    function test_registerPool_revertsZeroBorrowAsset() public {
+    function test_registerLendingPool_revertsZeroBorrowAsset() public {
         address stub = _stub();
         vm.prank(owner);
         vm.expectRevert("ZERO_BORROW_ASSET");
-        core.registerPool(address(0), stub);
+        core.registerLendingPool(address(0), stub);
     }
 
-    function test_registerPool_revertsNotContract() public {
+    function test_registerLendingPool_revertsNotContract() public {
         address borrowAsset = _stub();
         vm.prank(owner);
         vm.expectRevert("NOT_CONTRACT");
-        core.registerPool(borrowAsset, makeAddr("eoa"));
+        core.registerLendingPool(borrowAsset, makeAddr("eoa"));
     }
 
-    function test_registerPool_revertsNotAuthorized() public {
+    function test_registerLendingPool_revertsNotAuthorized() public {
         vm.prank(user);
         vm.expectRevert("NOT_AUTHORIZED");
-        core.registerPool(makeAddr("usdc"), makeAddr("pool"));
+        core.registerLendingPool(makeAddr("usdc"), makeAddr("pool"));
     }
 
-    // ========== whitelistPool ==========
+    // ========== whitelistLpPool ==========
 
-    function test_whitelistPool_success() public {
+    function test_whitelistLpPool_success() public {
         address pool = _pool("pool");
 
         vm.expectEmit(true, false, false, false);
-        emit PoolWhitelisted(pool);
+        emit LpPoolWhitelisted(pool);
 
         vm.prank(owner);
-        core.whitelistPool(pool);
+        core.whitelistLpPool(pool);
 
-        assertTrue(core.isPoolSupported(pool));
-        assertEq(core.poolAddedAt(pool), block.timestamp);
+        assertTrue(core.isLpPoolSupported(pool));
+        assertEq(core.lpPoolAddedAt(pool), block.timestamp);
     }
 
-    function test_whitelistPool_revertsAlreadyWhitelisted() public {
+    function test_whitelistLpPool_revertsAlreadyWhitelisted() public {
         address pool = _pool("pool");
         vm.startPrank(owner);
-        core.whitelistPool(pool);
+        core.whitelistLpPool(pool);
 
         vm.expectRevert("ALREADY_WHITELISTED");
-        core.whitelistPool(pool);
+        core.whitelistLpPool(pool);
         vm.stopPrank();
     }
 
-    function test_whitelistPool_revertsZeroAddress() public {
+    function test_whitelistLpPool_revertsZeroAddress() public {
         vm.prank(owner);
         vm.expectRevert("ZERO_ADDRESS");
-        core.whitelistPool(address(0));
+        core.whitelistLpPool(address(0));
     }
 
-    function test_whitelistPool_revertsNotPoolAdmin() public {
+    function test_whitelistLpPool_revertsNotPoolAdmin() public {
         vm.prank(user);
         vm.expectRevert("NOT_POOL_ADMIN");
-        core.whitelistPool(_pool("pool"));
+        core.whitelistLpPool(_pool("pool"));
     }
 
-    // ========== removePool ==========
+    // ========== removeLpPool ==========
 
-    function test_removePool_success() public {
+    function test_removeLpPool_success() public {
         address pool = _pool("pool");
 
         vm.startPrank(owner);
-        core.whitelistPool(pool);
-        assertTrue(core.isPoolSupported(pool));
+        core.whitelistLpPool(pool);
+        assertTrue(core.isLpPoolSupported(pool));
 
         vm.expectEmit(true, false, false, false);
-        emit PoolRemoved(pool);
+        emit LpPoolRemoved(pool);
 
-        core.removePool(pool);
+        core.removeLpPool(pool);
         vm.stopPrank();
 
-        assertFalse(core.isPoolSupported(pool));
-        // poolAddedAt cleared on removal
-        assertEq(core.poolAddedAt(pool), 0);
+        assertFalse(core.isLpPoolSupported(pool));
+        // lpPoolAddedAt cleared on removal
+        assertEq(core.lpPoolAddedAt(pool), 0);
     }
 
-    function test_removePool_revertsNotWhitelisted() public {
+    function test_removeLpPool_revertsNotWhitelisted() public {
         vm.prank(owner);
         vm.expectRevert("NOT_WHITELISTED");
-        core.removePool(makeAddr("pool"));
+        core.removeLpPool(makeAddr("pool"));
     }
 
-    function test_removePool_revertsNotPoolAdmin() public {
+    function test_removeLpPool_revertsNotPoolAdmin() public {
         address pool = _pool("pool");
         vm.prank(owner);
-        core.whitelistPool(pool);
+        core.whitelistLpPool(pool);
 
         vm.prank(user);
         vm.expectRevert("NOT_POOL_ADMIN");
-        core.removePool(pool);
+        core.removeLpPool(pool);
     }
 
-    function test_removePool_canReWhitelistAfterRemoval() public {
+    function test_removeLpPool_canReWhitelistAfterRemoval() public {
         address pool = _pool("pool");
 
         vm.startPrank(owner);
-        core.whitelistPool(pool);
-        core.removePool(pool);
-        assertFalse(core.isPoolSupported(pool));
+        core.whitelistLpPool(pool);
+        core.removeLpPool(pool);
+        assertFalse(core.isLpPoolSupported(pool));
 
         // Advance time so new timestamp is different
         vm.warp(block.timestamp + 1000);
 
         // Re-whitelist should work (pool is no longer in whitelist)
-        core.whitelistPool(pool);
-        assertTrue(core.isPoolSupported(pool));
+        core.whitelistLpPool(pool);
+        assertTrue(core.isLpPoolSupported(pool));
         vm.stopPrank();
     }
 
@@ -730,56 +730,56 @@ contract ProtocolCoreTest is Test {
         core.getOracle(ILPAdapter.LPType.Curve);
     }
 
-    // ========== isPoolSupported ==========
+    // ========== isLpPoolSupported ==========
 
-    function test_isPoolSupported_falseByDefault() public view {
-        assertFalse(core.isPoolSupported(address(0xdead)));
+    function test_isLpPoolSupported_falseByDefault() public view {
+        assertFalse(core.isLpPoolSupported(address(0xdead)));
     }
 
-    function test_isPoolSupported_trueAfterWhitelist() public {
+    function test_isLpPoolSupported_trueAfterWhitelist() public {
         address pool = _pool("pool");
         vm.prank(owner);
-        core.whitelistPool(pool);
-        assertTrue(core.isPoolSupported(pool));
+        core.whitelistLpPool(pool);
+        assertTrue(core.isLpPoolSupported(pool));
     }
 
-    function test_isPoolSupported_falseAfterRemoval() public {
+    function test_isLpPoolSupported_falseAfterRemoval() public {
         address pool = _pool("pool");
         vm.startPrank(owner);
-        core.whitelistPool(pool);
-        core.removePool(pool);
+        core.whitelistLpPool(pool);
+        core.removeLpPool(pool);
         vm.stopPrank();
-        assertFalse(core.isPoolSupported(pool));
+        assertFalse(core.isLpPoolSupported(pool));
     }
 
-    // ========== getPoolAge ==========
+    // ========== getLpPoolAge ==========
 
-    function test_getPoolAge_returnsZeroIfNeverAdded() public view {
-        assertEq(core.getPoolAge(address(0xdead)), 0);
+    function test_getLpPoolAge_returnsZeroIfNeverAdded() public view {
+        assertEq(core.getLpPoolAge(address(0xdead)), 0);
     }
 
-    function test_getPoolAge_returnsCorrectAge() public {
+    function test_getLpPoolAge_returnsCorrectAge() public {
         address pool = _pool("pool");
         vm.prank(owner);
-        core.whitelistPool(pool);
+        core.whitelistLpPool(pool);
 
         vm.warp(block.timestamp + 3600);
-        assertEq(core.getPoolAge(pool), 3600);
+        assertEq(core.getLpPoolAge(pool), 3600);
     }
 
-    function test_getPoolAge_zeroAfterRemoval() public {
+    function test_getLpPoolAge_zeroAfterRemoval() public {
         address pool = _pool("pool");
         vm.startPrank(owner);
-        core.whitelistPool(pool);
+        core.whitelistLpPool(pool);
         vm.stopPrank();
 
         vm.warp(block.timestamp + 5000);
 
         vm.prank(owner);
-        core.removePool(pool);
+        core.removeLpPool(pool);
 
         // Removed pool returns 0 age (not currently supported)
-        assertEq(core.getPoolAge(pool), 0);
+        assertEq(core.getLpPoolAge(pool), 0);
     }
 
     // ========== Multiple LP types ==========
@@ -813,49 +813,49 @@ contract ProtocolCoreTest is Test {
 
     // ========== Fuzz tests ==========
 
-    function testFuzz_registerPool_distinctAssets(uint8 count) public {
+    function testFuzz_registerLendingPool_distinctAssets(uint8 count) public {
         count = uint8(bound(count, 1, 10));
         vm.startPrank(owner);
         for (uint8 i = 0; i < count; i++) {
             address borrowAsset = _borrowAsset();
             address pool = address(new PoolStub(borrowAsset));
-            core.registerPool(borrowAsset, pool);
-            assertEq(core.pools(borrowAsset), pool);
+            core.registerLendingPool(borrowAsset, pool);
+            assertEq(core.lendingPool(borrowAsset), pool);
         }
         vm.stopPrank();
     }
 
     /// @dev Any contract may be curated as collateral backing — the adapters, not this registry,
     ///      decide whether it is an authentic pool from the configured factory.
-    function testFuzz_whitelistPool_anyContract(address pool) public {
+    function testFuzz_whitelistLpPool_anyContract(address pool) public {
         // Precompiles cannot be etched, and are not addresses a pool would ever live at.
         vm.assume(pool > address(0x0a) && pool.code.length == 0);
         TestPools.asContract(pool);
 
         vm.prank(owner);
-        core.whitelistPool(pool);
-        assertTrue(core.isPoolSupported(pool));
+        core.whitelistLpPool(pool);
+        assertTrue(core.isLpPoolSupported(pool));
     }
 
     /// @dev An address with no code cannot be a pool, so accepting it would only defer the failure
     ///      to the first call made against it.
-    function testFuzz_whitelistPool_rejectsNonContract(address pool) public {
+    function testFuzz_whitelistLpPool_rejectsNonContract(address pool) public {
         vm.assume(pool != address(0) && pool.code.length == 0);
 
         vm.prank(owner);
         vm.expectRevert("NOT_CONTRACT");
-        core.whitelistPool(pool);
+        core.whitelistLpPool(pool);
     }
 
-    function testFuzz_getPoolAge_increases(uint256 elapsed) public {
+    function testFuzz_getLpPoolAge_increases(uint256 elapsed) public {
         elapsed = bound(elapsed, 1, 365 days);
         address pool = _pool("pool");
 
         vm.prank(owner);
-        core.whitelistPool(pool);
+        core.whitelistLpPool(pool);
 
         vm.warp(block.timestamp + elapsed);
-        assertEq(core.getPoolAge(pool), elapsed);
+        assertEq(core.getLpPoolAge(pool), elapsed);
     }
 
     function testFuzz_transferOwnership_anyNonZero(address newOwner) public {

@@ -65,7 +65,7 @@ contract PoolFactory {
         poolAddr = address(proxy);
 
         // Register in core keyed by borrow asset
-        core.registerPool(borrowAsset, poolAddr);
+        core.registerLendingPool(borrowAsset, poolAddr);
 
         if (reserveFactorBps > 0) {
             LendingPool(poolAddr).setReserveFactor(reserveFactorBps);

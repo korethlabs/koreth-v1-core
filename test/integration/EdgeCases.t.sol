@@ -73,7 +73,7 @@ contract EdgeCasesTest is Test {
         // dollar-denominated borrow assets.
         vm.startPrank(owner);
         TestPricing.priceAsset(priceRegistry, address(borrowToken), 1e18);
-        core.registerPool(address(borrowToken), address(market));
+        core.registerLendingPool(address(borrowToken), address(market));
         vm.stopPrank();
 
         // Supply liquidity
@@ -135,7 +135,7 @@ contract EdgeCasesTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
-        core.whitelistPool(TestPools.asContract(lpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken));
         priceRegistry = new PriceFeedRegistry(address(core));
         core.setPriceFeedRegistry(address(priceRegistry));
         core.setRiskManager(address(riskManager));
@@ -254,7 +254,7 @@ contract EdgeCasesTest is Test {
         );
         vm.startPrank(owner);
         TestPricing.priceAsset(priceRegistry, address(token), 1e18);
-        core.registerPool(address(token), address(m));
+        core.registerLendingPool(address(token), address(m));
         vm.stopPrank();
         address mId = address(token);
         token.mint(address(this), 100_000_000e18);
@@ -506,7 +506,7 @@ contract EdgeCasesTest is Test {
         // But pool is NOT whitelisted in core
 
         vm.prank(alice);
-        vm.expectRevert("POOL_NOT_SUPPORTED");
+        vm.expectRevert("LP_POOL_NOT_SUPPORTED");
         pm.deposit(fakeLP, 1, 100e18, mId);
     }
 

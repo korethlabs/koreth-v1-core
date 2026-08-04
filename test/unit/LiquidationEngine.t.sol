@@ -120,9 +120,9 @@ contract LiquidationEngineTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistPool(TestPools.asContract(lpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken));
         priceRegistry = TestPricing.wireStable(core, address(usdc));
-        core.registerPool(address(usdc), address(market));
+        core.registerLendingPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
         TestSecurity.wireBreaker(core, pm);
@@ -602,7 +602,7 @@ contract LiquidationEngineTest is Test {
         // optional: a market the protocol cannot value cannot be listed.
         vm.startPrank(owner);
         TestPricing.priceAsset(priceRegistry, address(usdc6), 1e18);
-        core.registerPool(address(usdc6), address(market6));
+        core.registerLendingPool(address(usdc6), address(market6));
         vm.stopPrank();
 
         // Fund market

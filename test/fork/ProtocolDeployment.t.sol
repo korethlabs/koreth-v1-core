@@ -45,14 +45,14 @@ contract ProtocolDeploymentTest is ForkTestBase {
         assertEq(oracleHub.oracles(ILPAdapter.LPType.UniswapV2), address(v2Oracle));
     }
 
-    function test_poolsWhitelisted() public view {
-        assertTrue(core.isPoolSupported(Constants.UNI_V3_WETH_USDC_3000));
-        assertTrue(core.isPoolSupported(Constants.UNI_V2_WETH_USDC));
-        assertFalse(core.isPoolSupported(address(0x1234)));
+    function test_lpPoolsWhitelisted() public view {
+        assertTrue(core.isLpPoolSupported(Constants.UNI_V3_WETH_USDC_3000));
+        assertTrue(core.isLpPoolSupported(Constants.UNI_V2_WETH_USDC));
+        assertFalse(core.isLpPoolSupported(address(0x1234)));
     }
 
-    function test_poolCreated() public view {
-        address poolAddr = core.pools(usdcBorrowAsset);
+    function test_lendingPoolCreated() public view {
+        address poolAddr = core.lendingPool(usdcBorrowAsset);
         assertTrue(poolAddr != address(0));
         assertEq(poolAddr, address(usdcPool));
         assertEq(usdcPool.borrowAsset(), Constants.USDC);

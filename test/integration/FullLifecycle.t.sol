@@ -144,9 +144,9 @@ contract FullLifecycleTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistPool(TestPools.asContract(lpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken));
         TestPricing.wireStable(core, address(usdc));
-        core.registerPool(address(usdc), address(market));
+        core.registerLendingPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         // V2 collateral: 65% LTV / 75% liq / 5% bonus / no haircut / $10M borrow cap
         riskManager.setCollateralConfig(

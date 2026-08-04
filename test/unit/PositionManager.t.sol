@@ -108,9 +108,9 @@ contract PositionManagerTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
-        core.whitelistPool(TestPools.asContract(lpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken));
         priceRegistry = TestPricing.wireStable(core, address(usdc));
-        core.registerPool(address(usdc), address(market));
+        core.registerLendingPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         TestSecurity.wireBreaker(core, pm);
@@ -225,9 +225,9 @@ contract PositionManagerTest is Test {
         pm.deposit(address(0), 1, 100e18, borrowAsset);
     }
 
-    function test_deposit_revertsInvalidPool() public {
+    function test_deposit_revertsWhenNoLendingMarket() public {
         vm.prank(alice);
-        vm.expectRevert("INVALID_POOL");
+        vm.expectRevert("LENDING_POOL_NOT_FOUND");
         pm.deposit(lpToken, 1, 100e18, makeAddr("unregisteredAsset"));
     }
 
@@ -245,7 +245,7 @@ contract PositionManagerTest is Test {
         // newLP will be returned as pool by the mock adapter, but it's not whitelisted
 
         vm.prank(alice);
-        vm.expectRevert("POOL_NOT_SUPPORTED");
+        vm.expectRevert("LP_POOL_NOT_SUPPORTED");
         pm.deposit(newLP, 1, 100e18, borrowAsset);
     }
 
@@ -745,7 +745,7 @@ contract PositionManagerTest is Test {
         MockLendingPool market6 = new MockLendingPool(address(usdc6), address(irm6));
         vm.startPrank(owner);
         TestPricing.priceAsset(priceRegistry, address(usdc6), 1e18); // $1.00
-        core.registerPool(address(usdc6), address(market6));
+        core.registerLendingPool(address(usdc6), address(market6));
         vm.stopPrank();
 
         oracle.setPrice(10_000e18); // $10K collateral
@@ -774,7 +774,7 @@ contract PositionManagerTest is Test {
         MockLendingPool market8 = new MockLendingPool(address(wbtc), address(irm8));
         vm.startPrank(owner);
         TestPricing.priceAsset(priceRegistry, address(wbtc), 60_000e18); // $60K per BTC
-        core.registerPool(address(wbtc), address(market8));
+        core.registerLendingPool(address(wbtc), address(market8));
         vm.stopPrank();
 
         oracle.setPrice(100_000e18); // $100K collateral

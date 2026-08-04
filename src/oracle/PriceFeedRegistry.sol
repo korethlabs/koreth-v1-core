@@ -94,7 +94,7 @@ contract PriceFeedRegistry {
 
     /// @notice Whether the protocol can price this token at all.
     /// @dev Existence, not health — a feed that is currently stale still counts. Callers that gate
-    ///      configuration (ProtocolCore.registerPool) need to know a price source was configured;
+    ///      configuration (ProtocolCore.registerLendingPool) need to know a price source was configured;
     ///      callers that gate money movement go through getPrice(), which additionally reverts on
     ///      stale or out-of-bounds data. Conflating the two would make listing a market fail
     ///      whenever a feed happened to be lagging.
