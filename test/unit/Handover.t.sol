@@ -96,6 +96,19 @@ contract HandoverTest is Test {
         assertTrue(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), deployer));
     }
 
+    /// @dev Revoking a role an address does not hold is a no-op, so stripping the wrong address
+    ///      would otherwise look like a completed handover while the real deployer kept everything.
+    function test_finalize_revertsIfStrippingAnAddressThatHoldsNothing() public {
+        deployerAccount.propose(aclManager, core, address(dao));
+        dao.accept(core);
+
+        vm.expectRevert("DEPLOYER_NOT_ADMIN");
+        deployerAccount.finalize(aclManager, core, address(dao), makeAddr("wrongAddress"));
+
+        assertTrue(aclManager.isRiskAdmin(deployer), "the real deployer must be untouched");
+        assertTrue(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), deployer));
+    }
+
     function test_finalize_revertsIfDaoWasNeverProposed() public {
         vm.expectRevert("DAO_HAS_NOT_ACCEPTED_OWNERSHIP");
         deployerAccount.finalize(aclManager, core, address(dao), deployer);

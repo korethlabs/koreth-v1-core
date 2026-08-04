@@ -38,6 +38,14 @@ library Handover {
         require(aclManager.isPoolAdmin(dao), "DAO_MISSING_POOL_ADMIN");
         require(aclManager.isRiskAdmin(dao), "DAO_MISSING_RISK_ADMIN");
 
+        // Revoking a role an address does not hold is a no-op, so without this the script would
+        // report a completed handover after stripping the wrong address — while the real deployer
+        // kept everything. The whole value of this step is the assurance that it finished.
+        require(deployer != address(0), "ZERO_DEPLOYER");
+        require(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), deployer), "DEPLOYER_NOT_ADMIN");
+        require(aclManager.isPoolAdmin(deployer), "DEPLOYER_NOT_POOL_ADMIN");
+        require(aclManager.isRiskAdmin(deployer), "DEPLOYER_NOT_RISK_ADMIN");
+
         // RISK_ADMIN first: it is the one the previous handover forgot, and the one that can move
         // an LTV to 100%.
         aclManager.removeRiskAdmin(deployer);

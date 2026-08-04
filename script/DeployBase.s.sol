@@ -64,7 +64,6 @@ abstract contract DeployBase is Script {
         // this against amounts converted by LendingEngine._toUsd, so a 6-dec value would cap the
         // type 1e12 too low and revert every borrow.
         uint256 borrowCap;
-        // Governance
     }
 
     // --- Deployed Contracts ---

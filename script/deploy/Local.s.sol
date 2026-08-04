@@ -36,7 +36,7 @@ contract DeployLocal is DeployBase {
         address deployer = vm.addr(vm.envUint("DEPLOYER_PRIVATE_KEY"));
         require(deployer == ANVIL_ACCT0, "USE_ANVIL_ACCT0");
         // This profile installs price feeds frozen at deploy time and leaves the deployer holding
-        // leaving the deployer with every role. Until now the only thing between a mistyped RPC
+        // every role. Until now the only thing between a mistyped RPC
         // and shipping that to mainnet was the anvil key holding no real ETH — an accident, not a
         // safeguard.
         require(block.chainid == LOCAL_CHAIN_ID, "NOT_A_LOCAL_CHAIN");
