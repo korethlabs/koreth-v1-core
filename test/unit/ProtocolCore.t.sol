@@ -216,7 +216,7 @@ contract ProtocolCoreTest is Test {
         vm.stopPrank();
     }
 
-    // ========== registerPool ==========
+    // ========== registerLendingPool ==========
 
     function test_registerLendingPool_success() public {
         address borrowAsset = _borrowAsset();
@@ -341,7 +341,7 @@ contract ProtocolCoreTest is Test {
         core.registerLendingPool(makeAddr("usdc"), makeAddr("pool"));
     }
 
-    // ========== whitelistPool ==========
+    // ========== whitelistLpPool ==========
 
     function test_whitelistLpPool_success() public {
         address pool = _pool("pool");
@@ -378,7 +378,7 @@ contract ProtocolCoreTest is Test {
         core.whitelistLpPool(_pool("pool"));
     }
 
-    // ========== removePool ==========
+    // ========== removeLpPool ==========
 
     function test_removeLpPool_success() public {
         address pool = _pool("pool");
@@ -730,7 +730,7 @@ contract ProtocolCoreTest is Test {
         core.getOracle(ILPAdapter.LPType.Curve);
     }
 
-    // ========== isPoolSupported ==========
+    // ========== isLpPoolSupported ==========
 
     function test_isLpPoolSupported_falseByDefault() public view {
         assertFalse(core.isLpPoolSupported(address(0xdead)));
@@ -752,7 +752,7 @@ contract ProtocolCoreTest is Test {
         assertFalse(core.isLpPoolSupported(pool));
     }
 
-    // ========== getPoolAge ==========
+    // ========== getLpPoolAge ==========
 
     function test_getLpPoolAge_returnsZeroIfNeverAdded() public view {
         assertEq(core.getLpPoolAge(address(0xdead)), 0);

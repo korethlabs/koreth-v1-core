@@ -302,7 +302,9 @@ contract ProtocolCore {
         return supportedLpPools[pool];
     }
 
-    /// @notice Get pool age in seconds (returns 0 if pool is not currently supported)
+    /// @notice How long an LP pool has been whitelisted as collateral backing, in seconds.
+    /// @dev Returns 0 for a pool that is not currently whitelisted — including one that was and is
+    ///      no longer, since removeLpPool clears the timestamp.
     function getLpPoolAge(address pool) external view returns (uint256) {
         if (!supportedLpPools[pool]) return 0;
         uint256 addedAt = lpPoolAddedAt[pool];
