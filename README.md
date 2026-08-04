@@ -14,9 +14,9 @@ and depend on this repo. **Core depends on nothing.**
 src/
 ├── core/        ProtocolCore, ACLManager, PositionManager, LendingEngine, LiquidationEngine, FeeCollector
 ├── markets/     LendingPool, PoolFactory, InterestRateModel
-├── oracle/      LPOracleHub, PriceFeedRegistry, PriceValidator, UniswapV2Oracle, UniswapV3Oracle
+├── oracle/      LPOracleHub, PriceFeedRegistry, PoolLiquidityMonitor, UniswapV2Oracle, UniswapV3Oracle
 ├── adapters/    UniswapV2Adapter, UniswapV3Adapter (+ fail-closed stubs)
-├── security/    RiskManager, CircuitBreaker, PoolHealthMonitor
+├── security/    RiskManager, CircuitBreaker
 ├── libraries/   LPMath, TokenUtils
 └── interfaces/  (MIT-licensed — build against these freely)
 ```

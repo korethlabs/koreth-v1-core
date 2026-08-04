@@ -21,7 +21,6 @@ import {LendingPool} from "../src/markets/LendingPool.sol";
 import {PoolFactory} from "../src/markets/PoolFactory.sol";
 import {CircuitBreaker} from "../src/security/CircuitBreaker.sol";
 import {RiskManager} from "../src/security/RiskManager.sol";
-import {PoolHealthMonitor} from "../src/security/PoolHealthMonitor.sol";
 import {ILPAdapter} from "../src/interfaces/ILPAdapter.sol";
 
 /// @title DeployBase
@@ -78,7 +77,6 @@ abstract contract DeployBase is Script {
     RiskManager public riskManager;
     PriceFeedRegistry public priceFeedRegistry;
     PoolLiquidityMonitor public poolLiquidityMonitor;
-    PoolHealthMonitor public poolHealthMonitor;
     PoolFactory public poolFactory;
 
     // --- Abstract: subclass provides config ---
@@ -176,7 +174,6 @@ abstract contract DeployBase is Script {
         feeCollector = new FeeCollector(address(core), cfg.deployer, cfg.deployer);
         circuitBreaker = new CircuitBreaker(address(core));
         riskManager = new RiskManager(address(core));
-        poolHealthMonitor = new PoolHealthMonitor(address(core), address(circuitBreaker));
         priceFeedRegistry = new PriceFeedRegistry(address(core));
         poolLiquidityMonitor = new PoolLiquidityMonitor(address(core), address(circuitBreaker));
     }
@@ -259,7 +256,6 @@ abstract contract DeployBase is Script {
 
         // Grant KEEPER to security contracts so they can trigger CircuitBreaker.pausePool()
         aclManager.addKeeper(address(poolLiquidityMonitor));
-        aclManager.addKeeper(address(poolHealthMonitor));
 
         // PoolFactory needs RISK_ADMIN only: whitelistCollateral→setCollateralConfig, and
         // setReserveFactor on freshly created pools (LendingPool.onlyRiskAdmin). It does NOT
@@ -327,8 +323,7 @@ abstract contract DeployBase is Script {
         console.log("CircuitBreaker:         ", address(circuitBreaker));
         console.log("RiskManager:            ", address(riskManager));
         console.log("PriceFeedRegistry:      ", address(priceFeedRegistry));
-        console.log("PoolLiquidityMonitor:         ", address(poolLiquidityMonitor));
-        console.log("PoolHealthMonitor:      ", address(poolHealthMonitor));
+        console.log("PoolLiquidityMonitor:   ", address(poolLiquidityMonitor));
         console.log("PoolFactory:            ", address(poolFactory));
     }
 }
