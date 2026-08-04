@@ -50,11 +50,23 @@ library Handover {
         // an LTV to 100%.
         aclManager.removeRiskAdmin(deployer);
         aclManager.removePoolAdmin(deployer);
+
+        // Only if held, because on most deployments the guardian is a different key and this would
+        // be revoking someone else's role. But where the deploying key was also the guardian,
+        // leaving it able to pause the protocol is not the "handover complete" this reports.
+        // The DAO holds DEFAULT_ADMIN_ROLE by now and can appoint whatever guardian it wants.
+        if (aclManager.isEmergencyAdmin(deployer)) {
+            aclManager.removeEmergencyAdmin(deployer);
+        }
+
+        // DEFAULT_ADMIN_ROLE last: it is what authorises every revocation above, so giving it up
+        // first would strand the rest.
         aclManager.revokeRole(aclManager.DEFAULT_ADMIN_ROLE(), deployer);
 
         require(!aclManager.isRiskAdmin(deployer), "DEPLOYER_STILL_RISK_ADMIN");
         require(!aclManager.isPoolAdmin(deployer), "DEPLOYER_STILL_POOL_ADMIN");
         require(!aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), deployer), "DEPLOYER_STILL_ADMIN");
+        require(!aclManager.isEmergencyAdmin(deployer), "DEPLOYER_STILL_EMERGENCY_ADMIN");
     }
 }
 
@@ -72,6 +84,10 @@ abstract contract HandoverBase is Script {
         dao = vm.envAddress("DAO_ADDRESS");
 
         require(dao != address(0), "ZERO_DAO");
+        // Named checks rather than an opaque revert from calling into an empty address: the usual
+        // way to get here wrong is a stale env var or the wrong chain.
+        require(address(aclManager).code.length > 0, "ACL_MANAGER_NOT_CONTRACT");
+        require(address(core).code.length > 0, "PROTOCOL_CORE_NOT_CONTRACT");
         // Handing over to the deployer is not a handover, and it is the shape a copy-paste mistake
         // takes. Refuse it rather than emit a convincing set of no-op events.
         require(dao != deployer, "DAO_IS_DEPLOYER");
@@ -111,6 +127,6 @@ contract HandoverFinalize is HandoverBase {
 
         console.log("=== Handover complete ===");
         console.log("ProtocolCore owner: ", core.owner());
-        console.log("Deployer roles:      none");
+        console.log("Deployer roles:      DEFAULT_ADMIN_ROLE, POOL_ADMIN, RISK_ADMIN and EMERGENCY_ADMIN revoked");
     }
 }

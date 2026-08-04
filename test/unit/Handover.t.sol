@@ -131,6 +131,33 @@ contract HandoverTest is Test {
         assertTrue(aclManager.isRiskAdmin(address(dao)));
     }
 
+    /// @dev On a deployment where the deploying key was also the guardian, leaving it able to pause
+    ///      the protocol is not the "handover complete" the script reports. The DAO holds
+    ///      DEFAULT_ADMIN_ROLE by then and can appoint whatever guardian it wants.
+    function test_fullHandover_alsoStripsEmergencyAdminWhenDeployerHeldIt() public {
+        deployerAccount.exec(address(aclManager), abi.encodeCall(ACLManager.addEmergencyAdmin, (deployer)));
+        assertTrue(aclManager.isEmergencyAdmin(deployer));
+
+        deployerAccount.propose(aclManager, core, address(dao));
+        dao.accept(core);
+        deployerAccount.finalize(aclManager, core, address(dao), deployer);
+
+        assertFalse(aclManager.isEmergencyAdmin(deployer), "deployer must not keep the pause lever");
+    }
+
+    /// @dev The usual case: the guardian is a separate key, and the handover has no business
+    ///      revoking a role that belongs to someone else.
+    function test_fullHandover_leavesASeparateGuardianAlone() public {
+        address guardian = makeAddr("guardian");
+        deployerAccount.exec(address(aclManager), abi.encodeCall(ACLManager.addEmergencyAdmin, (guardian)));
+
+        deployerAccount.propose(aclManager, core, address(dao));
+        dao.accept(core);
+        deployerAccount.finalize(aclManager, core, address(dao), deployer);
+
+        assertTrue(aclManager.isEmergencyAdmin(guardian), "the guardian is not the deployer's role to lose");
+    }
+
     /// @dev The takeover primitive the old half-handoff left open: ownership governs setACLManager,
     ///      so once it has moved the deployer can no longer swap the permission system out.
     function test_afterHandover_deployerCannotReplaceTheACL() public {

@@ -100,7 +100,7 @@ contract DeployLocal is DeployBase {
 
     /// @notice Fork tweak: real Chainlink feeds can lag the 1h default (e.g. USDC/USD updates
     ///         ~daily), so anvil's live block.timestamp trips STALE_PRICE. Raise to the 24h max.
-    function _beforeGovernance(ChainConfig memory) internal override {
+    function _afterDeploy(ChainConfig memory) internal override {
         priceFeedRegistry.setMaxStaleness(86_400);
     }
 

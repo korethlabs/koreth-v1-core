@@ -101,7 +101,7 @@ abstract contract DeployBase is Script {
         _deployPoolFactory(cfg);
         _configureRoles(cfg);
         _createPools(cfg);
-        _beforeGovernance(cfg);
+        _afterDeploy(cfg);
 
         vm.stopBroadcast();
 
@@ -113,10 +113,10 @@ abstract contract DeployBase is Script {
     ///         persist deployed addresses (e.g. Local writes a deployments JSON for tooling).
     function _afterRun(ChainConfig memory cfg) internal virtual {}
 
-    /// @notice Optional hook run AFTER market creation but BEFORE governance handoff, while the
-    ///         deployer still holds POOL_ADMIN (default no-op). Local uses it to relax oracle
-    ///         staleness for the fork (real feeds can lag well past the 1h default).
-    function _beforeGovernance(ChainConfig memory cfg) internal virtual {}
+    /// @notice Optional hook run after market creation, as the last step of the deploy (default
+    ///         no-op). Local uses it to relax oracle staleness for the fork, where real feeds can
+    ///         lag well past the 1h default.
+    function _afterDeploy(ChainConfig memory cfg) internal virtual {}
 
     /// @notice Optional hook run at the end of _deployOracles (default no-op). Local registers
     ///         extra stablecoin price feeds (USDT/DAI) here so their markets can be valued.
