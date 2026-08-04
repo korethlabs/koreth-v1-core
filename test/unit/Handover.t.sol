@@ -77,7 +77,8 @@ contract HandoverTest is Test {
         assertTrue(aclManager.isPoolAdmin(address(dao)));
         assertTrue(aclManager.isRiskAdmin(address(dao)));
 
-        // Still the deployer's protocol until the DAO accepts: the step is reversible on purpose.
+        // No revocations in this step: the protocol still needs an operator until the DAO accepts.
+        // The DAO could revoke the deployer itself from here, having just been given DEFAULT_ADMIN.
         assertEq(core.owner(), deployer, "ownership does not move until accepted");
         assertEq(core.pendingOwner(), address(dao));
         assertTrue(aclManager.isPoolAdmin(deployer), "deployer must still be able to operate");

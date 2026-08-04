@@ -13,13 +13,14 @@ contract DeployEthMainnet is DeployBase {
         // The deployer holds DEFAULT_ADMIN, POOL_ADMIN, RISK_ADMIN and ProtocolCore ownership
         // until the handover scripts run. That is the launch posture, stated rather than implied.
         address deployer = vm.addr(vm.envUint("DEPLOYER_PRIVATE_KEY"));
-        // The guardian is a separate key on purpose, and safely so: it can pause but not unpause,
-        // so splitting it off keeps the emergency brake away from the deploying key without
-        // weakening anything. RISK_ADMIN is deliberately not configurable the same way — pointing
+        // Required, not defaulted: the guardian being a separate key is the point, and an env var
+        // that silently falls back to the deployer would collapse that separation exactly when
+        // nobody is looking. Splitting it costs nothing — EMERGENCY_ADMIN can pause but not
+        // unpause, so moving the emergency brake off the deploying key weakens nothing. RISK_ADMIN is deliberately not configurable the same way — pointing
         // it elsewhere would leave the deployer without a role the launch posture says it holds,
         // and HandoverFinalize would then refuse to strip a deployer that never had it. An extra
         // operational risk key can be granted after deploy, and revoked before handover.
-        address guardian = vm.envOr("GUARDIAN_ADDRESS", deployer);
+        address guardian = vm.envAddress("GUARDIAN_ADDRESS");
 
         return ChainConfig({
             // Roles

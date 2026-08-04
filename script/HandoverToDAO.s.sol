@@ -19,8 +19,10 @@ import {ProtocolCore} from "../src/core/ProtocolCore.sol";
 ///      granting itself everything back. finalize() therefore refuses until ownership has moved.
 library Handover {
     /// @notice Give the DAO the admin roles and start the ownership transfer.
-    /// @dev The deployer keeps its own roles here: until the DAO accepts, the protocol still needs
-    ///      an operator. Nothing is lost if the DAO never accepts.
+    /// @dev Grants and a pending owner, no revocations: the protocol still needs an operator until
+    ///      the DAO accepts. Note this is not "nothing has changed" — the DAO now holds
+    ///      DEFAULT_ADMIN_ROLE, so from here it can revoke the deployer whenever it likes. What the
+    ///      deployer keeps, it keeps at the DAO's discretion.
     function propose(ACLManager aclManager, ProtocolCore core, address dao) internal {
         aclManager.grantRole(aclManager.DEFAULT_ADMIN_ROLE(), dao);
         aclManager.addPoolAdmin(dao);
@@ -99,7 +101,9 @@ abstract contract HandoverBase is Script {
     }
 }
 
-/// @notice Step 1 of the handover. Reversible: nothing the deployer holds is given up here.
+/// @notice Step 1 of the handover: grant the DAO its roles and set it as pending owner. No
+///         revocations happen here — though the DAO can perform its own once it holds
+///         DEFAULT_ADMIN_ROLE.
 contract HandoverPropose is HandoverBase {
     function run() external {
         _load();
