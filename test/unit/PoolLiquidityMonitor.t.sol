@@ -181,6 +181,17 @@ contract PoolLiquidityMonitorTest is Test {
         assertEq(monitor.lastKnownTvl(address(pool)), 1_100_000e18);
     }
 
+    /// @dev The return value answers one question — did the liquidity pass — and not "is this pool
+    ///      usable". A pool paused by hand still holds whatever it holds, and conflating the two
+    ///      would make this answer depend on why someone else pressed a button.
+    function test_checkPool_reportsOnLiquidityAloneNotOnThePauseState() public {
+        vm.prank(owner);
+        circuitBreaker.pausePool(address(pool), "manual");
+
+        vm.prank(keeper);
+        assertTrue(monitor.checkPool(address(pool)), "liquidity is untouched, so the check passes");
+    }
+
     // ========== Access ==========
 
     function test_checkPool_onlyKeeper() public {

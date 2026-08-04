@@ -125,7 +125,10 @@ contract PoolLiquidityMonitor {
 
     /// @notice Measure a pool's liquidity and trip the breaker if it has fallen too far.
     /// @dev Keeper-triggered, but not keeper-informed: every figure compared here is read on-chain.
-    /// @return healthy False when this call paused the pool, or found it already paused.
+    /// @return healthy Whether the liquidity this call measured passed both checks — and only that.
+    ///         A pool paused earlier for an unrelated reason still reads healthy while its liquidity
+    ///         holds up. Callers who want the breaker's state should read the breaker, which is the
+    ///         one place that knows why a pool is paused.
     function checkPool(address pool) external onlyKeeper returns (bool healthy) {
         require(pool != address(0), "ZERO_POOL");
 
