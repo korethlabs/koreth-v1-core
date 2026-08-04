@@ -26,9 +26,10 @@ interface IPoolTokens {
 ///      The price-deviation check is gone rather than fixed, because on-chain it is either already
 ///      done or unnecessary. UniswapV3Oracle compares its own TWAP tick against Chainlink inside
 ///      getPrice() and reverts — per call, no keeper. UniswapV2Oracle needs no equivalent: fair
-///      value there is 2*sqrt(k)*sqrt(p0*p1), where the pool contributes only k, which no swap can
-///      move. V3 must trust the pool's tick to know a range position's composition, V2 must not
-///      trust the pool's price at all, and each behaves accordingly.
+///      value per LP token is 2*sqrt(k)*sqrt(p0*p1)/totalSupply, where the pool contributes only k
+///      and totalSupply, neither of which a swap can move. V3 must trust the pool's tick to know a
+///      range position's composition, V2 must not trust the pool's price at all, and each behaves
+///      accordingly.
 ///
 ///      What remains is the part nothing else covers, and it is now derived rather than reported:
 ///      the pool's own token balances, priced through the registry. A keeper can decide when to
