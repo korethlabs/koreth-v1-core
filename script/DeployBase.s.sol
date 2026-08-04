@@ -254,7 +254,7 @@ abstract contract DeployBase is Script {
         // No swap router needed — liquidation sends underlying tokens directly to liquidator.
         // FlashloanLiquidator (periphery) handles swaps outside the core protocol.
 
-        // Grant KEEPER to security contracts so they can trigger CircuitBreaker.pausePool()
+        // The monitor trips the breaker itself, so it needs KEEPER like any other bot.
         aclManager.addKeeper(address(poolLiquidityMonitor));
 
         // PoolFactory needs RISK_ADMIN only: whitelistCollateral→setCollateralConfig, and

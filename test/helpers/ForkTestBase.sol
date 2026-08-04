@@ -221,7 +221,7 @@ abstract contract ForkTestBase is Test {
         // swept fees to the defaulting borrower.
         liquidationEngine.setFeeCollector(address(feeCollector));
 
-        // 15. Grant KEEPER to PoolLiquidityMonitor (so it can call CircuitBreaker.pausePool)
+        // 14. Grant KEEPER to PoolLiquidityMonitor (so it can call CircuitBreaker.pausePool)
         aclManager.addKeeper(address(poolLiquidityMonitor));
 
         vm.stopPrank();
