@@ -13,7 +13,7 @@ import {LPOracleHub} from "../src/oracle/LPOracleHub.sol";
 import {UniswapV3Oracle} from "../src/oracle/UniswapV3Oracle.sol";
 import {UniswapV2Oracle} from "../src/oracle/UniswapV2Oracle.sol";
 import {PriceFeedRegistry} from "../src/oracle/PriceFeedRegistry.sol";
-import {PriceValidator} from "../src/oracle/PriceValidator.sol";
+import {PoolLiquidityMonitor} from "../src/oracle/PoolLiquidityMonitor.sol";
 import {UniswapV3Adapter} from "../src/adapters/UniswapV3Adapter.sol";
 import {UniswapV2Adapter} from "../src/adapters/UniswapV2Adapter.sol";
 import {InterestRateModel} from "../src/markets/InterestRateModel.sol";
@@ -21,7 +21,6 @@ import {LendingPool} from "../src/markets/LendingPool.sol";
 import {PoolFactory} from "../src/markets/PoolFactory.sol";
 import {CircuitBreaker} from "../src/security/CircuitBreaker.sol";
 import {RiskManager} from "../src/security/RiskManager.sol";
-import {PoolHealthMonitor} from "../src/security/PoolHealthMonitor.sol";
 import {ILPAdapter} from "../src/interfaces/ILPAdapter.sol";
 
 /// @title DeployBase
@@ -77,8 +76,7 @@ abstract contract DeployBase is Script {
     CircuitBreaker public circuitBreaker;
     RiskManager public riskManager;
     PriceFeedRegistry public priceFeedRegistry;
-    PriceValidator public priceValidator;
-    PoolHealthMonitor public poolHealthMonitor;
+    PoolLiquidityMonitor public poolLiquidityMonitor;
     PoolFactory public poolFactory;
 
     // --- Abstract: subclass provides config ---
@@ -176,9 +174,8 @@ abstract contract DeployBase is Script {
         feeCollector = new FeeCollector(address(core), cfg.deployer, cfg.deployer);
         circuitBreaker = new CircuitBreaker(address(core));
         riskManager = new RiskManager(address(core));
-        poolHealthMonitor = new PoolHealthMonitor(address(core), address(circuitBreaker));
         priceFeedRegistry = new PriceFeedRegistry(address(core));
-        priceValidator = new PriceValidator(address(core), address(circuitBreaker));
+        poolLiquidityMonitor = new PoolLiquidityMonitor(address(core), address(circuitBreaker));
     }
 
     function _deployOracles(ChainConfig memory cfg) internal {
@@ -257,9 +254,8 @@ abstract contract DeployBase is Script {
         // No swap router needed — liquidation sends underlying tokens directly to liquidator.
         // FlashloanLiquidator (periphery) handles swaps outside the core protocol.
 
-        // Grant KEEPER to security contracts so they can trigger CircuitBreaker.pausePool()
-        aclManager.addKeeper(address(priceValidator));
-        aclManager.addKeeper(address(poolHealthMonitor));
+        // The monitor trips the breaker itself, so it needs KEEPER like any other bot.
+        aclManager.addKeeper(address(poolLiquidityMonitor));
 
         // PoolFactory needs RISK_ADMIN only: whitelistCollateral→setCollateralConfig, and
         // setReserveFactor on freshly created pools (LendingPool.onlyRiskAdmin). It does NOT
@@ -327,8 +323,7 @@ abstract contract DeployBase is Script {
         console.log("CircuitBreaker:         ", address(circuitBreaker));
         console.log("RiskManager:            ", address(riskManager));
         console.log("PriceFeedRegistry:      ", address(priceFeedRegistry));
-        console.log("PriceValidator:         ", address(priceValidator));
-        console.log("PoolHealthMonitor:      ", address(poolHealthMonitor));
+        console.log("PoolLiquidityMonitor:   ", address(poolLiquidityMonitor));
         console.log("PoolFactory:            ", address(poolFactory));
     }
 }

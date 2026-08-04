@@ -8,7 +8,7 @@ import {ProtocolCore} from "../../src/core/ProtocolCore.sol";
 import {FeeCollector} from "../../src/core/FeeCollector.sol";
 import {RiskManager} from "../../src/security/RiskManager.sol";
 import {CircuitBreaker} from "../../src/security/CircuitBreaker.sol";
-import {PoolHealthMonitor} from "../../src/security/PoolHealthMonitor.sol";
+import {PoolLiquidityMonitor} from "../../src/oracle/PoolLiquidityMonitor.sol";
 import {LendingPool} from "../../src/markets/LendingPool.sol";
 import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
@@ -25,7 +25,7 @@ contract AccessControlNegativeTest is Test {
     FeeCollector public fc;
     RiskManager public rm;
     CircuitBreaker public cb;
-    PoolHealthMonitor public phm;
+    PoolLiquidityMonitor public liquidityMonitor;
     LendingPool public market;
     PriceFeedRegistry public registry;
     InterestRateModel public irm;
@@ -45,7 +45,7 @@ contract AccessControlNegativeTest is Test {
         fc = new FeeCollector(address(core), treasury, insurance);
         rm = new RiskManager(address(core));
         cb = new CircuitBreaker(address(core));
-        phm = new PoolHealthMonitor(address(core), address(cb));
+        liquidityMonitor = new PoolLiquidityMonitor(address(core), address(cb));
         registry = new PriceFeedRegistry(address(core));
 
         ILendingPool.PoolConfig memory config = ILendingPool.PoolConfig({borrowAsset: address(usdc)});
@@ -208,23 +208,23 @@ contract AccessControlNegativeTest is Test {
         registry.setMaxStaleness(7200);
     }
 
-    // ========== PoolHealthMonitor — onlyPoolAdmin ==========
+    // ========== PoolLiquidityMonitor — onlyRiskAdmin ==========
 
     function test_setTvlDropThreshold_revertsUnauthorized() public {
         vm.prank(attacker);
-        vm.expectRevert("NOT_POOL_ADMIN");
-        phm.setTvlDropThreshold(2000);
+        vm.expectRevert("NOT_RISK_ADMIN");
+        liquidityMonitor.setTvlDropThreshold(2000);
     }
 
-    function test_setCriticalTvlDrop_revertsUnauthorized() public {
+    function test_setTvlDropWindow_revertsUnauthorized() public {
         vm.prank(attacker);
-        vm.expectRevert("NOT_POOL_ADMIN");
-        phm.setCriticalTvlDrop(6000);
+        vm.expectRevert("NOT_RISK_ADMIN");
+        liquidityMonitor.setTvlDropWindow(1800);
     }
 
-    function test_setMinTvl_revertsUnauthorized() public {
+    function test_setMinPoolTvl_revertsUnauthorized() public {
         vm.prank(attacker);
-        vm.expectRevert("NOT_POOL_ADMIN");
-        phm.setMinTvl(makeAddr("pool"), 1_000_000e18);
+        vm.expectRevert("NOT_RISK_ADMIN");
+        liquidityMonitor.setMinPoolTvl(1_000_000e18);
     }
 }

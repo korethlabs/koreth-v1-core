@@ -13,7 +13,7 @@ import {FeeCollector} from "../../src/core/FeeCollector.sol";
 import {LPOracleHub} from "../../src/oracle/LPOracleHub.sol";
 import {UniswapV3Oracle} from "../../src/oracle/UniswapV3Oracle.sol";
 import {UniswapV2Oracle} from "../../src/oracle/UniswapV2Oracle.sol";
-import {PriceValidator} from "../../src/oracle/PriceValidator.sol";
+import {PoolLiquidityMonitor} from "../../src/oracle/PoolLiquidityMonitor.sol";
 import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
 import {LendingPool} from "../../src/markets/LendingPool.sol";
 import {PoolFactory} from "../../src/markets/PoolFactory.sol";
@@ -51,7 +51,7 @@ abstract contract ForkTestBase is Test {
     LPOracleHub public oracleHub;
     UniswapV3Oracle public v3Oracle;
     UniswapV2Oracle public v2Oracle;
-    PriceValidator public priceValidator;
+    PoolLiquidityMonitor public poolLiquidityMonitor;
     CircuitBreaker public circuitBreaker;
     RiskManager public riskManager;
     PriceFeedRegistry public priceFeedRegistry;
@@ -147,7 +147,7 @@ abstract contract ForkTestBase is Test {
         circuitBreaker = new CircuitBreaker(address(core));
         riskManager = new RiskManager(address(core));
         priceFeedRegistry = new PriceFeedRegistry(address(core));
-        priceValidator = new PriceValidator(address(core), address(circuitBreaker));
+        poolLiquidityMonitor = new PoolLiquidityMonitor(address(core), address(circuitBreaker));
 
         // 7b. TimelockController (deployer keeps POOL_ADMIN for test convenience)
         {
@@ -221,8 +221,8 @@ abstract contract ForkTestBase is Test {
         // swept fees to the defaulting borrower.
         liquidationEngine.setFeeCollector(address(feeCollector));
 
-        // 15. Grant KEEPER to PriceValidator (so it can call CircuitBreaker.pausePool)
-        aclManager.addKeeper(address(priceValidator));
+        // 14. Grant KEEPER to PoolLiquidityMonitor (so it can call CircuitBreaker.pausePool)
+        aclManager.addKeeper(address(poolLiquidityMonitor));
 
         vm.stopPrank();
     }

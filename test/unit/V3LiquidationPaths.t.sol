@@ -359,9 +359,6 @@ contract V3LiquidationPaths is Test {
         assertLt(pos.amount, 100e18, "V2 amount must decrease");
     }
 
-    // ========== 7. Ring buffer volatility after 100+ entries ==========
-    // (PriceValidator test — included here for completeness)
-
     // ========== 7. AMOUNT_OVERFLOW revert for V2 > uint128 ==========
 
     function test_v2_amountOverflow_reverts() public {

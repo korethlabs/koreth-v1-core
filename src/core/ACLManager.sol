@@ -39,8 +39,16 @@ contract ACLManager is AccessControlEnumerable {
     ///         Exactly one instance.
     bytes32 public constant POSITION_MANAGER = keccak256("POSITION_MANAGER");
 
-    /// @notice Automation bots — can call compoundFees, PriceValidator.validatePrice,
-    ///         PoolHealthMonitor.checkPool. Multiple instances (bot fleet).
+    /// @notice Automation bots — can call compoundFees and PoolLiquidityMonitor.checkPool.
+    ///         Multiple instances (bot fleet).
+    /// @dev Grant this deliberately: CircuitBreaker.onlyGuardianOrKeeper accepts it, so a keeper can
+    ///      pause any pool and freeze any collateral type directly, without going through a check.
+    ///      It cannot unpause — only EMERGENCY_ADMIN and POOL_ADMIN can — so a rogue keeper's reach
+    ///      is denial of service that a human reverses, not loss.
+    ///
+    ///      Nothing a keeper calls takes its numbers from the keeper. PoolLiquidityMonitor.checkPool
+    ///      reads balances and Chainlink prices itself, so the role decides when a check runs, never
+    ///      what it concludes.
     bytes32 public constant KEEPER = keccak256("KEEPER");
 
     /// @notice Periphery contracts that act on user positions via PositionManager.transform().
