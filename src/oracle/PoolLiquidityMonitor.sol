@@ -109,8 +109,13 @@ contract PoolLiquidityMonitor {
     ///      ticks, and a V2 pair's balances match its reserves except for donations, which only
     ///      overstate — and overstating cannot trip a floor that is meant to catch a pool draining.
     ///
-    ///      Reverts if either token has no price source. That is deliberate: a pool the protocol
-    ///      cannot value is not one it can judge, and reporting "healthy" would be a guess.
+    ///      Reverts rather than degrading whenever it cannot arrive at a number it trusts: no price
+    ///      feed (NO_PRICE_FEED), a stale or out-of-bounds answer, a token whose decimals() cannot
+    ///      be read, or an unset registry. That is deliberate and applies to all of them equally —
+    ///      a pool the protocol cannot value is not one it can judge, and every one of these cases
+    ///      would otherwise have to be answered with a guess. checkPool propagates the revert, so a
+    ///      pool in this state is neither paused nor pronounced healthy; it goes unjudged until the
+    ///      missing piece is fixed.
     function poolTvlUsd(address pool) public view returns (uint256) {
         address token0 = IPoolTokens(pool).token0();
         address token1 = IPoolTokens(pool).token1();
