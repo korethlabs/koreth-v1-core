@@ -102,7 +102,7 @@ contract LiquidationDecimalTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistPool(TestPools.asContract(lpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken));
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
         TestSecurity.wireBreaker(core, pm);
@@ -122,7 +122,7 @@ contract LiquidationDecimalTest is Test {
         // The price has to exist before the market can be listed -- ProtocolCore refuses to open
         // one it cannot value.
         TestPricing.wire(core, address(usdc6), 1e18); // $1.00
-        core.registerPool(borrowAsset, address(market6));
+        core.registerLendingPool(borrowAsset, address(market6));
         vm.stopPrank();
 
         // Fund: market + adapter
@@ -192,14 +192,14 @@ contract LiquidationDecimalTest is Test {
     ///      was. For a 6-dec stablecoin the answer happened to be right, which is exactly why the
     ///      behaviour survived; for anything else it over-issues debt and then reports the
     ///      position as healthy. The market can no longer be opened at all.
-    function test_registerPool_revertsWhenBorrowAssetHasNoPrice() public {
+    function test_registerLendingPool_revertsWhenBorrowAssetHasNoPrice() public {
         MockERC20 usdc6 = new MockERC20("USDC", "USDC", 6);
         MockLendingPool market6 = new MockLendingPool(address(usdc6), address(irm));
 
         vm.startPrank(owner);
         TestPricing.wire(core, address(weth), 3000e18); // a registry exists, just not for usdc6
         vm.expectRevert("BORROW_ASSET_NOT_PRICEABLE");
-        core.registerPool(address(usdc6), address(market6));
+        core.registerLendingPool(address(usdc6), address(market6));
         vm.stopPrank();
     }
 
@@ -214,7 +214,7 @@ contract LiquidationDecimalTest is Test {
         // The price has to exist before the market can be listed -- ProtocolCore refuses to open
         // one it cannot value.
         TestPricing.wire(core, address(wbtc), 60_000e18); // $60K per BTC
-        core.registerPool(borrowAsset, address(marketBtc));
+        core.registerLendingPool(borrowAsset, address(marketBtc));
         vm.stopPrank();
 
         wbtc.mint(address(marketBtc), 100e8); // 100 BTC
@@ -279,7 +279,7 @@ contract LiquidationDecimalTest is Test {
         // The price has to exist before the market can be listed -- ProtocolCore refuses to open
         // one it cannot value.
         TestPricing.wire(core, address(usdc6), 1e18);
-        core.registerPool(borrowAsset, address(market6));
+        core.registerLendingPool(borrowAsset, address(market6));
         vm.stopPrank();
 
         usdc6.mint(address(market6), 10_000_000e6);
@@ -330,7 +330,7 @@ contract LiquidationDecimalTest is Test {
         // The price has to exist before the market can be listed -- ProtocolCore refuses to open
         // one it cannot value.
         TestPricing.wire(core, address(usdc6), 1e18);
-        core.registerPool(borrowAsset, address(market6));
+        core.registerLendingPool(borrowAsset, address(market6));
         vm.stopPrank();
 
         usdc6.mint(address(market6), 10_000_000e6);
@@ -366,7 +366,7 @@ contract LiquidationDecimalTest is Test {
         // The price has to exist before the market can be listed -- ProtocolCore refuses to open
         // one it cannot value.
         TestPricing.wire(core, address(wbtc), 60_000e18);
-        core.registerPool(borrowAsset, address(marketBtc));
+        core.registerLendingPool(borrowAsset, address(marketBtc));
         vm.stopPrank();
 
         wbtc.mint(address(marketBtc), 1000e8);

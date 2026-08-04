@@ -41,7 +41,7 @@ contract UniswapV2OracleForkTest is Test {
         priceFeedRegistry.setPriceFeed(USDC, CL_USDC_USD);
         // Fork may have stale Chainlink data — increase tolerance for testing
         priceFeedRegistry.setMaxStaleness(86_400); // 24h for fork tests
-        core.whitelistPool(UNI_V2_WETH_USDC);
+        core.whitelistLpPool(UNI_V2_WETH_USDC);
         vm.stopPrank();
 
         oracle = new UniswapV2Oracle(address(core), address(priceFeedRegistry));

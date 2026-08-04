@@ -295,7 +295,7 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
     }
 
     function _getPoolAddr(address borrowAsset) internal view returns (address) {
-        address poolAddr = core.pools(borrowAsset);
+        address poolAddr = core.lendingPool(borrowAsset);
         require(poolAddr != address(0), "POOL_NOT_FOUND");
         return poolAddr;
     }

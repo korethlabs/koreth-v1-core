@@ -82,9 +82,9 @@ contract DepositValidationTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistPool(TestPools.asContract(lpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken));
         TestPricing.wireStable(core, address(usdc));
-        core.registerPool(address(usdc), address(market));
+        core.registerLendingPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         // Enable UniswapV2 collateral (the type the mock adapter detects)
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());

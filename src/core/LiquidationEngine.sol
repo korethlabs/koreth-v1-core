@@ -185,7 +185,7 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
         require(repayAmount <= maxRepay, "EXCEEDS_MAX_REPAY");
 
         // Step 3: Resolve shared pool + collateral risk config (liquidationBonus from RiskManager)
-        address poolAddr = core.pools(pos.borrowAsset);
+        address poolAddr = core.lendingPool(pos.borrowAsset);
         require(poolAddr != address(0), "POOL_NOT_FOUND");
         address borrowAsset = pos.borrowAsset;
 

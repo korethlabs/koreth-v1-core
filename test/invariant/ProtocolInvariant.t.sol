@@ -107,13 +107,13 @@ contract ProtocolInvariantTest is Test {
         aclManager.addPositionManager(address(pm));
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
-        core.whitelistPool(TestPools.asContract(lpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken));
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapterV2));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracleV2));
-        core.whitelistPool(TestPools.asContract(lpTokenV2));
+        core.whitelistLpPool(TestPools.asContract(lpTokenV2));
         borrowAsset = address(usdc);
         TestPricing.wireStable(core, address(usdc));
-        core.registerPool(address(usdc), address(market));
+        core.registerLendingPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         aclManager.addRiskAdmin(owner);
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());

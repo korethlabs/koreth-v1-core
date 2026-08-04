@@ -53,7 +53,7 @@ contract ReserveFactorTest is Test {
         vm.startPrank(owner);
         aclManager.addLendingEngine(address(this));
         TestPricing.wireStable(core, address(usdc));
-        core.registerPool(address(usdc), address(market));
+        core.registerLendingPool(address(usdc), address(market));
         market.setReserveFactor(2000); // 20%
         market.setFeeCollector(address(fc));
         vm.stopPrank();

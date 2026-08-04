@@ -46,13 +46,13 @@ contract ProtocolDeploymentTest is ForkTestBase {
     }
 
     function test_poolsWhitelisted() public view {
-        assertTrue(core.isPoolSupported(Constants.UNI_V3_WETH_USDC_3000));
-        assertTrue(core.isPoolSupported(Constants.UNI_V2_WETH_USDC));
-        assertFalse(core.isPoolSupported(address(0x1234)));
+        assertTrue(core.isLpPoolSupported(Constants.UNI_V3_WETH_USDC_3000));
+        assertTrue(core.isLpPoolSupported(Constants.UNI_V2_WETH_USDC));
+        assertFalse(core.isLpPoolSupported(address(0x1234)));
     }
 
     function test_poolCreated() public view {
-        address poolAddr = core.pools(usdcBorrowAsset);
+        address poolAddr = core.lendingPool(usdcBorrowAsset);
         assertTrue(poolAddr != address(0));
         assertEq(poolAddr, address(usdcPool));
         assertEq(usdcPool.borrowAsset(), Constants.USDC);

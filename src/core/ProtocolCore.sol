@@ -33,9 +33,15 @@ contract ProtocolCore {
     // --- Registry ---
     mapping(ILPAdapter.LPType => address) public adapters;
     mapping(ILPAdapter.LPType => address) public oracles;
-    /// @notice One shared lending pool per borrow asset (the pool key IS the borrow-asset address).
-    mapping(address => address) public pools;
-    mapping(address => bool) public registeredPools;
+    /// @notice The lending market for a borrow asset — one per asset, keyed by the asset itself.
+    /// @dev Not the same thing as supportedLpPools below, and the distinction is the reason both
+    ///      were renamed. A lending pool is somewhere you borrow *from*; an LP pool is AMM
+    ///      liquidity accepted as collateral. They share no addresses and no lifecycle. Reading the
+    ///      old names, which called both of them "pool", a reviewer proposed requiring that every
+    ///      whitelisted collateral pool also be a registered lending market — a change that would
+    ///      have blocked every deposit in the protocol.
+    mapping(address => address) public lendingPool;
+    mapping(address => bool) public isLendingPool;
     address public poolFactory;
 
     /// @notice Highest LP type index with a registered adapter
@@ -44,8 +50,12 @@ contract ProtocolCore {
 
     // --- Protocol State ---
     bool public paused;
-    mapping(address => bool) public supportedPools;
-    mapping(address => uint256) public poolAddedAt;
+
+    /// @notice AMM pools curated as acceptable collateral backing. See lendingPool above for why
+    ///         the names carry "Lp": these are the venues behind deposited LP positions, not
+    ///         markets anyone borrows from.
+    mapping(address => bool) public supportedLpPools;
+    mapping(address => uint256) public lpPoolAddedAt;
 
     // --- Shared Registry Addresses ---
     address public priceFeedRegistryAddr;
@@ -58,10 +68,10 @@ contract ProtocolCore {
     // event that only reports the new one makes a swap indistinguishable from a first-time setup.
     event AdapterRegistered(ILPAdapter.LPType indexed lpType, address indexed oldAdapter, address indexed adapter);
     event OracleRegistered(ILPAdapter.LPType indexed lpType, address indexed oldOracle, address indexed oracle);
-    event PoolRegistered(address indexed borrowAsset, address indexed pool);
+    event LendingPoolRegistered(address indexed borrowAsset, address indexed pool);
     event PoolFactoryUpdated(address indexed oldFactory, address indexed newFactory);
-    event PoolWhitelisted(address indexed pool);
-    event PoolRemoved(address indexed pool);
+    event LpPoolWhitelisted(address indexed pool);
+    event LpPoolRemoved(address indexed pool);
     event Paused(address indexed by);
     event Unpaused(address indexed by);
     event OwnershipTransferStarted(address indexed currentOwner, address indexed pendingOwner);
@@ -134,7 +144,7 @@ contract ProtocolCore {
 
     /// @notice Register a shared lending pool, keyed by its borrow asset.
     /// @dev One pool per borrow asset. The pool key IS the borrow-asset address.
-    function registerPool(address borrowAsset, address pool) external {
+    function registerLendingPool(address borrowAsset, address pool) external {
         require(
             (address(aclManager) != address(0) && aclManager.isPoolAdmin(msg.sender)) || msg.sender == poolFactory,
             "NOT_AUTHORIZED"
@@ -146,10 +156,10 @@ contract ProtocolCore {
         require(borrowAsset.code.length > 0, "BORROW_ASSET_NOT_CONTRACT");
         require(pool != address(0), "ZERO_ADDRESS");
         require(pool.code.length > 0, "NOT_CONTRACT");
-        require(pools[borrowAsset] == address(0), "POOL_ALREADY_REGISTERED");
-        require(!registeredPools[pool], "POOL_ALREADY_REGISTERED");
+        require(lendingPool[borrowAsset] == address(0), "POOL_ALREADY_REGISTERED");
+        require(!isLendingPool[pool], "POOL_ALREADY_REGISTERED");
         // The key must match the pool's own borrow asset, otherwise every downstream
-        // `pools[asset]` lookup would resolve to a pool that lends a different token.
+        // `lendingPool[asset]` lookup would resolve to a pool that lends a different token.
         require(ILendingPool(pool).borrowAsset() == borrowAsset, "BORROW_ASSET_MISMATCH");
         // Listing is atomic with pricing: a market whose borrow asset has no price source can be
         // borrowed against but not valued, so its debt would never register against the health
@@ -158,14 +168,14 @@ contract ProtocolCore {
         address registry = priceFeedRegistryAddr;
         require(registry != address(0), "PRICE_REGISTRY_UNSET");
         require(IPriceSource(registry).isPriceable(borrowAsset), "BORROW_ASSET_NOT_PRICEABLE");
-        registeredPools[pool] = true;
-        pools[borrowAsset] = pool;
-        emit PoolRegistered(borrowAsset, pool);
+        isLendingPool[pool] = true;
+        lendingPool[borrowAsset] = pool;
+        emit LendingPoolRegistered(borrowAsset, pool);
     }
 
     /// @notice Resolve the shared pool for a borrow asset (reverts if none registered).
-    function getPool(address borrowAsset) external view returns (address) {
-        address pool = pools[borrowAsset];
+    function getLendingPool(address borrowAsset) external view returns (address) {
+        address pool = lendingPool[borrowAsset];
         require(pool != address(0), "POOL_NOT_FOUND");
         return pool;
     }
@@ -173,16 +183,16 @@ contract ProtocolCore {
     // --- Pool Management ---
 
     /// @notice Curate an AMM pool as acceptable collateral backing.
-    /// @dev Distinct from registerPool, which lists a *lending* market. This is the curation layer
+    /// @dev Distinct from registerLendingPool, which lists a *lending* market. This is the curation layer
     ///      over the adapters' authenticity check: they already refuse an LP token whose pool does
     ///      not come from the configured factory, so this decides which authentic pools we want.
-    function whitelistPool(address pool) external onlyPoolAdmin {
+    function whitelistLpPool(address pool) external onlyPoolAdmin {
         require(pool != address(0), "ZERO_ADDRESS");
         require(pool.code.length > 0, "NOT_CONTRACT");
-        require(!supportedPools[pool], "ALREADY_WHITELISTED");
-        supportedPools[pool] = true;
-        poolAddedAt[pool] = block.timestamp;
-        emit PoolWhitelisted(pool);
+        require(!supportedLpPools[pool], "ALREADY_WHITELISTED");
+        supportedLpPools[pool] = true;
+        lpPoolAddedAt[pool] = block.timestamp;
+        emit LpPoolWhitelisted(pool);
     }
 
     /// @notice Remove a pool from the whitelist — blocks new deposits only.
@@ -190,11 +200,11 @@ contract ProtocolCore {
     ///      Oracles intentionally do NOT check whitelist so pricing continues for delisted pools.
     ///      Admin should verify no active borrowed positions remain before removing,
     ///      or accept that existing positions will run until closed/liquidated naturally.
-    function removePool(address pool) external onlyPoolAdmin {
-        require(supportedPools[pool], "NOT_WHITELISTED");
-        supportedPools[pool] = false;
-        delete poolAddedAt[pool];
-        emit PoolRemoved(pool);
+    function removeLpPool(address pool) external onlyPoolAdmin {
+        require(supportedLpPools[pool], "NOT_WHITELISTED");
+        supportedLpPools[pool] = false;
+        delete lpPoolAddedAt[pool];
+        emit LpPoolRemoved(pool);
     }
 
     // --- Emergency ---
@@ -288,14 +298,14 @@ contract ProtocolCore {
         return registry;
     }
 
-    function isPoolSupported(address pool) external view returns (bool) {
-        return supportedPools[pool];
+    function isLpPoolSupported(address pool) external view returns (bool) {
+        return supportedLpPools[pool];
     }
 
     /// @notice Get pool age in seconds (returns 0 if pool is not currently supported)
-    function getPoolAge(address pool) external view returns (uint256) {
-        if (!supportedPools[pool]) return 0;
-        uint256 addedAt = poolAddedAt[pool];
+    function getLpPoolAge(address pool) external view returns (uint256) {
+        if (!supportedLpPools[pool]) return 0;
+        uint256 addedAt = lpPoolAddedAt[pool];
         if (addedAt == 0) return 0;
         return block.timestamp - addedAt;
     }

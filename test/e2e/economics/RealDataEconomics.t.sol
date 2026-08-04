@@ -271,7 +271,7 @@ contract RealDataEconomics is E2EBase {
         // Register BTC/USD price feed and whitelist WBTC/WETH pool
         vm.startPrank(deployer);
         priceFeedRegistry.setPriceFeed(Constants.WBTC, Constants.CL_BTC_USD);
-        core.whitelistPool(Constants.UNI_V3_WBTC_WETH_3000);
+        core.whitelistLpPool(Constants.UNI_V3_WBTC_WETH_3000);
 
         // Create a market for WBTC/WETH positions (borrow asset = USDC, same as ETH market)
         // Reuses the shared USDC pool — every collateral type borrows from the same one.
