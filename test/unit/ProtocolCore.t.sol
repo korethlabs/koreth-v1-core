@@ -268,7 +268,7 @@ contract ProtocolCoreTest is Test {
         core.setPriceFeedRegistry(address(foreign));
     }
 
-    /// @dev Mirrors getPool/getAdapter/getOracle: the borrow-side consumers resolve the registry
+    /// @dev Mirrors getLendingPool/getAdapter/getOracle: the borrow-side consumers resolve the registry
     ///      through here, so a deployment that reaches them before wiring fails by name rather than
     ///      as a call into an empty address.
     function test_getPriceFeedRegistry_revertsWhenUnset() public {
