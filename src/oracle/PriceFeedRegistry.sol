@@ -48,17 +48,24 @@ interface IAggregatorV3 {
 ///        nothing while reading as protection, which is worse than their absence: an unset guard
 ///        stops the missing check from being noticed.
 ///
-///        The threat is also not present on the feeds this protocol uses. ETH/USD, USDC/USD,
-///        USDT/USD and DAI/USD on mainnet all report minAnswer = 1 and maxAnswer = 9.578e52 —
-///        sentinels meaning "unbounded". A feed cannot be pinned against a floor it does not have,
-///        which is what separates these from the LUNA feed whose real $0.10 floor kept reporting
-///        $0.10 all the way down.
+///        The threat is also not present on the feeds this protocol uses. Measured on mainnet on
+///        2026-08-05, ETH/USD, USDC/USD, USDT/USD and DAI/USD all reported minAnswer = 1 and
+///        maxAnswer = 9.578e52 — sentinels meaning "unbounded". A feed cannot be pinned against a
+///        floor it does not have, which is what separates these from the LUNA feed whose real
+///        $0.10 floor kept reporting $0.10 all the way down. Treat that as an observation with a
+///        date on it, not a standing guarantee; Chainlink rotates the aggregator behind a proxy,
+///        so re-check before listing anything new:
+///          cast call <feed> "aggregator()(address)" && cast call <agg> "minAnswer()(int192)"
 ///
 ///        If an asset whose feed carries real bounds is ever listed, the check to add reads
 ///        minAnswer()/maxAnswer() off the aggregator and reverts when the answer sits on either —
 ///        derived per call, nothing for a human to choose or maintain, and silently inert on feeds
-///        like the four above. A hand-picked band would be a guess about a fair price, and this
-///        contract exists so that no such guess can enter.
+///        like the four above. Note neither method is on IAggregatorV3 below, nor on Chainlink's
+///        AggregatorV3Interface: they live on the aggregator the proxy points at, so it is
+///        proxy.aggregator() first and a second interface for the bounds. That cost is why this is
+///        deferred rather than pre-built. A hand-picked band would be cheaper and is exactly what
+///        is being avoided — it would be a guess about a fair price, and this contract exists so
+///        that no such guess can enter.
 contract PriceFeedRegistry {
     ProtocolCore public immutable core;
 
