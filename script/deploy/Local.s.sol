@@ -35,7 +35,7 @@ contract DeployLocal is DeployBase {
     function _config() internal override returns (ChainConfig memory) {
         address deployer = vm.addr(vm.envUint("DEPLOYER_PRIVATE_KEY"));
         require(deployer == ANVIL_ACCT0, "USE_ANVIL_ACCT0");
-        // This profile installs price feeds frozen at deploy time and skips the timelock handoff,
+        // This profile installs price feeds frozen at deploy time and leaves the deployer holding
         // leaving the deployer with every role. Until now the only thing between a mistyped RPC
         // and shipping that to mainnet was the anvil key holding no real ETH — an accident, not a
         // safeguard.
@@ -68,10 +68,7 @@ contract DeployLocal is DeployBase {
             liquidationThreshold: 7500, // 75%
             liquidationBonus: 500, // 5%
             haircut: 500, // 5% discount on collateral value
-            borrowCap: 100_000e18, // $100K (18-dec USD, not borrow-asset decimals)
-            // Governance — deployer as multisig, short delay
-            multisig: deployer,
-            timelockDelay: 60
+            borrowCap: 100_000e18 // $100K (18-dec USD, not borrow-asset decimals)
         });
     }
 
@@ -106,11 +103,6 @@ contract DeployLocal is DeployBase {
     function _beforeGovernance(ChainConfig memory) internal override {
         priceFeedRegistry.setMaxStaleness(86_400);
     }
-
-    /// @notice LOCAL ONLY: skip the timelock handoff so the deployer keeps POOL_ADMIN/RISK_ADMIN.
-    ///         Seed scripts (e.g. SeedLiquidate) need admin to tweak market config on the fork.
-    ///         Production deploys (Sepolia/Eth/BSC) keep the real timelock.
-    function _deployTimelock(ChainConfig memory) internal override {}
 
     /// @notice Persist deployed addresses + deploy block to deployments/local.json.
     ///         Consumed by SeedLocal.s.sol and the subgraph tooling.
