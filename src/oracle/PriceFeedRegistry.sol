@@ -55,17 +55,18 @@ interface IAggregatorV3 {
 ///        $0.10 floor kept reporting $0.10 all the way down. Treat that as an observation with a
 ///        date on it, not a standing guarantee; Chainlink rotates the aggregator behind a proxy,
 ///        so re-check before listing anything new:
-///          cast call <feed> "aggregator()(address)" && cast call <agg> "minAnswer()(int192)"
+///          AGG=$(cast call <feed> "aggregator()(address)")
+///          cast call $AGG "minAnswer()(int192)"; cast call $AGG "maxAnswer()(int192)"
 ///
 ///        If an asset whose feed carries real bounds is ever listed, the check to add reads
 ///        minAnswer()/maxAnswer() off the aggregator and reverts when the answer sits on either —
 ///        derived per call, nothing for a human to choose or maintain, and silently inert on feeds
 ///        like the four above. Note neither method is on IAggregatorV3 below, nor on Chainlink's
-///        AggregatorV3Interface: they live on the aggregator the proxy points at, so it is
-///        proxy.aggregator() first and a second interface for the bounds. That cost is why this is
-///        deferred rather than pre-built. A hand-picked band would be cheaper and is exactly what
-///        is being avoided — it would be a guess about a fair price, and this contract exists so
-///        that no such guess can enter.
+///        AggregatorV3Interface: they live on the aggregator the proxy points at. Reaching them
+///        costs a proxy.aggregator() hop plus a second interface, on every price read — which is
+///        why this is deferred rather than pre-built. A hand-picked band would be cheaper and is
+///        exactly what is being avoided — it would be a guess about a fair price, and this contract
+///        exists so that no such guess can enter.
 contract PriceFeedRegistry {
     ProtocolCore public immutable core;
 
