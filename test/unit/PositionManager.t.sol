@@ -225,9 +225,9 @@ contract PositionManagerTest is Test {
         pm.deposit(address(0), 1, 100e18, borrowAsset);
     }
 
-    function test_deposit_revertsInvalidPool() public {
+    function test_deposit_revertsWhenNoLendingMarket() public {
         vm.prank(alice);
-        vm.expectRevert("INVALID_POOL");
+        vm.expectRevert("LENDING_POOL_NOT_FOUND");
         pm.deposit(lpToken, 1, 100e18, makeAddr("unregisteredAsset"));
     }
 

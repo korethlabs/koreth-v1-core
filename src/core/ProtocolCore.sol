@@ -195,8 +195,9 @@ contract ProtocolCore {
         emit LpPoolWhitelisted(pool);
     }
 
-    /// @notice Remove a pool from the whitelist — blocks new deposits only.
-    /// @dev Existing positions in this pool can still be withdrawn, repaid, and liquidated.
+    /// @notice Delist an AMM pool as collateral backing — blocks new deposits only.
+    /// @dev Nothing about the lending markets changes here. Existing positions backed by this pool
+    ///      can still be withdrawn, repaid, and liquidated.
     ///      Oracles intentionally do NOT check whitelist so pricing continues for delisted pools.
     ///      Admin should verify no active borrowed positions remain before removing,
     ///      or accept that existing positions will run until closed/liquidated naturally.
