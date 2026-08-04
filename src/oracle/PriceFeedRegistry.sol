@@ -37,9 +37,28 @@ interface IAggregatorV3 {
 ///
 ///        There is no way to assert a price without a feed. An asset whose price must be fixed —
 ///        a stablecoin on a chain Chainlink does not cover — gets a deployed aggregator reporting
-///        that constant, so it is a visible contract and still subject to the staleness and
-///        sanity-bound checks below. A value declared inside this registry would be subject to
-///        neither, which is how an assumption becomes indistinguishable from a real price.
+///        that constant, so it is a visible contract and still subject to the staleness checks
+///        below. A value declared inside this registry would be subject to neither, which is how
+///        an assumption becomes indistinguishable from a real price.
+///
+///      No per-token price bounds:
+///        There were optional minPrice/maxPrice bounds here, defaulting to off, guarding against a
+///        feed pinned at its aggregator's minAnswer/maxAnswer. They were removed rather than turned
+///        on. Nothing ever set them — not a deploy script, not a chain config — so they protected
+///        nothing while reading as protection, which is worse than their absence: an unset guard
+///        stops the missing check from being noticed.
+///
+///        The threat is also not present on the feeds this protocol uses. ETH/USD, USDC/USD,
+///        USDT/USD and DAI/USD on mainnet all report minAnswer = 1 and maxAnswer = 9.578e52 —
+///        sentinels meaning "unbounded". A feed cannot be pinned against a floor it does not have,
+///        which is what separates these from the LUNA feed whose real $0.10 floor kept reporting
+///        $0.10 all the way down.
+///
+///        If an asset whose feed carries real bounds is ever listed, the check to add reads
+///        minAnswer()/maxAnswer() off the aggregator and reverts when the answer sits on either —
+///        derived per call, nothing for a human to choose or maintain, and silently inert on feeds
+///        like the four above. A hand-picked band would be a guess about a fair price, and this
+///        contract exists so that no such guess can enter.
 contract PriceFeedRegistry {
     ProtocolCore public immutable core;
 
@@ -51,16 +70,10 @@ contract PriceFeedRegistry {
     address public sequencerUptimeFeed;
     uint256 public sequencerGracePeriod = 3600; // 1h buffer after a sequencer restart
 
-    // --- Optional per-token sanity bounds (0 = disabled) ---
-    // Guards against a Chainlink feed pinned at its minAnswer/maxAnswer during an extreme move.
-    mapping(address => uint256) public minPrice; // 18-dec USD lower bound (exclusive)
-    mapping(address => uint256) public maxPrice; // 18-dec USD upper bound (exclusive)
-
     event PriceFeedUpdated(address indexed token, address indexed feed);
     event MaxStalenessUpdated(uint256 oldValue, uint256 newValue);
     event SequencerUptimeFeedUpdated(address indexed oldFeed, address indexed newFeed);
     event SequencerGracePeriodUpdated(uint256 oldValue, uint256 newValue);
-    event PriceBoundsUpdated(address indexed token, uint256 minPrice, uint256 maxPrice);
 
     modifier onlyPoolAdmin() {
         require(core.aclManager().isPoolAdmin(msg.sender), "NOT_POOL_ADMIN");
@@ -124,17 +137,6 @@ contract PriceFeedRegistry {
         sequencerGracePeriod = _gracePeriod;
     }
 
-    /// @notice Set optional 18-dec USD sanity bounds for a token (0 = disabled)
-    /// @dev Set just inside the underlying aggregator's minAnswer/maxAnswer to reject a feed
-    ///      pinned at its floor/ceiling during an extreme price move.
-    function setPriceBounds(address token, uint256 _minPrice, uint256 _maxPrice) external onlyPoolAdmin {
-        require(token != address(0), "ZERO_ADDRESS");
-        require(_maxPrice == 0 || _minPrice < _maxPrice, "INVALID_BOUNDS");
-        minPrice[token] = _minPrice;
-        maxPrice[token] = _maxPrice;
-        emit PriceBoundsUpdated(token, _minPrice, _maxPrice);
-    }
-
     /// @notice Revert if the L2 sequencer is down or within the grace period after a restart
     function _checkSequencer() internal view {
         address seq = sequencerUptimeFeed;
@@ -170,12 +172,6 @@ contract PriceFeedRegistry {
         } else {
             price = uint256(answer);
         }
-
-        // Optional sanity bounds: reject a feed pinned at its floor/ceiling (0 = disabled).
-        uint256 lower = minPrice[token];
-        uint256 upper = maxPrice[token];
-        require(lower == 0 || price > lower, "PRICE_BELOW_FLOOR");
-        require(upper == 0 || price < upper, "PRICE_ABOVE_CEIL");
     }
 
     /// @notice Convert a token amount to USD value (18 decimals)

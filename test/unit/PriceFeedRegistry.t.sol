@@ -115,39 +115,6 @@ contract PriceFeedRegistryTest is Test {
         assertEq(registry.getPrice(token), 2000e18);
     }
 
-    // ========== B1: price bounds ==========
-
-    function test_getPrice_revertsBelowFloor() public {
-        vm.prank(owner);
-        registry.setPriceBounds(token, 1000e18, 3000e18);
-
-        feed.setAnswer(500e8); // $500 < $1000 floor
-        vm.expectRevert("PRICE_BELOW_FLOOR");
-        registry.getPrice(token);
-    }
-
-    function test_getPrice_revertsAboveCeiling() public {
-        vm.prank(owner);
-        registry.setPriceBounds(token, 1000e18, 3000e18);
-
-        feed.setAnswer(5000e8); // $5000 > $3000 ceil
-        vm.expectRevert("PRICE_ABOVE_CEIL");
-        registry.getPrice(token);
-    }
-
-    function test_getPrice_succeedsWithinBounds() public {
-        vm.prank(owner);
-        registry.setPriceBounds(token, 1000e18, 3000e18);
-
-        feed.setAnswer(2000e8); // $2000 within [1000, 3000]
-        assertEq(registry.getPrice(token), 2000e18);
-    }
-
-    function test_getPrice_boundsDisabledByDefault() public {
-        feed.setAnswer(1); // 1 wei price, no bounds set
-        assertEq(registry.getPrice(token), 1e10); // 1 * 10^(18-8)
-    }
-
     // ========== Access control & validation ==========
 
     function test_setSequencerUptimeFeed_onlyPoolAdmin() public {
@@ -166,24 +133,6 @@ contract PriceFeedRegistryTest is Test {
         vm.prank(owner);
         vm.expectRevert("OUT_OF_BOUNDS");
         registry.setSequencerGracePeriod(100); // < 300
-    }
-
-    function test_setPriceBounds_onlyPoolAdmin() public {
-        vm.prank(stranger);
-        vm.expectRevert("NOT_POOL_ADMIN");
-        registry.setPriceBounds(token, 1, 2);
-    }
-
-    function test_setPriceBounds_revertsInvalidBounds() public {
-        vm.prank(owner);
-        vm.expectRevert("INVALID_BOUNDS");
-        registry.setPriceBounds(token, 3000e18, 1000e18); // min >= max
-    }
-
-    function test_setPriceBounds_revertsZeroToken() public {
-        vm.prank(owner);
-        vm.expectRevert("ZERO_ADDRESS");
-        registry.setPriceBounds(address(0), 1000e18, 3000e18);
     }
 
     function test_setSequencerUptimeFeed_allowsZeroToDisable() public {
