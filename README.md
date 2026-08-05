@@ -14,7 +14,8 @@ and depend on this repo. **Core depends on nothing.**
 src/
 ├── core/        ProtocolCore, ACLManager, PositionManager, LendingEngine, LiquidationEngine, FeeCollector
 ├── markets/     LendingPool, PoolFactory, InterestRateModel
-├── oracle/      LPOracleHub, PriceFeedRegistry, PoolLiquidityMonitor, UniswapV2Oracle, UniswapV3Oracle
+├── oracle/      LPOracleHub, PriceFeedRegistry, PoolLiquidityMonitor, UniswapV2Oracle, UniswapV3Oracle,
+│                CurveOracle, AerodromeOracle
 ├── adapters/    UniswapV2Adapter, UniswapV3Adapter (+ fail-closed stubs)
 ├── security/    RiskManager, CircuitBreaker
 ├── libraries/   LPMath, TokenUtils
@@ -34,7 +35,7 @@ Design highlights:
 ### Liquidity and risk are separate axes
 
 Liquidity lives in a **`LendingPool`, one per borrow asset** (USDC, USDT, …), registered through
-`ProtocolCore.registerPool()`. Every collateral type draws on the same pool, so a lender's
+`ProtocolCore.registerLendingPool()`. Every collateral type draws on the same pool, so a lender's
 deposit is never stranded behind an LP type nobody borrows against.
 
 Risk lives in **`RiskManager`, keyed per `ILPAdapter.LPType`** — LTV, liquidation threshold and

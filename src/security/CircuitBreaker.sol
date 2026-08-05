@@ -58,7 +58,7 @@ contract CircuitBreaker {
         emit PoolPaused(pool, reason);
     }
 
-    /// @notice Unpause a pool (guardian/owner only, after investigation)
+    /// @notice Unpause a pool (PoolAdmin only, after investigation)
     function unpausePool(address pool) external onlyPoolAdmin {
         poolPaused[pool] = false;
         emit PoolUnpaused(pool);
@@ -72,7 +72,7 @@ contract CircuitBreaker {
         emit CollateralFrozen(lpType, reason);
     }
 
-    /// @notice Unfreeze a collateral type (PoolAdmin only — requires timelock)
+    /// @notice Unfreeze a collateral type (PoolAdmin only)
     function unfreezeCollateral(ILPAdapter.LPType lpType) external onlyPoolAdmin {
         collateralFrozen[lpType] = false;
         emit CollateralUnfrozen(lpType);
