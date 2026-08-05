@@ -14,7 +14,11 @@ contract ACLManager is AccessControlEnumerable {
     // --- Admin Roles (humans / multisigs / governance) ---
 
     /// @notice Full protocol management — deploy contracts, register markets/oracles/adapters,
-    ///         upgrade UUPS proxies, configure fee collector. Held by deployer, later DAO timelock.
+    ///         upgrade UUPS proxies, configure fee collector. Also the only role that can reverse
+    ///         an emergency action (CircuitBreaker.unpausePool/unfreezeCollateral) and the one that
+    ///         tunes oracle plumbing (PriceFeedRegistry.setMaxStaleness/setSequencerUptimeFeed,
+    ///         UniswapV3Oracle/CurveOracle deviation and TWAP settings). Held by deployer, later DAO
+    ///         timelock.
     bytes32 public constant POOL_ADMIN = keccak256("POOL_ADMIN");
 
     /// @notice Emergency pause only — can pause the entire protocol or individual markets.
@@ -43,8 +47,8 @@ contract ACLManager is AccessControlEnumerable {
     ///         Multiple instances (bot fleet).
     /// @dev Grant this deliberately: CircuitBreaker.onlyGuardianOrKeeper accepts it, so a keeper can
     ///      pause any pool and freeze any collateral type directly, without going through a check.
-    ///      It cannot unpause — only EMERGENCY_ADMIN and POOL_ADMIN can — so a rogue keeper's reach
-    ///      is denial of service that a human reverses, not loss.
+    ///      It cannot unpause — only POOL_ADMIN can (CircuitBreaker.onlyPoolAdmin) — so a rogue
+    ///      keeper's reach is denial of service that a human reverses, not loss.
     ///
     ///      Nothing a keeper calls takes its numbers from the keeper. PoolLiquidityMonitor.checkPool
     ///      reads balances and Chainlink prices itself, so the role decides when a check runs, never

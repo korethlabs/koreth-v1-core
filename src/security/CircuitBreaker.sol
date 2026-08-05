@@ -72,7 +72,7 @@ contract CircuitBreaker {
         emit CollateralFrozen(lpType, reason);
     }
 
-    /// @notice Unfreeze a collateral type (PoolAdmin only — requires timelock)
+    /// @notice Unfreeze a collateral type (PoolAdmin only)
     function unfreezeCollateral(ILPAdapter.LPType lpType) external onlyPoolAdmin {
         collateralFrozen[lpType] = false;
         emit CollateralUnfrozen(lpType);
