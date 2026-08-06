@@ -216,7 +216,13 @@ contract ProtocolCore {
         emit Paused(msg.sender);
     }
 
-    function unpause() external onlyPoolAdmin {
+    /// @dev Symmetric with pause(): whoever can freeze the protocol in an emergency can also restore
+    ///      service. The onlyEmergencyAdmin modifier admits emergency admins AND pool admins (see its
+    ///      definition above), so pool admins keep the unpause authority they already had and
+    ///      emergency admins gain it. This mirrors Aave V3, where setPoolPause is gated by a single
+    ///      emergency-or-pool admin check in both directions, and prioritizes speed of recovery — an
+    ///      emergency pauser is not left waiting on a pool admin to bring the protocol back.
+    function unpause() external onlyEmergencyAdmin {
         require(paused, "NOT_PAUSED");
         paused = false;
         emit Unpaused(msg.sender);
