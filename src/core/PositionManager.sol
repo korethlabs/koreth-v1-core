@@ -277,7 +277,9 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
             if (recorded > 0) _riskManager().recordWithdraw(recorded, pos.borrowAsset);
         }
 
-        // CEI: update state BEFORE external call
+        // CEI: finalize state BEFORE the untrusted adapter unlock() below. (The RiskManager
+        // recordWithdraw() above is an internal, nonReentrant-guarded call with no external
+        // callback, so it does not open a reentrancy window.)
         // Use pos.owner for accounting — msg.sender may be a transformer during transform()
         address owner = pos.owner;
         pos.status = PositionStatus.Closed;
