@@ -387,4 +387,222 @@ contract LendingPoolTest is Test {
 
         assertEq(pool.borrowIndex(), indexBefore, "BorrowIndex must not change with zero borrows");
     }
+
+    // ========== Bad Debt Socialization (Method A) ==========
+
+    event DeficitRecorded(uint256 burned, uint256 reservesUsed, uint256 supplierLoss, uint256 totalDeficit);
+    event DeficitEliminated(uint256 covered, uint256 refundedToSuppliers, uint256 remaining);
+
+    /// @dev Redeemable value of a supplier's shares at the current share price.
+    function _shareValue(address user) internal view returns (uint256) {
+        return (pool.shares(user) * pool.getPoolState().totalSupply) / pool.totalShares();
+    }
+
+    /// @notice With no reserves, the whole write-off is socialized onto suppliers immediately:
+    ///         totalSupply and totalBorrow both drop by the burn, and the share price falls pro-rata.
+    function test_recordDeficit_socializesOntoSuppliersWhenNoReserves() public {
+        _fundAndApprove(alice, 100_000e6);
+        vm.prank(alice);
+        pool.supply(100_000e6);
+
+        // Move cash out as a borrow so there is outstanding debt to write off.
+        vm.prank(le);
+        pool.transferOut(makeAddr("borrower"), 60_000e6);
+
+        assertEq(pool.protocolReserves(), 0, "no reserves accrued yet");
+        uint256 priceBefore = _shareValue(alice);
+
+        vm.prank(le);
+        pool.recordDeficit(20_000e6);
+
+        ILendingPool.PoolState memory s = pool.getPoolState();
+        assertEq(s.totalSupply, 80_000e6, "totalSupply reduced by full loss");
+        assertEq(s.totalBorrow, 40_000e6, "totalBorrow reduced by burn");
+        assertEq(pool.deficit(), 20_000e6, "deficit tracks socialized supplier loss");
+        assertEq(pool.protocolReserves(), 0, "reserves untouched (were zero)");
+        assertLt(_shareValue(alice), priceBefore, "share price drops after socialization");
+    }
+
+    /// @notice The enriched event breaks the write-off into burn / reservesUsed / supplierLoss.
+    function test_recordDeficit_emitsEnrichedEvent() public {
+        _fundAndApprove(alice, 100_000e6);
+        vm.prank(alice);
+        pool.supply(100_000e6);
+        vm.prank(le);
+        pool.transferOut(makeAddr("borrower"), 60_000e6);
+
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit DeficitRecorded(20_000e6, 0, 20_000e6, 20_000e6);
+        vm.prank(le);
+        pool.recordDeficit(20_000e6);
+    }
+
+    /// @notice The whole point of Method A: every remaining supplier eats the loss pro-rata in the
+    ///         same transaction, so no one can exit at the stale price and dump the loss on others.
+    function test_recordDeficit_lossIsProRataAcrossSuppliers() public {
+        _fundAndApprove(alice, 100_000e6);
+        vm.prank(alice);
+        pool.supply(100_000e6);
+        _fundAndApprove(bob, 100_000e6);
+        vm.prank(bob);
+        pool.supply(100_000e6);
+
+        vm.prank(le);
+        pool.transferOut(makeAddr("borrower"), 60_000e6);
+
+        uint256 aliceBefore = _shareValue(alice);
+        uint256 bobBefore = _shareValue(bob);
+
+        vm.prank(le);
+        pool.recordDeficit(40_000e6);
+
+        uint256 aliceAfter = _shareValue(alice);
+        uint256 bobAfter = _shareValue(bob);
+
+        // Near-equal stakes lose the same fraction (~20%, 40k over 200k supply). They aren't exactly
+        // equal because the first depositor (alice) absorbs the one-time dead-shares dilution, so
+        // compare the loss *fraction* rather than absolute value.
+        assertApproxEqRel(aliceAfter, bobAfter, 1e15, "equal suppliers lose ~equally (within dead-share dust)");
+        assertApproxEqRel(aliceAfter, (aliceBefore * 80) / 100, 1e15, "alice lost ~20%");
+        assertApproxEqRel(bobAfter, (bobBefore * 80) / 100, 1e15, "bob lost ~20%");
+    }
+
+    /// @notice Reserves absorb the loss first: a write-off fully covered by reserves leaves suppliers
+    ///         untouched (totalSupply flat, deficit stays zero).
+    function test_recordDeficit_reservesAbsorbFirst() public {
+        vm.prank(owner);
+        aclManager.addRiskAdmin(owner);
+        vm.prank(owner);
+        pool.setReserveFactor(2000); // 20% of interest → reserves
+
+        _fundAndApprove(alice, 100_000e6);
+        vm.prank(alice);
+        pool.supply(100_000e6);
+        vm.prank(le);
+        pool.transferOut(makeAddr("borrower"), 80_000e6); // 80% utilization
+
+        vm.warp(block.timestamp + 365 days);
+        pool.accrueInterest();
+
+        uint256 reservesBefore = pool.protocolReserves();
+        assertGt(reservesBefore, 2, "interest built reserves");
+        ILendingPool.PoolState memory sBefore = pool.getPoolState();
+        uint256 burn = reservesBefore / 2; // strictly less than reserves
+
+        vm.prank(le);
+        pool.recordDeficit(burn);
+
+        ILendingPool.PoolState memory sAfter = pool.getPoolState();
+        assertEq(sAfter.totalSupply, sBefore.totalSupply, "suppliers untouched when reserves cover loss");
+        assertEq(pool.deficit(), 0, "no socialized loss");
+        assertEq(pool.protocolReserves(), reservesBefore - burn, "reserves absorbed the burn");
+        assertEq(sAfter.totalBorrow, sBefore.totalBorrow - burn, "totalBorrow reduced by burn");
+    }
+
+    /// @notice When reserves only partially cover the write-off, reserves go first and suppliers
+    ///         absorb exactly the remainder.
+    function test_recordDeficit_reservesThenSuppliers() public {
+        vm.prank(owner);
+        aclManager.addRiskAdmin(owner);
+        vm.prank(owner);
+        pool.setReserveFactor(2000);
+
+        _fundAndApprove(alice, 100_000e6);
+        vm.prank(alice);
+        pool.supply(100_000e6);
+        vm.prank(le);
+        pool.transferOut(makeAddr("borrower"), 80_000e6);
+
+        vm.warp(block.timestamp + 365 days);
+        pool.accrueInterest();
+
+        uint256 reservesBefore = pool.protocolReserves();
+        ILendingPool.PoolState memory sBefore = pool.getPoolState();
+        uint256 extraSupplierLoss = 5000e6;
+        uint256 burn = reservesBefore + extraSupplierLoss;
+
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit DeficitRecorded(burn, reservesBefore, extraSupplierLoss, extraSupplierLoss);
+        vm.prank(le);
+        pool.recordDeficit(burn);
+
+        assertEq(pool.protocolReserves(), 0, "reserves fully spent first");
+        assertEq(pool.deficit(), extraSupplierLoss, "suppliers absorb only the remainder");
+        assertEq(pool.getPoolState().totalSupply, sBefore.totalSupply - extraSupplierLoss, "supply drops by remainder");
+    }
+
+    /// @notice eliminateDeficit credits reserves back into totalSupply, restoring the share price for
+    ///         the suppliers who ate the loss (the symmetric inverse of socialization).
+    function test_eliminateDeficit_refundsSuppliers() public {
+        vm.prank(owner);
+        aclManager.addRiskAdmin(owner);
+
+        _fundAndApprove(alice, 100_000e6);
+        vm.prank(alice);
+        pool.supply(100_000e6);
+        vm.prank(le);
+        pool.transferOut(makeAddr("borrower"), 60_000e6);
+
+        // Socialize a loss while there are no reserves.
+        vm.prank(le);
+        pool.recordDeficit(40_000e6);
+        assertEq(pool.deficit(), 40_000e6, "loss socialized");
+
+        // Now let interest build reserves that can repay the socialized loss.
+        vm.prank(owner);
+        pool.setReserveFactor(2000);
+        vm.warp(block.timestamp + 365 days);
+        pool.accrueInterest();
+
+        uint256 reservesBefore = pool.protocolReserves();
+        uint256 deficitBefore = pool.deficit();
+        uint256 supplyBefore = pool.getPoolState().totalSupply;
+        uint256 coverage = reservesBefore < deficitBefore ? reservesBefore : deficitBefore;
+        assertGt(coverage, 0, "reserves available to refund");
+
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit DeficitEliminated(coverage, coverage, deficitBefore - coverage);
+        vm.prank(owner);
+        pool.eliminateDeficit();
+
+        assertEq(pool.getPoolState().totalSupply, supplyBefore + coverage, "supply credited back to lenders");
+        assertEq(pool.deficit(), deficitBefore - coverage, "deficit reduced by coverage");
+        assertEq(pool.protocolReserves(), reservesBefore - coverage, "reserves spent on refund");
+    }
+
+    function test_eliminateDeficit_revertsNoDeficit() public {
+        vm.prank(owner);
+        aclManager.addRiskAdmin(owner);
+        vm.prank(owner);
+        vm.expectRevert("NO_DEFICIT");
+        pool.eliminateDeficit();
+    }
+
+    function test_eliminateDeficit_revertsNotRiskAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert("NOT_RISK_ADMIN");
+        pool.eliminateDeficit();
+    }
+
+    function test_recordDeficit_revertsNotLendingEngine() public {
+        vm.prank(alice);
+        vm.expectRevert("NOT_LENDING_ENGINE");
+        pool.recordDeficit(1000e6);
+    }
+
+    function test_recordDeficit_revertsZeroAmount() public {
+        vm.prank(le);
+        vm.expectRevert("ZERO_AMOUNT");
+        pool.recordDeficit(0);
+    }
+
+    function test_recordDeficit_revertsNoBorrowToBurn() public {
+        _fundAndApprove(alice, 100_000e6);
+        vm.prank(alice);
+        pool.supply(100_000e6);
+        // No borrows outstanding → nothing to write off.
+        vm.prank(le);
+        vm.expectRevert("NO_BORROW_TO_BURN");
+        pool.recordDeficit(1000e6);
+    }
 }
