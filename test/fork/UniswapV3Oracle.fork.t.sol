@@ -331,7 +331,7 @@ contract UniswapV3OracleForkTest is Test {
         ILPOracleHub.PriceResult memory base = oracle.getPrice(UNI_V3_NFT_MANAGER, tokenId, 0);
         assertGt(base.totalValue, 0, "Baseline must price");
 
-        (, int256 ethPrice,, uint256 updatedAt, uint80 roundId) = IAggregatorV3(CL_ETH_USD).latestRoundData();
+        (uint80 roundId, int256 ethPrice,, uint256 updatedAt,) = IAggregatorV3(CL_ETH_USD).latestRoundData();
 
         // Force ETH/USD to 10x — huge divergence from the pool. Old design would have reverted
         // with ORACLE_DEVIATION; the fix must still return a (higher) value.

@@ -4,7 +4,7 @@ pragma solidity ^0.8.26;
 import "forge-std/Test.sol";
 import {ProtocolCore} from "../../src/core/ProtocolCore.sol";
 import {ACLManager} from "../../src/core/ACLManager.sol";
-import {UniswapV3Oracle, TickMathLib, LiquidityAmountsLib} from "../../src/oracle/UniswapV3Oracle.sol";
+import {UniswapV3Oracle} from "../../src/oracle/UniswapV3Oracle.sol";
 import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
 import {ILPOracleHub} from "../../src/interfaces/ILPOracleHub.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
