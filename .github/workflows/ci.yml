@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual trigger: lets us force a run from the Actions UI or `gh workflow run CI`
+  # when an automatic pull_request event is dropped (e.g. a GitHub Actions incident).
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref.
 concurrency:

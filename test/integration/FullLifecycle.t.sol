@@ -627,7 +627,7 @@ contract FullLifecycleTest is Test {
     }
 
     // ========================================================
-    // TEST 15: Guardian can pause, operations fail, owner unpauses
+    // TEST 15: Guardian can pause, operations fail, guardian unpauses
     // ========================================================
 
     function test_pauseUnpause_lifecycle() public {
@@ -647,13 +647,9 @@ contract FullLifecycleTest is Test {
         vm.expectRevert("PAUSED");
         pm.withdraw(posId);
 
-        // Guardian cannot unpause
+        // Guardian (emergency admin) can also unpause: pause/unpause are symmetric,
+        // so the same role that froze the protocol can restore it.
         vm.prank(guardian);
-        vm.expectRevert("NOT_POOL_ADMIN");
-        core.unpause();
-
-        // Owner unpauses
-        vm.prank(owner);
         core.unpause();
 
         // Operations work again

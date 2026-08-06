@@ -669,13 +669,39 @@ contract ProtocolCoreTest is Test {
         assertFalse(core.paused());
     }
 
-    function test_unpause_revertsNotPoolAdmin() public {
+    function test_unpause_byGuardian() public {
         vm.prank(guardian);
         core.pause();
 
-        // Guardian CANNOT unpause (security feature)
+        // Symmetric with pause(): an emergency admin can also restore service (Aave V3 parity).
+        vm.expectEmit(true, false, false, false);
+        emit Unpaused(guardian);
+
         vm.prank(guardian);
-        vm.expectRevert("NOT_POOL_ADMIN");
+        core.unpause();
+        assertFalse(core.paused());
+    }
+
+    function test_unpause_byPoolAdmin() public {
+        address poolAdmin = makeAddr("poolAdmin");
+        vm.prank(owner);
+        aclManager.addPoolAdmin(poolAdmin);
+
+        vm.prank(guardian);
+        core.pause();
+
+        // Pool admins keep unpause authority after the change (onlyEmergencyAdmin includes them).
+        vm.prank(poolAdmin);
+        core.unpause();
+        assertFalse(core.paused());
+    }
+
+    function test_unpause_revertsNotEmergencyAdmin() public {
+        vm.prank(guardian);
+        core.pause();
+
+        vm.prank(user);
+        vm.expectRevert("NOT_EMERGENCY_ADMIN");
         core.unpause();
     }
 

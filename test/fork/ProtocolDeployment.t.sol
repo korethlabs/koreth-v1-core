@@ -116,13 +116,9 @@ contract ProtocolDeploymentTest is ForkTestBase {
         core.pause();
         assertTrue(core.paused());
 
-        // Guardian cannot unpause
+        // Guardian (emergency admin) can also unpause: pause/unpause are symmetric,
+        // so whoever can freeze the protocol can restore it without waiting on a pool admin.
         vm.prank(guardian);
-        vm.expectRevert("NOT_POOL_ADMIN");
-        core.unpause();
-
-        // Owner can unpause
-        vm.prank(deployer);
         core.unpause();
         assertFalse(core.paused());
     }
