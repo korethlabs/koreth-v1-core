@@ -75,9 +75,9 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     event LendingEngineUpdated(address indexed oldEngine, address indexed newEngine);
     event CircuitBreakerUpdated(address indexed oldBreaker, address indexed newBreaker);
     event PositionTransformed(uint256 indexed positionId, address indexed transformer);
-    /// @notice Emitted when supply-cap accounting was skipped on a debt-free exit because the
-    ///         oracle could not price the position. The exit still succeeds; monitoring should
-    ///         reconcile RiskManager supply totals afterward.
+    /// @notice Emitted when supply-cap accounting was skipped on a debt-free withdrawal or
+    ///         collateral removal because the oracle could not price the position. The action
+    ///         still succeeds; monitoring should reconcile RiskManager supply totals afterward.
     event WithdrawAccountingSkipped(uint256 indexed positionId, address indexed borrowAsset);
 
     // --- ACL Helpers ---
@@ -273,12 +273,13 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
 
         // RiskManager: track withdrawal for supply cap. Debt is already 0 here, so no risk
         // decision depends on this value — an oracle hiccup must not trap a debt-free owner's
-        // collateral. Fail soft on the valuation and surface the skip via event; RM itself stays
-        // mandatory (a missing RiskManager is a config error, not something to swallow).
+        // collateral. Resolve RM first (hard — a missing RiskManager is a config error, independent
+        // of oracle health), then fail soft on the valuation and surface the skip via event.
         {
+            RiskManager rm = _riskManager();
             (uint256 posValue, bool priced) = _tryPositionValue(positionId);
             if (priced) {
-                _riskManager().recordWithdraw(posValue, pos.borrowAsset);
+                rm.recordWithdraw(posValue, pos.borrowAsset);
             } else {
                 emit WithdrawAccountingSkipped(positionId, pos.borrowAsset);
             }
@@ -431,13 +432,15 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         }
 
         // RiskManager: track withdrawal for supply cap accounting (fail-soft — see snapshot above).
-        // Skip the delta entirely if either valuation could not be priced; RM stays mandatory.
+        // Resolve RM first (hard — mandatory regardless of oracle health), then skip the delta
+        // entirely if either valuation could not be priced.
         {
+            RiskManager rm = _riskManager();
             (uint256 valueAfter, bool pricedAfter) = _tryPositionValue(positionId);
             if (pricedBefore && pricedAfter) {
                 uint256 delta = valueBefore > valueAfter ? valueBefore - valueAfter : 0;
                 if (delta > 0) {
-                    _riskManager().recordWithdraw(delta, pos.borrowAsset);
+                    rm.recordWithdraw(delta, pos.borrowAsset);
                 }
             } else {
                 emit WithdrawAccountingSkipped(positionId, pos.borrowAsset);
