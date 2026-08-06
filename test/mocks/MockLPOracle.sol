@@ -8,6 +8,7 @@ import {ILPOracleHub} from "../../src/interfaces/ILPOracleHub.sol";
 contract MockLPOracle is ILPOracle {
     uint256 public mockPrice = 50_000e18; // Default $50,000
     bool public healthy = true;
+    bool public shouldRevert; // Simulate a fail-closed oracle (e.g. stale Chainlink feed)
 
     function setPrice(uint256 _price) external {
         mockPrice = _price;
@@ -17,7 +18,12 @@ contract MockLPOracle is ILPOracle {
         healthy = _healthy;
     }
 
+    function setShouldRevert(bool _shouldRevert) external {
+        shouldRevert = _shouldRevert;
+    }
+
     function getPrice(address, uint256, uint256) external view override returns (ILPOracleHub.PriceResult memory) {
+        require(!shouldRevert, "ORACLE_FAIL_CLOSED");
         return ILPOracleHub.PriceResult({
             totalValue: mockPrice,
             principalValue: mockPrice,
