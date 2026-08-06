@@ -390,10 +390,15 @@ contract PositionManagerTest is Test {
         vm.prank(alice);
         pm.removeCollateral(posId, 50e18, 0, 0); // Active, no debt → succeeds despite oracle down
 
-        // Removed half the liquidity (50e18 of 100e18) → half the recorded value is released.
+        // Removed half the liquidity (50e18 of 100e18). The released value is floor(recorded/2) —
+        // assert against the same flooring math the contract uses (mulDiv), not a bare recorded/2
+        // which only coincides when recorded is even. What stays is exactly recorded minus that,
+        // and the pool counter stays in lockstep with the position's recorded balance.
+        uint256 expectedReleased = (recorded * 50e18) / 100e18;
         IPositionManager.Position memory pos = pm.getPosition(posId);
-        assertEq(pos.recordedValue, recorded / 2);
-        assertEq(riskManager.poolCurrentSupply(borrowAsset), recorded / 2);
+        assertEq(pos.recordedValue, recorded - expectedReleased);
+        assertEq(riskManager.poolCurrentSupply(borrowAsset), recorded - expectedReleased);
+        assertEq(riskManager.poolCurrentSupply(borrowAsset), pos.recordedValue);
     }
 
     // Fail-closed preserved: a leveraged (Borrowed) removal still requires a fresh, trusted
