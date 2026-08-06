@@ -210,29 +210,6 @@ contract AdminOperations is E2EBase {
         feeCollector.sweepExcess(Constants.USDC, deployer);
     }
 
-    // ========== Oracle config ==========
-
-    /// @notice Admin changes TWAP period and max deviation
-    function test_oracleConfig_changes() public {
-        // Default TWAP is 30 min (1800s), default deviation is 300 bps (3%)
-        vm.startPrank(deployer);
-
-        // Change TWAP to 15 min
-        v3Oracle.setTwapPeriod(900);
-        // Change max deviation to 5%
-        v3Oracle.setMaxDeviation(500);
-
-        vm.stopPrank();
-
-        // Verify position values still work with new oracle config
-        uint256 tokenId = _createV3Position(alice, 1 ether, 2000e6);
-        uint256 positionId = _depositV3(alice, tokenId);
-
-        uint256 value = _getPositionValue(positionId);
-        assertGt(value, 0, "Position should have value with new oracle config");
-        console.log("Position value with 15min TWAP + 5%% deviation: $%s", value / 1e18);
-    }
-
     // ========== PositionManager.getActivePositionsByOwner ==========
 
     /// @notice getActivePositionsByOwner filters closed/liquidated positions

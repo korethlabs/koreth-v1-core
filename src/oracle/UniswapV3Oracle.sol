@@ -5,9 +5,8 @@ import {ILPOracle} from "../interfaces/ILPOracle.sol";
 import {ILPOracleHub} from "../interfaces/ILPOracleHub.sol";
 import {IERC20} from "../interfaces/IERC20.sol";
 import {ProtocolCore} from "../core/ProtocolCore.sol";
-import {LPMath} from "../libraries/LPMath.sol";
 import {PriceFeedRegistry} from "./PriceFeedRegistry.sol";
-import {INonfungiblePositionManager, IUniswapV3Pool, IUniswapV3Factory} from "../interfaces/external/IUniswapV3.sol";
+import {INonfungiblePositionManager} from "../interfaces/external/IUniswapV3.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title TickMathLib
@@ -103,48 +102,36 @@ library LiquidityAmountsLib {
 }
 
 /// @title UniswapV3Oracle
-/// @notice Prices Uniswap V3 NFT positions using TWAP + Chainlink cross-validation
-/// @dev Full implementation with multi-layer defense against oracle manipulation.
+/// @notice Prices Uniswap V3 NFT positions from trusted Chainlink prices (manipulation-resistant).
+/// @dev A V3 position is concentrated liquidity in [tickLower, tickUpper]; its token composition
+///      depends on the current price. The manipulation-resistant way to value it is to derive that
+///      composition from an EXTERNAL trusted price (Chainlink), NEVER from the pool's own tick
+///      (a flash loan can move slot0; a slow attacker can drag a TWAP). This oracle therefore
+///      builds the Uniswap sqrtPriceX96 from Chainlink feeds and feeds it to Uniswap's canonical
+///      LiquidityAmounts math — the pool is never read for pricing.
 ///
-/// Fork-tested against real mainnet data (see test/fork/UniswapV3Oracle.fork.t.sol):
-///   - ETH/USDC V3 position pricing (6/18 decimals)
-///   - TWAP vs Chainlink cross-validation
-///   - Decimal normalization, staleness checks
-///   - Observation cardinality validated before pool.observe()
-///   - Fee value capped at 20% of principal (anti-manipulation)
+///      The sqrtPriceX96 derivation mirrors MakerDAO's audited GUniLPOracle (ChainSecurity,
+///      live in production). See _chainlinkSqrtPriceX96.
+///
+///      Why no TWAP + deviation cross-check anymore: a reverting consistency guard on the price
+///      path is a liveness hazard — during a crash the pool TWAP lags Chainlink, the deviation
+///      trips, and every liquidation reverts precisely when liquidations are needed, converting a
+///      market move into avoidable bad debt (audit finding H-1). Battle-tested lenders (Aave,
+///      Morpho) trust a single oracle for BOTH borrow and liquidation and never revert on a price
+///      disagreement. Deriving composition from Chainlink removes the pool-price attack surface
+///      entirely, so there is nothing left to cross-check.
 ///
 /// Pricing flow:
-///   1. Read position from NFT manager (tickLower, tickUpper, liquidity, fees)
-///   2. Get pool, compute TWAP tick via pool.observe()
-///   3. Convert TWAP tick to sqrtPrice, calculate token amounts
-///   4. Normalize token amounts to 18 decimals (handles 6/8/18 dec tokens)
-///   5. Price tokens via Chainlink feeds (also normalized to 18 dec)
-///   6. Cross-validate TWAP vs Chainlink (revert if deviation exceeds threshold)
-///   7. Return real market value (safety comes from LTV + liquidation threshold gap)
+///   1. Read position from NFT manager (token0, token1, tickLower, tickUpper, liquidity)
+///   2. Price token0/token1 via Chainlink (18-dec USD, fail-closed in PriceFeedRegistry)
+///   3. Derive the Chainlink-implied sqrtPriceX96 (no pool read)
+///   4. Convert liquidity → token0/token1 amounts at that price (Uniswap LiquidityAmounts)
+///   5. Normalize amounts to 18 decimals and value them in USD
+///   6. Return principal-only value (uncollected fees are NOT collateral)
 contract UniswapV3Oracle is ILPOracle {
     ProtocolCore public immutable core;
     INonfungiblePositionManager public immutable positionManager;
-    IUniswapV3Factory public immutable factory;
     PriceFeedRegistry public immutable priceFeedRegistry;
-
-    // --- Configurable Parameters ---
-    uint32 public twapPeriod = 1800; // 30 minutes
-    uint256 public maxDeviationBps = 300; // 3%
-
-    // --- Absolute Bounds ---
-    uint32 public constant MIN_TWAP_PERIOD = 300;
-    uint32 public constant MAX_TWAP_PERIOD = 7200;
-    uint256 public constant MIN_DEVIATION_BPS = 100;
-    uint256 public constant MAX_DEVIATION_BPS_CAP = 1000;
-
-    // --- Events ---
-    event TwapPeriodUpdated(uint32 oldValue, uint32 newValue);
-    event MaxDeviationUpdated(uint256 oldValue, uint256 newValue);
-
-    modifier onlyPoolAdmin() {
-        require(core.aclManager().isPoolAdmin(msg.sender), "NOT_POOL_ADMIN");
-        _;
-    }
 
     constructor(address _core, address _positionManager, address _priceFeedRegistry) {
         require(
@@ -156,22 +143,7 @@ contract UniswapV3Oracle is ILPOracle {
         );
         core = ProtocolCore(_core);
         positionManager = INonfungiblePositionManager(_positionManager);
-        factory = IUniswapV3Factory(INonfungiblePositionManager(_positionManager).factory());
         priceFeedRegistry = PriceFeedRegistry(_priceFeedRegistry);
-    }
-
-    // --- Admin ---
-
-    function setTwapPeriod(uint32 _twapPeriod) external onlyPoolAdmin {
-        require(_twapPeriod >= MIN_TWAP_PERIOD && _twapPeriod <= MAX_TWAP_PERIOD, "OUT_OF_BOUNDS");
-        emit TwapPeriodUpdated(twapPeriod, _twapPeriod);
-        twapPeriod = _twapPeriod;
-    }
-
-    function setMaxDeviation(uint256 _maxDeviationBps) external onlyPoolAdmin {
-        require(_maxDeviationBps >= MIN_DEVIATION_BPS && _maxDeviationBps <= MAX_DEVIATION_BPS_CAP, "OUT_OF_BOUNDS");
-        emit MaxDeviationUpdated(maxDeviationBps, _maxDeviationBps);
-        maxDeviationBps = _maxDeviationBps;
     }
 
     // --- ILPOracle Implementation ---
@@ -224,13 +196,11 @@ contract UniswapV3Oracle is ILPOracle {
     ///      Methodology:
     ///        1. Read the position's range + liquidity from the NFT (uncollected fees ignored —
     ///           they are not collateral; they are swept to the borrower at liquidation).
-    ///        2. Take a 30-min TWAP tick from the pool (NOT spot) → flash-loan resistant.
-    ///        3. Convert liquidity → underlying token0/token1 amounts AT the TWAP price via
-    ///           Uniswap's LiquidityAmounts math (below range → all token0; above → all token1;
-    ///           in range → a mix).
-    ///        4. Price those amounts with Chainlink (18-dec USD).
-    ///        5. Cross-check the TWAP-implied ratio against Chainlink (maxDeviationBps) → rejects
-    ///           pool manipulation / stale TWAP.
+    ///        2. Price token0/token1 with Chainlink (18-dec USD, fail-closed).
+    ///        3. Derive the Chainlink-implied sqrtPriceX96 — the pool is never read, so there is
+    ///           no manipulable pool price and no cross-check that could revert during a crash.
+    ///        4. Convert liquidity → underlying token0/token1 amounts AT that price via Uniswap's
+    ///           LiquidityAmounts math (below range → all token0; above → all token1; in → a mix).
     ///      Result: totalValue == principalValue (underlying tokens' USD value), feeValue == 0.
     /// @param tokenId The Uniswap V3 position NFT id
     /// @return result Price result with totalValue == principalValue and feeValue == 0
@@ -239,156 +209,134 @@ contract UniswapV3Oracle is ILPOracle {
         // Uncollected fees (tokensOwed) are intentionally NOT read — they are not collateral.
         // Only the LP principal (liquidity) is valued; fees are the borrower's yield and are
         // swept to them at liquidation. This removes the fee-manipulation surface entirely.
-        (,, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity,,,,) =
+        (,, address token0, address token1,, int24 tickLower, int24 tickUpper, uint128 liquidity,,,,) =
             positionManager.positions(tokenId);
 
-        // Step 2: Get pool from Uniswap factory
-        // Pool whitelist is enforced at deposit time (PositionManager), not here.
-        // Oracle must price any position — including delisted pools — to enable liquidation.
-        address pool = factory.getPool(token0, token1, fee);
-        require(pool != address(0), "POOL_NOT_FOUND");
-
-        int24 twapTick = _getTwapTick(pool);
-
-        // Step 3: Calculate token amounts at TWAP tick
-        uint160 sqrtPriceX96 = TickMathLib.getSqrtRatioAtTick(twapTick);
-        uint160 sqrtPriceAX96 = TickMathLib.getSqrtRatioAtTick(tickLower);
-        uint160 sqrtPriceBX96 = TickMathLib.getSqrtRatioAtTick(tickUpper);
-
-        (uint256 amount0, uint256 amount1) =
-            LiquidityAmountsLib.getAmountsForLiquidity(sqrtPriceX96, sqrtPriceAX96, sqrtPriceBX96, liquidity);
-
-        // Step 4: Get token decimals and Chainlink prices (both normalized to 18 dec)
+        // Step 2: Get token decimals and Chainlink prices (both 18-dec USD, fail-closed).
         uint8 dec0 = IERC20(token0).decimals();
         uint8 dec1 = IERC20(token1).decimals();
         require(dec0 <= 36 && dec1 <= 36, "INVALID_DECIMALS");
         uint256 price0 = priceFeedRegistry.getPrice(token0); // 18 decimals USD
         uint256 price1 = priceFeedRegistry.getPrice(token1); // 18 decimals USD
 
-        // Step 5: Cross-validate TWAP vs Chainlink
-        _validatePriceConsistency(twapTick, price0, price1, dec0, dec1);
+        // Step 3: Derive the position's composition from the CHAINLINK-implied price, NOT the pool
+        // tick. This is what makes valuation both manipulation-resistant (no pool state a flash
+        // loan can move) and liquidation-safe (no consistency guard that can revert during a
+        // crash — audit finding H-1). See _chainlinkSqrtPriceX96.
+        uint160 sqrtPriceX96 = _chainlinkSqrtPriceX96(price0, price1, dec0, dec1);
+        uint160 sqrtPriceAX96 = TickMathLib.getSqrtRatioAtTick(tickLower);
+        uint160 sqrtPriceBX96 = TickMathLib.getSqrtRatioAtTick(tickUpper);
 
-        // Step 6: Calculate principal value in USD (18 decimals)
-        // amount0/amount1 are in token's native decimals — normalize to 18 before pricing
-        uint256 amount0Normalized = _normalizeTo18(amount0, dec0);
-        uint256 amount1Normalized = _normalizeTo18(amount1, dec1);
+        (uint256 amount0, uint256 amount1) =
+            LiquidityAmountsLib.getAmountsForLiquidity(sqrtPriceX96, sqrtPriceAX96, sqrtPriceBX96, liquidity);
 
-        uint256 principalValue =
-            Math.mulDiv(amount0Normalized, price0, 1e18) + Math.mulDiv(amount1Normalized, price1, 1e18);
+        // Step 4: Calculate principal value in USD (18 decimals).
+        // amount0/amount1 are in token's native decimals — normalize to 18 before pricing.
+        uint256 principalValue = Math.mulDiv(_normalizeTo18(amount0, dec0), price0, 1e18)
+            + Math.mulDiv(_normalizeTo18(amount1, dec1), price1, 1e18);
 
-        // Step 7: Value = LP principal only. Uncollected fees are deliberately NOT counted as
-        // collateral (they are the borrower's yield, swept to them at liquidation). This is
-        // conservative (Aave-like: value the collateral asset, not speculative uncollected yield)
-        // and removes the tokensOwed manipulation surface. Safety comes from LTV + threshold gap.
-        uint256 confidence = _computeConfidence(tickLower, tickUpper, twapTick);
-
+        // Value = LP principal only. Uncollected fees are deliberately NOT counted as collateral
+        // (they are the borrower's yield, swept to them at liquidation). This is conservative
+        // (Aave-like: value the collateral asset, not speculative uncollected yield) and removes
+        // the tokensOwed manipulation surface. Safety comes from LTV + threshold gap.
         result = ILPOracleHub.PriceResult({
             totalValue: principalValue,
             principalValue: principalValue,
             feeValue: 0,
-            confidence: confidence,
+            confidence: _computeConfidence(sqrtPriceX96, sqrtPriceAX96, sqrtPriceBX96),
             timestamp: block.timestamp
         });
     }
 
-    // --- Internal: TWAP ---
+    // --- Internal: Chainlink-implied price ---
 
-    /// @notice Get TWAP tick from pool using observe()
-    /// @dev Uses configurable twapPeriod. Rounds towards negative infinity.
-    /// @dev Wraps observe() in try/catch to convert Uniswap's cryptic "OLD" error
-    ///      into a clear TWAP_UNAVAILABLE revert. No cardinality pre-check —
-    ///      observe() itself validates history sufficiency (L1/L2 compatible).
-    function _getTwapTick(address pool) internal view returns (int24 twapTick) {
-        // No cardinality pre-check — observe() reverts if history is insufficient,
-        // caught by try/catch below. Avoids chain-specific block time assumptions
-        // (12s on L1, ~0.25-2s on L2s like Base/Arbitrum/Optimism).
-        uint32[] memory secondsAgos = new uint32[](2);
-        secondsAgos[0] = twapPeriod;
-        secondsAgos[1] = 0;
-
-        // Wrap observe() in try/catch — pool may revert with "OLD" if observation
-        // history doesn't span the full twapPeriod (e.g., recently created pool).
-        try IUniswapV3Pool(pool).observe(secondsAgos) returns (int56[] memory tickCumulatives, uint160[] memory) {
-            int56 tickCumulativesDelta = tickCumulatives[1] - tickCumulatives[0];
-            int56 period = int56(uint56(twapPeriod));
-
-            twapTick = int24(tickCumulativesDelta / period);
-            // Round towards negative infinity for consistency
-            if (tickCumulativesDelta < 0 && (tickCumulativesDelta % period != 0)) {
-                twapTick--;
-            }
-        } catch {
-            revert("TWAP_UNAVAILABLE");
-        }
-    }
-
-    // --- Internal: Cross-Validation ---
-
-    /// @notice Cross-validate TWAP-implied price ratio vs Chainlink ratio
-    /// @dev Decimal normalization uses overflow-safe mulDiv for large decimal differences.
-    ///      Fork-tested with real ETH/USDC (18/6 dec) pool data.
-    function _validatePriceConsistency(
-        int24 twapTick,
+    /// @notice Derive the Uniswap V3 sqrtPriceX96 implied by trusted Chainlink prices.
+    /// @dev Manipulation-resistant core of the oracle: the position's composition is computed from
+    ///      EXTERNAL prices, never from the pool's own (manipulable) tick. Mirrors MakerDAO's
+    ///      audited GUniLPOracle.seek() (ChainSecurity, live in production).
+    ///
+    ///      The pool price P (token1 native per token0 native) implied by the two USD prices is
+    ///        P = (price0 / price1) * 10^(dec1 - dec0)
+    ///      and Uniswap encodes it as sqrtPriceX96 = sqrt(P) * 2^96. To preserve precision we take
+    ///      the sqrt of a Q96-scaled value and shift the missing 2^48 back in, exactly like Maker:
+    ///        sqrt(P * 2^96) * 2^48 == sqrt(P) * 2^96
+    ///
+    ///      Two deltas vs the Maker code, both hardening for a general-purpose position oracle:
+    ///        - overflow-safe mulDiv for the pre-sqrt scaling (Maker uses checked mul on 0.6.12);
+    ///        - an explicit [MIN_SQRT_RATIO, MAX_SQRT_RATIO] bound with revert (Maker relies only on
+    ///          a uint160 cast). Fails closed: an implied price outside Uniswap's representable
+    ///          range — which LiquidityAmounts math assumes — blocks pricing instead of guessing.
+    /// @param price0 Chainlink USD price of token0 (18 decimals), must be > 0
+    /// @param price1 Chainlink USD price of token1 (18 decimals), must be > 0
+    /// @param dec0 token0 ERC20 decimals
+    /// @param dec1 token1 ERC20 decimals
+    /// @return sqrtPriceX96 The implied Uniswap sqrt price (Q64.96)
+    function _chainlinkSqrtPriceX96(
         uint256 price0,
         uint256 price1,
         uint8 dec0,
         uint8 dec1
     )
         internal
-        view
+        pure
+        returns (uint160 sqrtPriceX96)
     {
-        // Fail closed: a zero Chainlink price is a broken invariant (PriceFeedRegistry reverts on
-        // non-positive answers), so never silently skip the TWAP-vs-Chainlink deviation guard.
+        // Fail closed: a zero reference price is a broken invariant (PriceFeedRegistry reverts on
+        // non-positive answers). Never derive a price from a zero input.
         require(price0 > 0 && price1 > 0, "ZERO_REF_PRICE");
 
-        // TWAP ratio: sqrtPrice^2 / 2^192 gives token1/token0 in raw pool units
-        // For a pool with token0=WETH(18dec) and token1=USDC(6dec),
-        // the raw ratio is in USDC_units/WETH_units = (6dec)/(18dec) units
-        // We need to adjust for decimal difference to compare with Chainlink
-        uint160 twapSqrtPrice = TickMathLib.getSqrtRatioAtTick(twapTick);
-        // Overflow-safe: sqrtPrice^2 can exceed uint256 at high ticks (>443636)
-        // Use mulDiv to combine squaring with 2^192 division, then scale to 18 decimals
-        uint256 twapRatioRaw = Math.mulDiv(
-            Math.mulDiv(uint256(twapSqrtPrice), uint256(twapSqrtPrice), uint256(1) << 96), 1e18, uint256(1) << 96
-        );
+        // Step 1: scaledX96 = (price0 / price1) * 2^96 (P scaled by 2^96, before decimals).
+        // mulDiv keeps full 512-bit precision for the intermediate product.
+        uint256 scaledX96 = Math.mulDiv(price0, 1 << 96, price1);
 
-        // Adjust for decimal difference:
-        // twapRatioRaw is in (token1_native / token0_native) units
-        // To get a decimal-normalized ratio, multiply by 10^(dec0-dec1)
-        // Example: WETH(18)/USDC(6) → multiply by 10^12 to normalize
-        // Overflow-safe decimal normalization via mulDiv
-        require(dec0 <= 36 && dec1 <= 36, "INVALID_DECIMALS");
-        uint256 twapRatioNormalized;
-        if (dec0 >= dec1) {
-            twapRatioNormalized = Math.mulDiv(twapRatioRaw, 10 ** (dec0 - dec1), 1);
+        // Step 2: apply the decimal factor 10^(dec1 - dec0). mulDiv reverts on 256-bit overflow
+        // (fail-closed) for extreme decimal gaps.
+        if (dec1 >= dec0) {
+            scaledX96 = Math.mulDiv(scaledX96, 10 ** (dec1 - dec0), 1);
         } else {
-            twapRatioNormalized = twapRatioRaw / (10 ** (dec1 - dec0));
+            scaledX96 = scaledX96 / (10 ** (dec0 - dec1));
         }
 
-        // Chainlink ratio: price0/price1 (both 18 dec USD)
-        // This gives "how many token1-values per token0-value" = token1_per_token0 in USD terms
-        uint256 chainlinkRatio = Math.mulDiv(price0, 1e18, price1);
+        // Step 3: sqrt(P * 2^96) << 48 == sqrt(P) * 2^96 == sqrtPriceX96.
+        uint256 result = Math.sqrt(scaledX96) << 48;
 
-        uint256 deviation = LPMath.deviationBps(twapRatioNormalized, chainlinkRatio);
-        require(deviation <= maxDeviationBps, "ORACLE_DEVIATION");
+        // Fail closed: reject implied prices outside Uniswap's representable range. The downstream
+        // LiquidityAmounts / TickMath math assumes the price sits in [MIN_SQRT_RATIO, MAX_SQRT_RATIO].
+        require(result >= TickMathLib.MIN_SQRT_RATIO && result <= TickMathLib.MAX_SQRT_RATIO, "SQRT_PRICE_OUT_OF_RANGE");
+
+        sqrtPriceX96 = uint160(result);
     }
 
     // --- Internal: Confidence ---
 
-    /// @notice Compute oracle confidence based on position state (0-10000 bps)
-    function _computeConfidence(int24 tickLower, int24 tickUpper, int24 currentTick) internal pure returns (uint256) {
-        // Out of range: 70% confidence
-        if (currentTick < tickLower || currentTick >= tickUpper) {
+    /// @notice Compute oracle confidence based on position state (0-10000 bps).
+    /// @dev Analytics only — NOT consumed in the pricing/valuation path. Measures how centered the
+    ///      Chainlink-implied price sits within the position's range, in sqrt-price space.
+    function _computeConfidence(
+        uint160 sqrtPriceX96,
+        uint160 sqrtPriceAX96,
+        uint160 sqrtPriceBX96
+    )
+        internal
+        pure
+        returns (uint256)
+    {
+        if (sqrtPriceAX96 > sqrtPriceBX96) (sqrtPriceAX96, sqrtPriceBX96) = (sqrtPriceBX96, sqrtPriceAX96);
+
+        // Out of range: all liquidity sits in a single token → 70% confidence.
+        if (sqrtPriceX96 <= sqrtPriceAX96 || sqrtPriceX96 >= sqrtPriceBX96) {
             return 7000;
         }
-        // In range: 80-100% based on how centered the tick is
-        int24 rangeWidth = tickUpper - tickLower;
-        int24 center = tickLower + rangeWidth / 2;
-        int24 distFromCenter = currentTick > center ? currentTick - center : center - currentTick;
-        int24 halfRange = rangeWidth / 2;
 
-        if (halfRange == 0 || distFromCenter >= halfRange) return 8000;
-        uint256 centeredness = uint256(int256(halfRange - distFromCenter)) * 2000 / uint256(int256(halfRange));
+        // In range: 80-100% based on how centered the price is within [A, B].
+        uint256 span = uint256(sqrtPriceBX96) - uint256(sqrtPriceAX96);
+        uint256 center = uint256(sqrtPriceAX96) + span / 2;
+        uint256 distFromCenter =
+            uint256(sqrtPriceX96) > center ? uint256(sqrtPriceX96) - center : center - uint256(sqrtPriceX96);
+        uint256 halfSpan = span / 2;
+
+        if (halfSpan == 0 || distFromCenter >= halfSpan) return 8000;
+        uint256 centeredness = (halfSpan - distFromCenter) * 2000 / halfSpan;
         return 8000 + centeredness; // 8000-10000
     }
 

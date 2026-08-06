@@ -127,10 +127,12 @@ contract MultiUserConcurrent is E2EBase {
         assertTrue(liquidatedCount > 0 || (!liqA2 && !liqC2), "Inconsistent state");
     }
 
-    /// @notice USDC depeg scenario - oracle deviation correctly blocks operations
-    /// @dev A >3% USDC depeg triggers ORACLE_DEVIATION protection, which is correct behavior.
-    ///      The protocol refuses to operate with mismatched TWAP vs Chainlink prices.
-    function test_depeg_triggersOracleDeviation() public {
+    /// @notice USDC depeg scenario — pricing stays live and simply reflects the new price (H-1 fix).
+    /// @dev The oracle prices collateral from Chainlink directly, so a USDC depeg does NOT revert
+    ///      health-factor or liquidation queries (the old TWAP-vs-Chainlink deviation guard was
+    ///      removed — it converted a depeg into a protocol freeze). The health factor moves with the
+    ///      depegged price instead, and recovers when the peg is restored.
+    function test_depeg_repricesWithoutReverting() public {
         uint256 tokenId = _createV3Position(alice, 2 ether, 5000e6);
         uint256 positionId = _depositV3(alice, tokenId);
         vm.roll(block.number + 5);
@@ -142,19 +144,20 @@ contract MultiUserConcurrent is E2EBase {
         uint256 hfBefore = _getHealthFactor(positionId);
         console.log("HF before depeg: %s", hfBefore / 1e16);
 
-        // Simulate USDC depeg to $0.90 — triggers oracle deviation protection
+        // Simulate USDC depeg to $0.90 on Chainlink.
         vm.mockCall(
             Constants.CL_USDC_USD,
             abi.encodeWithSelector(IAggregatorV3.latestRoundData.selector),
             abi.encode(uint80(1), int256(90_000_000), block.timestamp, block.timestamp, uint80(1))
         );
 
-        // Health factor query should revert with ORACLE_DEVIATION because
-        // TWAP sees USDC at ~$1.00 but Chainlink says $0.90 (>3% deviation)
-        vm.expectRevert();
-        _getHealthFactor(positionId);
+        // Health factor query must NOT revert — it reprices at the depegged value and stays live.
+        uint256 hfDepeg = _getHealthFactor(positionId);
+        console.log("HF during depeg: %s", hfDepeg / 1e16);
+        // Liquidation path must also stay live during the depeg.
+        liquidationEngine.isLiquidatable(positionId);
 
-        // Restore peg — operations resume normally
+        // Restore peg — operations continue normally.
         vm.mockCall(
             Constants.CL_USDC_USD,
             abi.encodeWithSelector(IAggregatorV3.latestRoundData.selector),
