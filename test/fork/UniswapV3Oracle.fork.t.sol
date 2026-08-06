@@ -38,7 +38,7 @@ contract UniswapV3OracleForkTest is Test {
     address constant ETH_USDC_3000 = 0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8;
 
     ProtocolCore public core;
-    UniswapV3Oracle public oracle;
+    UniswapV3OracleForkHarness public oracle;
     PriceFeedRegistry public priceFeedRegistry;
     INonfungiblePositionManager public nftManager;
 
@@ -61,8 +61,21 @@ contract UniswapV3OracleForkTest is Test {
         priceFeedRegistry.setMaxStaleness(86_400); // 24 hours
         vm.stopPrank();
 
-        oracle = new UniswapV3Oracle(address(core), UNI_V3_NFT_MANAGER, address(priceFeedRegistry));
+        oracle = new UniswapV3OracleForkHarness(address(core), UNI_V3_NFT_MANAGER, address(priceFeedRegistry));
         nftManager = INonfungiblePositionManager(UNI_V3_NFT_MANAGER);
+    }
+
+    function _harnessChainlinkSqrtPriceX96(
+        uint256 price0,
+        uint256 price1,
+        uint8 dec0,
+        uint8 dec1
+    )
+        internal
+        view
+        returns (uint160)
+    {
+        return oracle.exposed_chainlinkSqrtPriceX96(price0, price1, dec0, dec1);
     }
 
     // ========================================================
@@ -130,30 +143,29 @@ contract UniswapV3OracleForkTest is Test {
     }
 
     // ========================================================
-    // TEST 2: TWAP tick matches current tick approximately
+    // TEST 2: Chainlink-implied sqrtPrice matches the pool's sqrtPrice
     // ========================================================
 
-    function test_twapTick_matchesCurrentTick() public {
+    /// @dev The oracle derives sqrtPriceX96 from Chainlink prices (not the pool tick). For a liquid
+    ///      pool with Chainlink feeds that track the market, that derived price must land close to
+    ///      the pool's own slot0 sqrtPrice — this is what makes the Chainlink-derived composition a
+    ///      faithful valuation. token0 = USDC (6 dec), token1 = WETH (18 dec) in the ETH/USDC pool.
+    function test_chainlinkImpliedSqrtPrice_matchesPool() public {
         IUniswapV3Pool pool = IUniswapV3Pool(ETH_USDC_500);
+        (uint160 poolSqrtPrice,,,,,,) = pool.slot0();
 
-        // Get current tick
-        (, int24 currentTick,,,,,) = pool.slot0();
+        uint256 priceUsdc = priceFeedRegistry.getPrice(USDC); // token0, 18-dec USD
+        uint256 priceWeth = priceFeedRegistry.getPrice(WETH); // token1, 18-dec USD
 
-        // Get 30-min TWAP tick
-        uint32[] memory secondsAgos = new uint32[](2);
-        secondsAgos[0] = 1800; // 30 min ago
-        secondsAgos[1] = 0; // now
+        uint160 impliedSqrtPrice = _harnessChainlinkSqrtPriceX96(priceUsdc, priceWeth, 6, 18);
 
-        (int56[] memory tickCumulatives,) = pool.observe(secondsAgos);
-        int56 delta = tickCumulatives[1] - tickCumulatives[0];
-        int24 twapTick = int24(delta / 1800);
+        emit log_named_uint("Pool sqrtPriceX96", poolSqrtPrice);
+        emit log_named_uint("Chainlink-implied sqrtPriceX96", impliedSqrtPrice);
 
-        emit log_named_int("Current tick", int256(currentTick));
-        emit log_named_int("TWAP tick (30m)", int256(twapTick));
-
-        // TWAP should be within ~1% of current tick for a liquid pool
-        int24 diff = currentTick > twapTick ? currentTick - twapTick : twapTick - currentTick;
-        assertLt(uint256(int256(diff)), 500, "TWAP and current tick should be close for liquid pool");
+        // Within ~2%: Chainlink and the pool spot can differ slightly, but not much for a deep pool.
+        uint256 diff =
+            poolSqrtPrice > impliedSqrtPrice ? poolSqrtPrice - impliedSqrtPrice : impliedSqrtPrice - poolSqrtPrice;
+        assertLt(diff, poolSqrtPrice / 50, "Chainlink-implied sqrtPrice should track the pool for a liquid market");
     }
 
     // ========================================================
@@ -297,16 +309,15 @@ contract UniswapV3OracleForkTest is Test {
     }
 
     // ========================================================
-    // TEST 7: Cross-validation doesn't revert for liquid pools
+    // TEST 7: Pricing never reverts on a Chainlink/pool disagreement (H-1 liveness)
     // ========================================================
 
-    function test_oracle_crossValidation_doesNotRevert() public {
-        // For a liquid pool like ETH/USDC, the TWAP and Chainlink should agree
-        // within 3%. If this test fails, either:
-        // 1. Our cross-validation math is wrong
-        // 2. The pool is under manipulation
-        // 3. Markets moved >3% in the TWAP window
-
+    /// @dev The oracle derives composition purely from Chainlink, so there is no TWAP-vs-Chainlink
+    ///      consistency guard that could revert. Even a large forced divergence between the pool and
+    ///      Chainlink must still price (this is the whole point of the H-1 fix — liquidations must
+    ///      stay live during a crash). Here we push Chainlink ETH to 10x and 0.1x and assert the
+    ///      call still returns a value.
+    function test_oracle_pricingLiveUnderDivergence() public {
         (uint256 tokenId, bool found) = _findPositionWithLiquidity(USDC, WETH, 500);
         if (!found) {
             (tokenId, found) = _findPositionWithLiquidity(USDC, WETH, 3000);
@@ -316,9 +327,30 @@ contract UniswapV3OracleForkTest is Test {
             return;
         }
 
-        // If cross-validation is broken, this will revert with "ORACLE_DEVIATION"
-        ILPOracleHub.PriceResult memory result = oracle.getPrice(UNI_V3_NFT_MANAGER, tokenId, 0);
-        assertGt(result.totalValue, 0, "Must return a value (cross-validation passed)");
+        // Baseline: prices fine at the real Chainlink price.
+        ILPOracleHub.PriceResult memory base = oracle.getPrice(UNI_V3_NFT_MANAGER, tokenId, 0);
+        assertGt(base.totalValue, 0, "Baseline must price");
+
+        (uint80 roundId, int256 ethPrice,, uint256 updatedAt,) = IAggregatorV3(CL_ETH_USD).latestRoundData();
+
+        // Force ETH/USD to 10x — huge divergence from the pool. Old design would have reverted
+        // with ORACLE_DEVIATION; the fix must still return a (higher) value.
+        vm.mockCall(
+            CL_ETH_USD,
+            abi.encodeWithSelector(IAggregatorV3.latestRoundData.selector),
+            abi.encode(roundId, ethPrice * 10, updatedAt, updatedAt, roundId)
+        );
+        ILPOracleHub.PriceResult memory up = oracle.getPrice(UNI_V3_NFT_MANAGER, tokenId, 0);
+        assertGt(up.totalValue, 0, "Must still price at 10x ETH (no deviation revert)");
+
+        // Force ETH/USD to 0.1x — a crash. Must still price (this is exactly the liquidation path).
+        vm.mockCall(
+            CL_ETH_USD,
+            abi.encodeWithSelector(IAggregatorV3.latestRoundData.selector),
+            abi.encode(roundId, ethPrice / 10, updatedAt, updatedAt, roundId)
+        );
+        ILPOracleHub.PriceResult memory down = oracle.getPrice(UNI_V3_NFT_MANAGER, tokenId, 0);
+        assertGt(down.totalValue, 0, "Must still price at 0.1x ETH (crash - liquidation must be live)");
     }
 
     // ========================================================
@@ -387,60 +419,28 @@ contract UniswapV3OracleForkTest is Test {
         ILPOracleHub.PriceResult memory result = oracle.getPrice(UNI_V3_NFT_MANAGER, tokenId, 0);
         assertGt(result.totalValue, 0);
     }
+}
 
-    // ========================================================
-    // TEST 12: Admin setters work
-    // ========================================================
+/// @notice Harness exposing the internal Chainlink-implied sqrtPrice helper for fork assertions.
+contract UniswapV3OracleForkHarness is UniswapV3Oracle {
+    constructor(
+        address _core,
+        address _positionManager,
+        address _priceFeedRegistry
+    )
+        UniswapV3Oracle(_core, _positionManager, _priceFeedRegistry)
+    {}
 
-    function test_oracle_adminSetters() public {
-        vm.startPrank(owner);
-
-        oracle.setTwapPeriod(600);
-        assertEq(oracle.twapPeriod(), 600);
-
-        oracle.setMaxDeviation(500);
-        assertEq(oracle.maxDeviationBps(), 500);
-
-        vm.stopPrank();
-    }
-
-    // ========================================================
-    // TEST 13: Wider TWAP period -5 min vs 30 min vs 1 hour
-    // ========================================================
-
-    function test_oracle_differentTwapPeriods() public {
-        (uint256 tokenId, bool found) = _findPositionWithLiquidity(USDC, WETH, 500);
-        if (!found) {
-            (tokenId, found) = _findPositionWithLiquidity(USDC, WETH, 3000);
-        }
-        if (!found) {
-            emit log("Skipping -no position found");
-            return;
-        }
-
-        // Price with 5 min TWAP
-        vm.prank(owner);
-        oracle.setTwapPeriod(300);
-        ILPOracleHub.PriceResult memory result5min = oracle.getPrice(UNI_V3_NFT_MANAGER, tokenId, 0);
-
-        // Price with 30 min TWAP
-        vm.prank(owner);
-        oracle.setTwapPeriod(1800);
-        ILPOracleHub.PriceResult memory result30min = oracle.getPrice(UNI_V3_NFT_MANAGER, tokenId, 0);
-
-        // Price with 1 hour TWAP
-        vm.prank(owner);
-        oracle.setTwapPeriod(3600);
-        ILPOracleHub.PriceResult memory result1hr = oracle.getPrice(UNI_V3_NFT_MANAGER, tokenId, 0);
-
-        emit log_named_uint("Value (5min TWAP)", result5min.totalValue);
-        emit log_named_uint("Value (30min TWAP)", result30min.totalValue);
-        emit log_named_uint("Value (1hr TWAP)", result1hr.totalValue);
-
-        // All should be reasonably close (within 5% of each other for a stable market)
-        uint256 maxVal = result5min.totalValue > result30min.totalValue ? result5min.totalValue : result30min.totalValue;
-        uint256 minVal = result5min.totalValue < result30min.totalValue ? result5min.totalValue : result30min.totalValue;
-        uint256 spread = ((maxVal - minVal) * 10_000) / maxVal;
-        assertLt(spread, 500, "Different TWAP periods should give similar results in stable market");
+    function exposed_chainlinkSqrtPriceX96(
+        uint256 price0,
+        uint256 price1,
+        uint8 dec0,
+        uint8 dec1
+    )
+        external
+        pure
+        returns (uint160)
+    {
+        return _chainlinkSqrtPriceX96(price0, price1, dec0, dec1);
     }
 }

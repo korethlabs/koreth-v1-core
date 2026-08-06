@@ -62,29 +62,40 @@ contract OracleFailureE2E is E2EBase {
     }
 
     // ========================================================================
-    // 3. Oracle deviation blocks operations
+    // 3. Chainlink/pool divergence does NOT brick pricing (H-1 fix)
     // ========================================================================
 
-    function test_oracleDeviationBlocksOperations() public {
-        // Alice deposits V3 position
+    /// @dev The oracle derives composition from Chainlink alone, so a large gap between the pool and
+    ///      Chainlink no longer reverts (the old ORACLE_DEVIATION guard was removed — it turned a
+    ///      market move into a liquidation DoS). Pricing must stay live; borrow is gated by LTV, not
+    ///      by a price cross-check. Here Chainlink ETH drops to $1: the position (mostly ETH) loses
+    ///      value, so a fresh borrow of its old capacity is refused for INSUFFICIENT_COLLATERAL —
+    ///      NOT because pricing reverted.
+    function test_chainlinkDivergenceDoesNotBrickPricing() public {
         uint256 tokenId = _createV3Position(alice, 1 ether, 2000e6);
         uint256 posId = _depositV3(alice, tokenId);
 
         vm.roll(block.number + 2);
 
-        // Mock Chainlink ETH/USD to return $1 (wildly different from pool TWAP ~$2000+)
+        // Capacity at the true price.
+        uint256 maxBorrowBefore = lendingEngine.getMaxBorrow(posId);
+        assertGt(maxBorrowBefore, 0, "should have capacity at true price");
+
+        // Crash ETH/USD to $1 on Chainlink — huge divergence from the pool.
         vm.mockCall(
             Constants.CL_ETH_USD,
             abi.encodeWithSelector(IAggregatorV3.latestRoundData.selector),
             abi.encode(uint80(1), int256(100_000_000), block.timestamp, block.timestamp, uint80(1))
         );
 
-        // Borrow should revert with ORACLE_DEVIATION (Chainlink says $1, TWAP says ~$2000+)
-        vm.prank(alice);
-        vm.expectRevert("ORACLE_DEVIATION");
-        lendingEngine.borrow(posId, 100e6);
+        // Pricing must NOT revert — it reflects the (now much lower) collateral value.
+        uint256 maxBorrowAfter = lendingEngine.getMaxBorrow(posId);
+        assertLt(maxBorrowAfter, maxBorrowBefore, "capacity should drop with the crashed price, not revert");
 
-        console.log("=== Oracle Deviation Blocks Operations ===");
+        // Liquidation checks must also stay live (this is the whole point of the H-1 fix).
+        liquidationEngine.isLiquidatable(posId);
+
+        console.log("=== Chainlink Divergence Does Not Brick Pricing ===");
     }
 
     // ========================================================================
