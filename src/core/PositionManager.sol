@@ -75,10 +75,6 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     event LendingEngineUpdated(address indexed oldEngine, address indexed newEngine);
     event CircuitBreakerUpdated(address indexed oldBreaker, address indexed newBreaker);
     event PositionTransformed(uint256 indexed positionId, address indexed transformer);
-    /// @notice Emitted when supply-cap accounting was skipped on a debt-free withdrawal or
-    ///         collateral removal because the oracle could not price the position. The action
-    ///         still succeeds; monitoring should reconcile RiskManager supply totals afterward.
-    event WithdrawAccountingSkipped(uint256 indexed positionId, address indexed borrowAsset);
 
     // --- ACL Helpers ---
     function _acl() internal view returns (ACLManager) {
@@ -247,7 +243,8 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
             borrowAsset: borrowAsset,
             status: PositionStatus.Active,
             depositTimestamp: block.timestamp,
-            depositBlock: block.number
+            depositBlock: block.number,
+            recordedValue: price.totalValue
         });
 
         _ownerPositions[msg.sender].push(positionId);
@@ -271,21 +268,19 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         address adapterAddr = core.adapters(pos.lpType);
         require(adapterAddr != address(0), "ADAPTER_NOT_FOUND");
 
-        // RiskManager: track withdrawal for supply cap. Debt is already 0 here, so no risk
-        // decision depends on this value — an oracle hiccup must not trap a debt-free owner's
-        // collateral. Resolve RM first (hard — a missing RiskManager is a config error, independent
-        // of oracle health), then fail soft on the valuation and surface the skip via event.
+        // RiskManager: release the supply this position recorded on the way in. We decrement the
+        // value stored at deposit/top-up time, not a fresh oracle re-price — so an exit never
+        // depends on oracle liveness, and deposit/withdraw net to zero regardless of price moves.
         {
-            RiskManager rm = _riskManager();
-            (uint256 posValue, bool priced) = _tryPositionValue(positionId);
-            if (priced) {
-                rm.recordWithdraw(posValue, pos.borrowAsset);
-            } else {
-                emit WithdrawAccountingSkipped(positionId, pos.borrowAsset);
-            }
+            uint256 recorded = pos.recordedValue;
+            pos.recordedValue = 0;
+            if (recorded > 0) _riskManager().recordWithdraw(recorded, pos.borrowAsset);
         }
 
-        // CEI: update state BEFORE external call
+        // CEI: finalize state BEFORE the untrusted adapter unlock() below. The RiskManager
+        // recordWithdraw() above is also an external call, but into a trusted protocol contract
+        // that makes no callback into us, and this function is nonReentrant — so it opens no
+        // reentrancy window.
         // Use pos.owner for accounting — msg.sender may be a transformer during transform()
         address owner = pos.owner;
         pos.status = PositionStatus.Closed;
@@ -365,6 +360,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
             require(valueAfter <= rm.maxPositionValue(), "POSITION_TOO_LARGE");
             uint256 delta = valueAfter > valueBefore ? valueAfter - valueBefore : 0;
             if (delta > 0) {
+                pos.recordedValue += delta;
                 rm.recordDeposit(delta, pos.borrowAsset);
             }
         }
@@ -406,19 +402,17 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         // Circuit breaker: block collateral removal on frozen collateral types (oracle may be manipulated)
         require(!getCircuitBreaker().collateralFrozen(pos.lpType), "COLLATERAL_FROZEN");
 
-        // Validate liquidity bounds before calling adapter
+        // Validate liquidity bounds before calling adapter, and capture the pre-removal liquidity
+        // so supply can be released in proportion to what leaves (no oracle re-price on exit).
+        uint256 liquidityBefore;
         if (pos.lpType == ILPAdapter.LPType.UniswapV2 || pos.lpType == ILPAdapter.LPType.PancakeSwapV2) {
             require(uint256(liquidity) <= pos.amount, "EXCEEDS_POSITION_AMOUNT");
+            liquidityBefore = pos.amount;
         } else {
             uint128 currentLiquidity = ILPAdapter(adapterAddr).getLiquidity(pos.lpToken, pos.tokenId, pos.amount);
             require(liquidity <= currentLiquidity, "EXCEEDS_AVAILABLE_LIQUIDITY");
+            liquidityBefore = currentLiquidity;
         }
-
-        // Snapshot pre-change value for RiskManager delta tracking. Removing collateral is a
-        // reduction, not new risk, so price soft here: an oracle hiccup must not trap the owner's
-        // funds. The Borrowed health check below stays hard — a leveraged removal still requires a
-        // fresh, trusted valuation.
-        (uint256 valueBefore, bool pricedBefore) = _tryPositionValue(positionId);
 
         // Remove liquidity — tokens sent to msg.sender (owner or transformer)
         (amount0, amount1) = ILPAdapter(adapterAddr).removeLiquidity(pos.lpToken, pos.tokenId, liquidity, msg.sender);
@@ -431,20 +425,15 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
             pos.amount -= uint256(liquidity);
         }
 
-        // RiskManager: track withdrawal for supply cap accounting (fail-soft — see snapshot above).
-        // Resolve RM first (hard — mandatory regardless of oracle health), then skip the delta
-        // entirely if either valuation could not be priced.
+        // RiskManager: release supply in proportion to the liquidity removed, using the value this
+        // position recorded on the way in — not a fresh oracle price. The exit never depends on
+        // oracle liveness. liquidity <= liquidityBefore (checked above) and mulDiv rounds down, so
+        // the release can never exceed what is recorded. The Borrowed health check below stays hard:
+        // a leveraged removal still requires a fresh, trusted valuation.
         {
-            RiskManager rm = _riskManager();
-            (uint256 valueAfter, bool pricedAfter) = _tryPositionValue(positionId);
-            if (pricedBefore && pricedAfter) {
-                uint256 delta = valueBefore > valueAfter ? valueBefore - valueAfter : 0;
-                if (delta > 0) {
-                    rm.recordWithdraw(delta, pos.borrowAsset);
-                }
-            } else {
-                emit WithdrawAccountingSkipped(positionId, pos.borrowAsset);
-            }
+            uint256 reduction = Math.mulDiv(pos.recordedValue, liquidity, liquidityBefore);
+            pos.recordedValue -= reduction;
+            if (reduction > 0) _riskManager().recordWithdraw(reduction, pos.borrowAsset);
         }
 
         // Health check: if position has debt, must remain solvent
@@ -588,8 +577,22 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         onlyLiquidationEngine
         positionExists(positionId)
     {
-        if (valueUsd == 0) return;
-        _riskManager().recordWithdraw(valueUsd, _positions[positionId].borrowAsset);
+        Position storage pos = _positions[positionId];
+        // Release supply from the value this position recorded on the way in, and draw down that
+        // recorded balance in lockstep, so a later debt-free withdraw of a partially-liquidated
+        // position cannot double-release the same supply. markLiquidated() runs before this call on
+        // the terminal paths, so a Liquidated status means the whole position has left the market:
+        // release everything still recorded. Otherwise this is a residual partial liquidation that
+        // leaves the position open — release only the seized value, clamped to what is recorded.
+        uint256 removed;
+        if (pos.status == PositionStatus.Liquidated) {
+            removed = pos.recordedValue;
+        } else {
+            removed = valueUsd > pos.recordedValue ? pos.recordedValue : valueUsd;
+        }
+        if (removed == 0) return;
+        pos.recordedValue -= removed;
+        _riskManager().recordWithdraw(removed, pos.borrowAsset);
     }
 
     // --- View Functions ---
@@ -743,7 +746,10 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
             RiskManager rm = _riskManager();
             uint256 valueAfter = getPositionValue(params.positionId);
             uint256 delta = valueAfter > valueBefore ? valueAfter - valueBefore : 0;
-            if (delta > 0) rm.recordCompoundReinvest(delta, pos.borrowAsset);
+            if (delta > 0) {
+                pos.recordedValue += delta;
+                rm.recordCompoundReinvest(delta, pos.borrowAsset);
+            }
         }
 
         emit FeesCompoundedInternal(params.positionId, fees0, fees1, addedLiquidity);
@@ -834,18 +840,6 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         address rmAddr = core.riskManagerAddr();
         require(rmAddr != address(0), "RISK_MANAGER_NOT_SET");
         return RiskManager(rmAddr);
-    }
-
-    /// @dev Value a position without letting an oracle failure revert the caller. Used ONLY on
-    ///      non-risk-increasing paths (debt-free exits) where the value merely feeds supply-cap
-    ///      accounting. Risk decisions must call getPositionValue()/getHealthFactor() directly so
-    ///      they stay fail-closed.
-    function _tryPositionValue(uint256 positionId) internal view returns (uint256 value, bool priced) {
-        try this.getPositionValue(positionId) returns (uint256 v) {
-            return (v, true);
-        } catch {
-            return (0, false);
-        }
     }
 
     function _detectLPType(address lpToken) internal view returns (ILPAdapter.LPType) {

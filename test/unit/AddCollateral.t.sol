@@ -217,6 +217,23 @@ contract AddCollateralTest is Test {
         vm.stopPrank();
     }
 
+    // Adding collateral is risk-increasing (it enforces the position-value cap), so it must stay
+    // fail-closed: if the oracle cannot price the position, the whole add reverts rather than
+    // silently skipping the cap. This is the deliberate counterpart to debt-free exits, which
+    // release recorded supply without ever touching the oracle.
+    function test_addCollateral_failsClosedOnOracleFailure() public {
+        uint256 positionId = _depositV3(alice);
+
+        oracle.setShouldRevert(true);
+
+        vm.startPrank(alice);
+        token0.approve(address(pm), 1 ether);
+        token1.approve(address(pm), 2000e6);
+        vm.expectRevert("ORACLE_FAIL_CLOSED");
+        pm.addCollateral(positionId, 1 ether, 2000e6, 0, 0);
+        vm.stopPrank();
+    }
+
     function test_addCollateral_emitsEvent() public {
         uint256 positionId = _depositV3(alice);
 

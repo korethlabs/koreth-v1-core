@@ -255,13 +255,14 @@ contract RiskManager {
     event SupplyTrackingDrift(uint256 tracked, uint256 withdrawn, address indexed pool);
 
     /// @notice Record a withdrawal for supply cap tracking (18-dec USD)
-    /// @dev ACCEPTED TRADEOFF (drift): deposits/withdrawals are recorded at the LIVE oracle USD
-    ///      value at the time of each action. If collateral appreciates between deposit and
-    ///      withdraw, the withdraw value exceeds the recorded deposit value and the counter is
-    ///      clamped to 0 (drift surfaced via SupplyTrackingDrift). This only affects a SOFT risk
-    ///      cap — never user funds — and self-corrects as positions fully close. A drift-free
-    ///      design would require per-position recorded-value bookkeeping (deferred; not worth the
-    ///      added storage/complexity for a soft limit).
+    /// @dev PositionManager calls this with the value the position RECORDED on the way in
+    ///      (stored per-position as Position.recordedValue), not a fresh oracle re-price — so a
+    ///      clean deposit→withdraw nets the counter back to its baseline regardless of price moves,
+    ///      and a debt-free exit never depends on oracle liveness. The clamp below is a
+    ///      defense-in-depth backstop: any residual over-release (e.g. an oracle-priced liquidation
+    ///      seize exceeding the recorded value) saturates the counter at 0 and surfaces
+    ///      SupplyTrackingDrift rather than under-flowing. This only affects a SOFT risk cap —
+    ///      never user funds.
     function recordWithdraw(uint256 valueUsd, address pool) external onlyPositionManager {
         if (valueUsd > poolCurrentSupply[pool]) {
             emit SupplyTrackingDrift(poolCurrentSupply[pool], valueUsd, pool);
