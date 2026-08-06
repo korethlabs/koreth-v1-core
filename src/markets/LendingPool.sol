@@ -227,6 +227,12 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
             shares[DEAD_ADDRESS] += DEAD_SHARES;
             totalShares += DEAD_SHARES;
         } else {
+            // A full-pool default can socialize losses all the way down to totalSupply == 0 while
+            // shares are still outstanding (they now redeem to nothing). Refuse new deposits in that
+            // insolvent state: minting against a zero share price would both divide-by-zero and, worse,
+            // hand the fresh deposit straight to the holders of the now-worthless legacy shares. The
+            // market recovers only when eliminateDeficit() credits reserves back into totalSupply.
+            require(state.totalSupply > 0, "MARKET_INSOLVENT");
             sharesToMint = (received * totalShares) / state.totalSupply;
             require(sharesToMint > 0, "DEPOSIT_TOO_SMALL");
         }

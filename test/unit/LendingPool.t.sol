@@ -605,4 +605,39 @@ contract LendingPoolTest is Test {
         vm.expectRevert("NO_BORROW_TO_BURN");
         pool.recordDeficit(1000e6);
     }
+
+    /// @notice A total default (100% utilization, no reserves) can socialize the loss all the way to
+    ///         totalSupply == 0. In that insolvent state deposits are refused (would otherwise revert
+    ///         on divide-by-zero and gift the deposit to worthless legacy shares) while existing
+    ///         holders can still burn their now-zero-value shares.
+    function test_recordDeficit_fullWipe_marketBecomesInsolvent() public {
+        _fundAndApprove(alice, 100_000e6);
+        vm.prank(alice);
+        pool.supply(100_000e6);
+
+        // Lend out the entire balance so the pool holds no cash and totalBorrow == totalSupply.
+        vm.prank(le);
+        pool.transferOut(makeAddr("borrower"), 100_000e6);
+
+        // Every borrower defaults: write off the whole outstanding debt.
+        vm.prank(le);
+        pool.recordDeficit(100_000e6);
+
+        ILendingPool.PoolState memory s = pool.getPoolState();
+        assertEq(s.totalSupply, 0, "supply fully wiped");
+        assertEq(s.totalBorrow, 0, "borrow fully written off");
+        assertEq(pool.deficit(), 100_000e6, "entire loss socialized as deficit");
+
+        // New deposits are refused while insolvent (clear error, not a divide-by-zero panic).
+        _fundAndApprove(bob, 10_000e6);
+        vm.prank(bob);
+        vm.expectRevert("MARKET_INSOLVENT");
+        pool.supply(10_000e6);
+
+        // Existing holder can still burn worthless shares without reverting; they redeem to zero.
+        uint256 aliceShares = pool.shares(alice);
+        vm.prank(alice);
+        uint256 received = pool.withdraw(aliceShares);
+        assertEq(received, 0, "wiped shares redeem to nothing");
+    }
 }
