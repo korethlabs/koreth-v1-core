@@ -27,6 +27,7 @@ interface IPositionManager {
         PositionStatus status;
         uint256 depositTimestamp;
         uint256 depositBlock; // Block number at deposit (for borrow cooldown)
+        uint256 recordedValue; // 18-dec USD value recorded into RiskManager supply on the way in
     }
 
     /// @dev `borrowAsset` identifies the shared pool this position may draw from. It is emitted

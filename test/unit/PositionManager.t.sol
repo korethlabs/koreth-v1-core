@@ -56,7 +56,6 @@ contract PositionManagerTest is Test {
     );
     event PositionClosed(uint256 indexed positionId, address indexed owner);
     event PositionLiquidated(uint256 indexed positionId, address indexed liquidator, uint256 debtRepaid);
-    event WithdrawAccountingSkipped(uint256 indexed positionId, address indexed borrowAsset);
 
     function setUp() public {
         // Deploy ACLManager and core
@@ -348,48 +347,58 @@ contract PositionManagerTest is Test {
         pm.withdraw(posId);
     }
 
-    // ========== Fail-soft supply-cap accounting / fail-closed preserved ==========
+    // ========== Stored-value supply accounting / fail-closed preserved ==========
 
-    // A debt-free owner must not be trapped by an oracle hiccup. The only reason withdraw touches
-    // the oracle is to record the supply-cap delta in RiskManager — no risk decision depends on it
-    // once debt is 0. So the valuation fails soft (skip + event), and the exit still succeeds.
+    // A debt-free owner must not be trapped by an oracle hiccup. Supply is released from the value
+    // the position recorded on the way in (Position.recordedValue), not a fresh oracle re-price —
+    // so the exit never touches the oracle and succeeds even while it is fail-closed. The recorded
+    // value is released in full, netting the pool's supply counter back to zero.
     function test_withdraw_debtFree_survivesOracleFailure() public {
         vm.prank(alice);
         uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
+        uint256 recorded = pm.getPosition(posId).recordedValue;
+        assertGt(recorded, 0);
+        assertEq(riskManager.poolCurrentSupply(borrowAsset), recorded);
+
         // Oracle goes fail-closed: getPositionValue() would revert.
         oracle.setShouldRevert(true);
 
-        vm.expectEmit(true, true, false, false);
-        emit WithdrawAccountingSkipped(posId, borrowAsset);
-
         vm.prank(alice);
-        pm.withdraw(posId); // must NOT revert
+        pm.withdraw(posId); // must NOT revert — no oracle read on the exit path
 
         IPositionManager.Position memory pos = pm.getPosition(posId);
         assertEq(uint8(pos.status), uint8(IPositionManager.PositionStatus.Closed));
         assertEq(adapter.unlockCallCount(), 1);
+        assertEq(pos.recordedValue, 0);
+        // Deposit added `recorded`, withdraw released exactly `recorded` → back to baseline.
+        assertEq(riskManager.poolCurrentSupply(borrowAsset), 0);
     }
 
-    // Removing collateral from a debt-free (Active) position is a risk reduction, so it also fails
-    // soft on the oracle and still returns the owner's funds.
+    // Removing collateral from a debt-free (Active) position is a risk reduction that releases
+    // supply in proportion to the liquidity withdrawn, using the recorded value — no oracle read —
+    // so it succeeds even while the oracle is fail-closed.
     function test_removeCollateral_active_survivesOracleFailure() public {
         vm.prank(alice);
         uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
 
+        uint256 recorded = pm.getPosition(posId).recordedValue;
+
         adapter.setUnwindAmounts(0, 0); // no token transfer on unwind — isolate the accounting path
         oracle.setShouldRevert(true);
 
-        vm.expectEmit(true, true, false, false);
-        emit WithdrawAccountingSkipped(posId, borrowAsset);
-
         vm.prank(alice);
         pm.removeCollateral(posId, 50e18, 0, 0); // Active, no debt → succeeds despite oracle down
+
+        // Removed half the liquidity (50e18 of 100e18) → half the recorded value is released.
+        IPositionManager.Position memory pos = pm.getPosition(posId);
+        assertEq(pos.recordedValue, recorded / 2);
+        assertEq(riskManager.poolCurrentSupply(borrowAsset), recorded / 2);
     }
 
     // Fail-closed preserved: a leveraged (Borrowed) removal still requires a fresh, trusted
-    // valuation. The post-removal health check calls getHealthFactor() directly (not the soft
-    // path), so an oracle failure must revert the whole removal.
+    // valuation. Supply accounting no longer reads the oracle, but the post-removal health check
+    // calls getHealthFactor() directly, so an oracle failure must still revert the whole removal.
     function test_removeCollateral_borrowed_failsClosedOnOracleFailure() public {
         vm.prank(alice);
         uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
