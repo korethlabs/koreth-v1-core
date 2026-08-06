@@ -56,6 +56,7 @@ contract PositionManagerTest is Test {
     );
     event PositionClosed(uint256 indexed positionId, address indexed owner);
     event PositionLiquidated(uint256 indexed positionId, address indexed liquidator, uint256 debtRepaid);
+    event WithdrawAccountingSkipped(uint256 indexed positionId, address indexed borrowAsset);
 
     function setUp() public {
         // Deploy ACLManager and core
@@ -345,6 +346,71 @@ contract PositionManagerTest is Test {
         vm.prank(alice);
         vm.expectRevert("PAUSED");
         pm.withdraw(posId);
+    }
+
+    // ========== Fail-soft supply-cap accounting / fail-closed preserved ==========
+
+    // A debt-free owner must not be trapped by an oracle hiccup. The only reason withdraw touches
+    // the oracle is to record the supply-cap delta in RiskManager — no risk decision depends on it
+    // once debt is 0. So the valuation fails soft (skip + event), and the exit still succeeds.
+    function test_withdraw_debtFree_survivesOracleFailure() public {
+        vm.prank(alice);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+
+        // Oracle goes fail-closed: getPositionValue() would revert.
+        oracle.setShouldRevert(true);
+
+        vm.expectEmit(true, true, false, false);
+        emit WithdrawAccountingSkipped(posId, borrowAsset);
+
+        vm.prank(alice);
+        pm.withdraw(posId); // must NOT revert
+
+        IPositionManager.Position memory pos = pm.getPosition(posId);
+        assertEq(uint8(pos.status), uint8(IPositionManager.PositionStatus.Closed));
+        assertEq(adapter.unlockCallCount(), 1);
+    }
+
+    // Removing collateral from a debt-free (Active) position is a risk reduction, so it also fails
+    // soft on the oracle and still returns the owner's funds.
+    function test_removeCollateral_active_survivesOracleFailure() public {
+        vm.prank(alice);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+
+        adapter.setUnwindAmounts(0, 0); // no token transfer on unwind — isolate the accounting path
+        oracle.setShouldRevert(true);
+
+        vm.expectEmit(true, true, false, false);
+        emit WithdrawAccountingSkipped(posId, borrowAsset);
+
+        vm.prank(alice);
+        pm.removeCollateral(posId, 50e18, 0, 0); // Active, no debt → succeeds despite oracle down
+    }
+
+    // Fail-closed preserved: a leveraged (Borrowed) removal still requires a fresh, trusted
+    // valuation. The post-removal health check calls getHealthFactor() directly (not the soft
+    // path), so an oracle failure must revert the whole removal.
+    function test_removeCollateral_borrowed_failsClosedOnOracleFailure() public {
+        vm.prank(alice);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+
+        vm.prank(lendingEngine);
+        pm.updateDebt(posId, 10_000e18); // Borrowed status
+
+        // getHealthFactor reads live debt from the LendingEngine, so mock a non-zero debt to force
+        // it past the debt==0 short-circuit and into the (now failing) valuation.
+        vm.mockCall(
+            lendingEngine, abi.encodeWithSelector(LendingEngine.getDebt.selector, posId), abi.encode(uint256(5000e6))
+        );
+
+        adapter.setUnwindAmounts(0, 0); // isolate: unwind succeeds, only the health check can revert
+        oracle.setShouldRevert(true);
+
+        vm.prank(alice);
+        vm.expectRevert("ORACLE_FAIL_CLOSED");
+        pm.removeCollateral(posId, 10e18, 0, 0);
+
+        vm.clearMockedCalls();
     }
 
     // ========== updateDebt ==========

@@ -75,6 +75,10 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     event LendingEngineUpdated(address indexed oldEngine, address indexed newEngine);
     event CircuitBreakerUpdated(address indexed oldBreaker, address indexed newBreaker);
     event PositionTransformed(uint256 indexed positionId, address indexed transformer);
+    /// @notice Emitted when supply-cap accounting was skipped on a debt-free withdrawal or
+    ///         collateral removal because the oracle could not price the position. The action
+    ///         still succeeds; monitoring should reconcile RiskManager supply totals afterward.
+    event WithdrawAccountingSkipped(uint256 indexed positionId, address indexed borrowAsset);
 
     // --- ACL Helpers ---
     function _acl() internal view returns (ACLManager) {
@@ -219,16 +223,13 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         // liquidity-less (fee-only) V3 positions as collateral.
         require(price.totalValue > 0, "ZERO_VALUE");
 
-        // RiskManager: validate deposit caps
+        // RiskManager: validate deposit caps (mandatory — already hard-required via _collateralConfig)
         {
-            address rmAddr = core.riskManagerAddr();
-            if (rmAddr != address(0)) {
-                RiskManager rm = RiskManager(rmAddr);
-                (bool valid, string memory reason) =
-                    rm.validateDeposit(price.totalValue, borrowAsset, activePositionCount[msg.sender]);
-                require(valid, reason);
-                rm.recordDeposit(price.totalValue, borrowAsset);
-            }
+            RiskManager rm = _riskManager();
+            (bool valid, string memory reason) =
+                rm.validateDeposit(price.totalValue, borrowAsset, activePositionCount[msg.sender]);
+            require(valid, reason);
+            rm.recordDeposit(price.totalValue, borrowAsset);
         }
 
         // Create position
@@ -270,12 +271,17 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         address adapterAddr = core.adapters(pos.lpType);
         require(adapterAddr != address(0), "ADAPTER_NOT_FOUND");
 
-        // RiskManager: track withdrawal for supply cap
+        // RiskManager: track withdrawal for supply cap. Debt is already 0 here, so no risk
+        // decision depends on this value — an oracle hiccup must not trap a debt-free owner's
+        // collateral. Resolve RM first (hard — a missing RiskManager is a config error, independent
+        // of oracle health), then fail soft on the valuation and surface the skip via event.
         {
-            address rmAddr = core.riskManagerAddr();
-            if (rmAddr != address(0)) {
-                uint256 posValue = getPositionValue(positionId);
-                RiskManager(rmAddr).recordWithdraw(posValue, pos.borrowAsset);
+            RiskManager rm = _riskManager();
+            (uint256 posValue, bool priced) = _tryPositionValue(positionId);
+            if (priced) {
+                rm.recordWithdraw(posValue, pos.borrowAsset);
+            } else {
+                emit WithdrawAccountingSkipped(positionId, pos.borrowAsset);
             }
         }
 
@@ -350,18 +356,16 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         }
         // For V3: liquidity is inside the NFT — oracle reads it directly, no amount update
 
-        // RiskManager: enforce position value cap and track supply delta
+        // RiskManager: enforce position value cap and track supply delta. Adding collateral is
+        // risk-increasing, so the valuation stays hard (fail-closed) — the cap is a risk decision.
         // Note: skip maxPositionsPerUser check (not creating a new position)
         {
-            address rmAddr = core.riskManagerAddr();
-            if (rmAddr != address(0)) {
-                RiskManager rm = RiskManager(rmAddr);
-                uint256 valueAfter = getPositionValue(positionId);
-                require(valueAfter <= rm.maxPositionValue(), "POSITION_TOO_LARGE");
-                uint256 delta = valueAfter > valueBefore ? valueAfter - valueBefore : 0;
-                if (delta > 0) {
-                    rm.recordDeposit(delta, pos.borrowAsset);
-                }
+            RiskManager rm = _riskManager();
+            uint256 valueAfter = getPositionValue(positionId);
+            require(valueAfter <= rm.maxPositionValue(), "POSITION_TOO_LARGE");
+            uint256 delta = valueAfter > valueBefore ? valueAfter - valueBefore : 0;
+            if (delta > 0) {
+                rm.recordDeposit(delta, pos.borrowAsset);
             }
         }
 
@@ -410,12 +414,11 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
             require(liquidity <= currentLiquidity, "EXCEEDS_AVAILABLE_LIQUIDITY");
         }
 
-        // Snapshot pre-change value for RiskManager delta tracking
-        uint256 valueBefore;
-        address rmAddr = core.riskManagerAddr();
-        if (rmAddr != address(0)) {
-            valueBefore = getPositionValue(positionId);
-        }
+        // Snapshot pre-change value for RiskManager delta tracking. Removing collateral is a
+        // reduction, not new risk, so price soft here: an oracle hiccup must not trap the owner's
+        // funds. The Borrowed health check below stays hard — a leveraged removal still requires a
+        // fresh, trusted valuation.
+        (uint256 valueBefore, bool pricedBefore) = _tryPositionValue(positionId);
 
         // Remove liquidity — tokens sent to msg.sender (owner or transformer)
         (amount0, amount1) = ILPAdapter(adapterAddr).removeLiquidity(pos.lpToken, pos.tokenId, liquidity, msg.sender);
@@ -428,12 +431,19 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
             pos.amount -= uint256(liquidity);
         }
 
-        // RiskManager: track withdrawal for supply cap accounting
-        if (rmAddr != address(0)) {
-            uint256 valueAfter = getPositionValue(positionId);
-            uint256 delta = valueBefore > valueAfter ? valueBefore - valueAfter : 0;
-            if (delta > 0) {
-                RiskManager(rmAddr).recordWithdraw(delta, pos.borrowAsset);
+        // RiskManager: track withdrawal for supply cap accounting (fail-soft — see snapshot above).
+        // Resolve RM first (hard — mandatory regardless of oracle health), then skip the delta
+        // entirely if either valuation could not be priced.
+        {
+            RiskManager rm = _riskManager();
+            (uint256 valueAfter, bool pricedAfter) = _tryPositionValue(positionId);
+            if (pricedBefore && pricedAfter) {
+                uint256 delta = valueBefore > valueAfter ? valueBefore - valueAfter : 0;
+                if (delta > 0) {
+                    rm.recordWithdraw(delta, pos.borrowAsset);
+                }
+            } else {
+                emit WithdrawAccountingSkipped(positionId, pos.borrowAsset);
             }
         }
 
@@ -579,10 +589,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         positionExists(positionId)
     {
         if (valueUsd == 0) return;
-        address rmAddr = core.riskManagerAddr();
-        if (rmAddr != address(0)) {
-            RiskManager(rmAddr).recordWithdraw(valueUsd, _positions[positionId].borrowAsset);
-        }
+        _riskManager().recordWithdraw(valueUsd, _positions[positionId].borrowAsset);
     }
 
     // --- View Functions ---
@@ -733,12 +740,10 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         // tracked collateral. Record the delta so RiskManager.marketCurrentSupply stays accurate
         // (track-only — not cap-enforced; see RiskManager.recordCompoundReinvest).
         {
-            address rmAddr = core.riskManagerAddr();
-            if (rmAddr != address(0)) {
-                uint256 valueAfter = getPositionValue(params.positionId);
-                uint256 delta = valueAfter > valueBefore ? valueAfter - valueBefore : 0;
-                if (delta > 0) RiskManager(rmAddr).recordCompoundReinvest(delta, pos.borrowAsset);
-            }
+            RiskManager rm = _riskManager();
+            uint256 valueAfter = getPositionValue(params.positionId);
+            uint256 delta = valueAfter > valueBefore ? valueAfter - valueBefore : 0;
+            if (delta > 0) rm.recordCompoundReinvest(delta, pos.borrowAsset);
         }
 
         emit FeesCompoundedInternal(params.positionId, fees0, fees1, addedLiquidity);
@@ -819,9 +824,28 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
 
     /// @dev Read the collateral-risk config for an LP type from RiskManager (source of truth).
     function _collateralConfig(ILPAdapter.LPType lpType) internal view returns (RiskManager.CollateralConfig memory) {
+        return _riskManager().getCollateralConfig(lpType);
+    }
+
+    /// @dev Resolve RiskManager (reverts if unset). RM is the source of truth for collateral risk
+    ///      and is already hard-required by deposit via _collateralConfig — every path that records
+    ///      supply must fail closed on a missing RM, not silently skip accounting.
+    function _riskManager() internal view returns (RiskManager) {
         address rmAddr = core.riskManagerAddr();
         require(rmAddr != address(0), "RISK_MANAGER_NOT_SET");
-        return RiskManager(rmAddr).getCollateralConfig(lpType);
+        return RiskManager(rmAddr);
+    }
+
+    /// @dev Value a position without letting an oracle failure revert the caller. Used ONLY on
+    ///      non-risk-increasing paths (debt-free exits) where the value merely feeds supply-cap
+    ///      accounting. Risk decisions must call getPositionValue()/getHealthFactor() directly so
+    ///      they stay fail-closed.
+    function _tryPositionValue(uint256 positionId) internal view returns (uint256 value, bool priced) {
+        try this.getPositionValue(positionId) returns (uint256 v) {
+            return (v, true);
+        } catch {
+            return (0, false);
+        }
     }
 
     function _detectLPType(address lpToken) internal view returns (ILPAdapter.LPType) {
