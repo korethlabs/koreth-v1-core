@@ -28,8 +28,14 @@ contract RiskManager {
     // could still drain the pool over time; this bounds that. Unlike the external PoolLiquidityMonitor
     // this measures a flow the protocol itself mediates (every borrow routes through here), so it is
     // a true outflow accumulator (à la ERC-7265) and cannot be evaded by chunking — sub-limit borrows
-    // simply sum within the window. Tumbling 24h window like Aave/Revert Lend; the boundary seam is
-    // bounded by globalBorrowCap, so it can never exceed total exposure.
+    // simply sum within the window. Tumbling 24h window like Aave/Revert Lend.
+    //
+    // This caps GROSS new-borrow volume per window, NOT outstanding exposure: dailyBorrowUsedInWindow
+    // is deliberately not reduced on repay, so a repay+re-borrow churn can push a window's cumulative
+    // usage above globalBorrowCap even while live exposure stays under it. That is intended — netting
+    // repays would let churn evade the rate limit, which is the one thing a flow throttle must resist.
+    // The hard caps above remain the exposure ceiling; this only bounds how fast that ceiling is
+    // approached.
     //
     // 0 = disabled. This is safe-by-default here (unlike borrowCap, whose 0 means "blocked"): the
     // limit sits ABOVE the already-fail-closed global and per-type caps, so a missing config forgoes
