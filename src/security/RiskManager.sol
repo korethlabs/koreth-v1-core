@@ -331,6 +331,13 @@ contract RiskManager {
     ///      the limit does not reset the in-flight window: the next borrow re-evaluates the current
     ///      usage against the new limit, so lowering it can immediately block further borrows this
     ///      window, and raising it frees room at once — both intended for an operational lever.
+    ///
+    ///      Toggling off (0) then back on within the same window deliberately carries the prior
+    ///      usage forward rather than starting fresh: the counter is untouched while disabled, so
+    ///      re-enabling resumes from wherever the window stood, which can block borrows until the
+    ///      window elapses (≤ DAILY_BORROW_WINDOW). This is the fail-closed choice — a fresh full
+    ///      allowance on every re-enable would let an admin round-trip the limit to wipe the bucket
+    ///      mid-window. Wait out the window for a clean slate.
     function setDailyBorrowIncreaseLimit(uint256 limit) external onlyRiskAdmin {
         emit DailyBorrowIncreaseLimitUpdated(dailyBorrowIncreaseLimit, limit);
         dailyBorrowIncreaseLimit = limit;
