@@ -67,6 +67,9 @@ contract MockLendingPool is ILendingPool {
     function recordDeficit(uint256 amount) external {
         uint256 burn = amount > _state.totalBorrow ? _state.totalBorrow : amount;
         _state.totalBorrow -= burn;
+        // Mock holds no reserves, so the whole burn socializes onto suppliers (clamped).
+        uint256 supplierLoss = burn > _state.totalSupply ? _state.totalSupply : burn;
+        _state.totalSupply -= supplierLoss;
     }
 
     function eliminateDeficit() external {}

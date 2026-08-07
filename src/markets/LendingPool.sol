@@ -227,6 +227,12 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
             shares[DEAD_ADDRESS] += DEAD_SHARES;
             totalShares += DEAD_SHARES;
         } else {
+            // A full-pool default can socialize losses all the way down to totalSupply == 0 while
+            // shares are still outstanding (they now redeem to nothing). Refuse new deposits in that
+            // insolvent state: minting against a zero share price would both divide-by-zero and, worse,
+            // hand the fresh deposit straight to the holders of the now-worthless legacy shares. The
+            // market recovers only when eliminateDeficit() credits reserves back into totalSupply.
+            require(state.totalSupply > 0, "MARKET_INSOLVENT");
             sharesToMint = (received * totalShares) / state.totalSupply;
             require(sharesToMint > 0, "DEPOSIT_TOO_SMALL");
         }
@@ -333,35 +339,70 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
     uint256 public deficit;
 
     // --- Events ---
-    event DeficitRecorded(uint256 amount, uint256 totalDeficit);
-    event DeficitEliminated(uint256 covered, uint256 remaining);
+    /// @param burned         Debt removed from totalBorrow (uncollectable principal + interest)
+    /// @param reservesUsed   Portion of `burned` absorbed by protocolReserves (no lender impact)
+    /// @param supplierLoss   Portion socialized onto suppliers by reducing totalSupply
+    /// @param totalDeficit   Running total of socialized loss still owed back to suppliers
+    event DeficitRecorded(uint256 burned, uint256 reservesUsed, uint256 supplierLoss, uint256 totalDeficit);
+    /// @param covered              Deficit reduced this call
+    /// @param refundedToSuppliers  Amount credited back to totalSupply (restores share price)
+    /// @param remaining            Deficit still outstanding after this call
+    event DeficitEliminated(uint256 covered, uint256 refundedToSuppliers, uint256 remaining);
 
     // --- Bad Debt Management ---
 
     /// @notice Record bad debt from underwater liquidation (called by LendingEngine)
-    /// @dev Burns uncollectable debt from totalBorrow and tracks it as deficit. The burn is clamped
-    ///      to totalBorrow — more debt can never be written off than the pool believes exists.
+    /// @dev Burns uncollectable debt from totalBorrow, then absorbs it — reserves first, suppliers
+    ///      second — so the loss is socialized immediately at write-off time. This is the crux of the
+    ///      Morpho-style model: reducing totalSupply the instant bad debt is recorded drops the share
+    ///      price for everyone pro-rata in the same transaction, so no lender can front-run the
+    ///      write-off by withdrawing at the stale (too-high) price and pushing the loss onto whoever
+    ///      exits last. Absorption order:
+    ///        1. `reservesUsed = min(burn, protocolReserves)` — spend the protocol's own cut first,
+    ///           shielding lenders to the extent reserves allow (no totalSupply impact).
+    ///        2. `supplierLoss = min(burn - reservesUsed, totalSupply)` — socialize the remainder by
+    ///           reducing totalSupply. The min() is defensive saturation: the solvency identity
+    ///           `balance + totalBorrow == totalSupply + protocolReserves` with balance >= 0 already
+    ///           guarantees the uncovered remainder can never exceed totalSupply, but we clamp anyway
+    ///           so a hypothetical accounting bug can never underflow here and brick every liquidation.
+    ///      Only `supplierLoss` is tracked in `deficit`: it is the lender principal owed back and thus
+    ///      the only part eliminateDeficit() can later refund. The reserves-funded portion is already
+    ///      final — lenders never lost it, so there is nothing to refund.
+    ///      The burn is clamped to totalBorrow — more debt can never be written off than the pool
+    ///      believes exists.
     function recordDeficit(uint256 amount) external onlyLendingEngine {
         require(amount > 0, "ZERO_AMOUNT");
         uint256 burn = amount > state.totalBorrow ? state.totalBorrow : amount;
         require(burn > 0, "NO_BORROW_TO_BURN");
         state.totalBorrow -= burn;
-        deficit += burn;
+
+        uint256 reservesUsed = burn > protocolReserves ? protocolReserves : burn;
+        protocolReserves -= reservesUsed;
+
+        uint256 uncovered = burn - reservesUsed;
+        uint256 supplierLoss = uncovered > state.totalSupply ? state.totalSupply : uncovered;
+        state.totalSupply -= supplierLoss;
+        deficit += supplierLoss;
+
         _updateRates();
-        emit DeficitRecorded(burn, deficit);
+        emit DeficitRecorded(burn, reservesUsed, supplierLoss, deficit);
     }
 
     /// @notice Cover deficit using protocol reserves (callable by RiskAdmin)
     /// @dev Partial coverage is fine — covers min(deficit, protocolReserves) and leaves the rest
-    ///      outstanding. totalSupply is deliberately NOT reduced: the reserves spent here were the
-    ///      protocol's cut, not lender principal, so lenders are made whole first.
+    ///      outstanding. `deficit` only ever holds the socialized supplier loss (see recordDeficit),
+    ///      so covering it means crediting that amount back into totalSupply: the share price rises
+    ///      pro-rata and suppliers are made whole. This is the symmetric inverse of the socialization
+    ///      in recordDeficit — reserves that later become available flow back to the lenders who ate
+    ///      the loss, not to new depositors.
     function eliminateDeficit() external onlyRiskAdmin {
         require(deficit > 0, "NO_DEFICIT");
         uint256 coverage = deficit > protocolReserves ? protocolReserves : deficit;
         protocolReserves -= coverage;
         deficit -= coverage;
+        state.totalSupply += coverage;
         _updateRates();
-        emit DeficitEliminated(coverage, deficit);
+        emit DeficitEliminated(coverage, coverage, deficit);
     }
 
     // --- Storage Gap ---

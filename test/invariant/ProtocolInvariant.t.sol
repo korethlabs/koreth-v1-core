@@ -499,6 +499,48 @@ contract ProtocolInvariantTest is Test {
     }
 
     // ================================================================
+    // INVARIANT 12b: solvency survives a bad-debt write-off
+    //   Under the old "reduce totalBorrow but not totalSupply" behavior a
+    //   write-off broke `balance + totalBorrow >= totalSupply`, leaving the
+    //   pool insolvent on paper and letting a lender front-run the loss.
+    //   Method A socializes the loss in the same step, so the full accounting
+    //   identity `balance + totalBorrow == totalSupply + protocolReserves`
+    //   is preserved.
+    // ================================================================
+
+    function testFuzz_solvencyHoldsAfterBadDebtWriteoff(uint256 borrowAmt, uint256 badDebt) public {
+        oracle.setPrice(100_000e18);
+        borrowAmt = bound(borrowAmt, 1e18, 65_000e18);
+
+        address user = makeAddr("writeoffUser");
+        vm.prank(user);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+        vm.prank(user);
+        le.borrow(posId, borrowAmt);
+
+        ILendingPool.PoolState memory s0 = market.getPoolState();
+        badDebt = bound(badDebt, 1, s0.totalBorrow);
+        uint256 supplyBefore = s0.totalSupply;
+
+        // The LendingEngine is the only caller allowed to socialize bad debt.
+        vm.prank(address(le));
+        market.recordDeficit(badDebt);
+
+        ILendingPool.PoolState memory s1 = market.getPoolState();
+        uint256 marketBalance = usdc.balanceOf(address(market));
+
+        assertGe(marketBalance + s1.totalBorrow, s1.totalSupply, "Market must stay solvent after write-off");
+        assertEq(
+            marketBalance + s1.totalBorrow,
+            s1.totalSupply + market.protocolReserves(),
+            "Accounting identity preserved: balance + borrow == supply + reserves"
+        );
+        // No reserves in this harness, so the loss lands entirely on suppliers.
+        assertLt(s1.totalSupply, supplyBefore, "supplier supply reduced by the socialized loss");
+    }
+
+    // ================================================================
     // SHARED-POOL INVARIANT A: per-lpType borrowed <= its borrow cap
     // ================================================================
 
