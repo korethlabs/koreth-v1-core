@@ -313,6 +313,64 @@ contract RiskManagerIntegrationTest is Test {
         le.borrow(posId, 10_000e18);
     }
 
+    // ========== Daily Borrow-Increase Rate Limit (Oracle M-1 defense-in-depth) ==========
+
+    /// @dev The limit sums NEW principal within a rolling window and cannot be evaded by chunking:
+    ///      two sub-limit borrows in the same window still add up to a breach.
+    function test_borrow_enforces_dailyBorrowIncreaseLimit() public {
+        vm.prank(owner);
+        rm.setDailyBorrowIncreaseLimit(30_000e18);
+
+        oracle.setPrice(100_000e18);
+        vm.prank(alice);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+
+        vm.prank(alice);
+        le.borrow(posId, 20_000e18);
+
+        // 20K already drawn this window; another 15K would total 35K > 30K.
+        vm.prank(alice);
+        vm.expectRevert("DAILY_BORROW_LIMIT");
+        le.borrow(posId, 15_000e18);
+    }
+
+    /// @dev A tumbling window: once DAILY_BORROW_WINDOW elapses the bucket resets to zero, so the
+    ///      same borrower can draw a fresh day's worth.
+    function test_borrow_dailyLimitResetsAfterWindow() public {
+        vm.prank(owner);
+        rm.setDailyBorrowIncreaseLimit(30_000e18);
+
+        oracle.setPrice(100_000e18);
+        vm.prank(alice);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+
+        vm.prank(alice);
+        le.borrow(posId, 30_000e18); // exhausts the window
+
+        vm.prank(alice);
+        vm.expectRevert("DAILY_BORROW_LIMIT");
+        le.borrow(posId, 1e18);
+
+        // Past the window: bucket resets, borrowing resumes.
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(alice);
+        le.borrow(posId, 25_000e18);
+    }
+
+    /// @dev 0 disables the throttle — it must not block any borrow (safe-by-default, unlike the
+    ///      per-type cap whose 0 means "blocked").
+    function test_borrow_dailyLimitDisabledByDefault() public {
+        oracle.setPrice(100_000e18);
+        vm.prank(alice);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+
+        vm.prank(alice);
+        le.borrow(posId, 50_000e18); // no daily limit set → passes
+    }
+
     // ========== Position Value Cap on Borrow ==========
 
     function test_borrow_enforces_positionValueCap() public {

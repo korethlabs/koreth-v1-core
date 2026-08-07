@@ -39,21 +39,11 @@ contract PoolLiquidityMonitor {
     ProtocolCore public immutable core;
     CircuitBreaker public immutable circuitBreaker;
 
-    /// @notice Last observed USD liquidity per pool, and when it was observed.
-    mapping(address => uint256) public lastKnownTvl;
-    mapping(address => uint256) public lastCheckedAt;
-
-    // --- Configurable Thresholds ---
+    // --- Configurable Threshold ---
     uint256 public minPoolTvl = 1_000_000e18; // $1M floor, 18-dec USD
-    uint256 public tvlDropThresholdBps = 3000; // 30% drop within the window trips the breaker
-    uint256 public tvlDropWindow = 3600; // only compare against an observation this recent
 
-    // --- Absolute Bounds ---
+    // --- Absolute Bound ---
     uint256 public constant MIN_TVL_FLOOR = 100_000e18;
-    uint256 public constant MIN_TVL_DROP_BPS = 1000;
-    uint256 public constant MAX_TVL_DROP_BPS = 8000;
-    uint256 public constant MIN_TVL_DROP_WINDOW = 900; // 15 minutes
-    uint256 public constant MAX_TVL_DROP_WINDOW = 86_400; // 24 hours
 
     event PoolLiquidityChecked(address indexed pool, uint256 tvlUsd, bool healthy);
     event ParameterUpdated(string name, uint256 oldValue, uint256 newValue);
@@ -90,18 +80,6 @@ contract PoolLiquidityMonitor {
         minPoolTvl = _minTvl;
     }
 
-    function setTvlDropThreshold(uint256 _bps) external onlyRiskAdmin {
-        require(_bps >= MIN_TVL_DROP_BPS && _bps <= MAX_TVL_DROP_BPS, "OUT_OF_BOUNDS");
-        emit ParameterUpdated("tvlDropThresholdBps", tvlDropThresholdBps, _bps);
-        tvlDropThresholdBps = _bps;
-    }
-
-    function setTvlDropWindow(uint256 _seconds) external onlyRiskAdmin {
-        require(_seconds >= MIN_TVL_DROP_WINDOW && _seconds <= MAX_TVL_DROP_WINDOW, "OUT_OF_BOUNDS");
-        emit ParameterUpdated("tvlDropWindow", tvlDropWindow, _seconds);
-        tvlDropWindow = _seconds;
-    }
-
     // --- Views ---
 
     /// @notice The pool's liquidity in 18-dec USD, read from the chain.
@@ -130,9 +108,22 @@ contract PoolLiquidityMonitor {
 
     // --- Core Logic ---
 
-    /// @notice Measure a pool's liquidity and trip the breaker if it has fallen too far.
-    /// @dev Keeper-triggered, but not keeper-informed: every figure compared here is read on-chain.
-    /// @return healthy Whether the liquidity this call measured passed both checks — and only that.
+    /// @notice Measure a pool's liquidity and trip the breaker if it has fallen through the floor.
+    /// @dev Keeper-triggered, but not keeper-informed: the figure compared here is read on-chain.
+    ///
+    ///      An absolute floor, and nothing more. An earlier design also paused on a sharp *drop* vs a
+    ///      recent observation, but that comparison stored the previous reading as its baseline and
+    ///      overwrote it every call, so a drain in sub-threshold steps reset the baseline each time
+    ///      and never tripped (audit finding Oracle M-1). It was dropped rather than repaired with a
+    ///      windowed high-water-mark, because the drop check protected nothing the rest of the system
+    ///      does not already cover: collateral is valued off Chainlink, never the pool's own price
+    ///      (see UniswapV3Oracle / UniswapV2Oracle), so a drained pool cannot inflate a position's
+    ///      value; and liquidation seizes the LP's underlying tokens and hands them over WITHOUT
+    ///      swapping through the pool (LiquidationEngine, "NO SWAP"), so pool depth does not gate
+    ///      whether collateral can be realised. Slow-drain throttling that the drop check aimed at is
+    ///      handled where the protocol actually controls the flow — RiskManager's borrow caps and
+    ///      daily borrow-increase limit — not by polling an external pool it cannot intercept.
+    /// @return healthy Whether the liquidity this call measured cleared the floor — and only that.
     ///         A pool paused earlier for an unrelated reason still reads healthy while its liquidity
     ///         holds up. Callers who want the breaker's state should read the breaker, which is the
     ///         one place that knows why a pool is paused.
@@ -140,31 +131,12 @@ contract PoolLiquidityMonitor {
         require(pool != address(0), "ZERO_POOL");
 
         uint256 tvl = poolTvlUsd(pool);
+        healthy = tvl >= minPoolTvl;
 
-        // A pool already paused still gets measured — the record is what tells you afterwards
-        // whether it kept draining — but it is not paused twice.
-        bool alreadyPaused = circuitBreaker.poolPaused(pool);
-
-        healthy = true;
-
-        if (tvl < minPoolTvl) {
-            if (!alreadyPaused) circuitBreaker.pausePool(pool, "TVL_TOO_LOW");
-            healthy = false;
-        } else if (lastKnownTvl[pool] > 0 && lastCheckedAt[pool] > 0) {
-            // Only against a recent observation: comparing today's liquidity to last month's would
-            // read ordinary drift as an emergency.
-            uint256 elapsed = block.timestamp - lastCheckedAt[pool];
-            if (elapsed <= tvlDropWindow && tvl < lastKnownTvl[pool]) {
-                uint256 dropBps = ((lastKnownTvl[pool] - tvl) * 10_000) / lastKnownTvl[pool];
-                if (dropBps >= tvlDropThresholdBps) {
-                    if (!alreadyPaused) circuitBreaker.pausePool(pool, "TVL_DROP");
-                    healthy = false;
-                }
-            }
+        // Don't pause a pool already paused (for any reason) a second time; still report on liquidity.
+        if (!healthy && !circuitBreaker.poolPaused(pool)) {
+            circuitBreaker.pausePool(pool, "TVL_TOO_LOW");
         }
-
-        lastKnownTvl[pool] = tvl;
-        lastCheckedAt[pool] = block.timestamp;
 
         emit PoolLiquidityChecked(pool, tvl, healthy);
         return healthy;

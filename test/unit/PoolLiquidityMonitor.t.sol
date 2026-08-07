@@ -101,7 +101,6 @@ contract PoolLiquidityMonitorTest is Test {
         assertTrue(monitor.checkPool(address(pool)));
 
         assertFalse(circuitBreaker.poolPaused(address(pool)));
-        assertEq(monitor.lastKnownTvl(address(pool)), 2_000_000e18);
     }
 
     function test_checkPool_pausesWhenLiquidityFallsThroughTheFloor() public {
@@ -117,13 +116,18 @@ contract PoolLiquidityMonitorTest is Test {
         assertTrue(circuitBreaker.poolPaused(address(pool)), "a pool this thin must stop taking deposits");
     }
 
-    // ========== The drop ==========
+    // ========== No drop check (Oracle M-1) ==========
 
-    /// @dev The case the floor alone misses: a pool still far above the minimum that lost a third
-    ///      of its liquidity in an hour is behaving nothing like the one that was whitelisted.
-    function test_checkPool_pausesOnASharpDropEvenWellAboveTheFloor() public {
+    /// @dev The monitor is a floor, not a drop detector. A pool that lost 40% of its liquidity but
+    ///      is still above the floor passes — deliberately. The removed drop-% check stored a single
+    ///      previous reading as its baseline and overwrote it every call, so a drain in sub-threshold
+    ///      steps reset the baseline each time and never tripped (Oracle M-1). It protected nothing
+    ///      the rest of the system does not already cover: collateral is valued off Chainlink not the
+    ///      pool's own price, and liquidation seizes underlying tokens without swapping through the
+    ///      pool, so pool depth gates neither a position's value nor whether it can be realised.
+    function test_checkPool_doesNotPauseOnASharpDropThatStaysAboveTheFloor() public {
         vm.prank(keeper);
-        monitor.checkPool(address(pool)); // records $2M
+        monitor.checkPool(address(pool)); // $2M
 
         // Down to $1.2M — a 40% drop, but still above the $1M floor.
         vm.prank(address(pool));
@@ -131,54 +135,9 @@ contract PoolLiquidityMonitorTest is Test {
 
         vm.warp(block.timestamp + 10 minutes);
         vm.prank(keeper);
-        assertFalse(monitor.checkPool(address(pool)));
-
-        assertTrue(circuitBreaker.poolPaused(address(pool)));
-    }
-
-    /// @dev Comparing today's liquidity against a stale observation would read ordinary drift as an
-    ///      emergency, so an old reading is not a baseline.
-    function test_checkPool_ignoresADropMeasuredAgainstAnOldObservation() public {
-        vm.prank(keeper);
-        monitor.checkPool(address(pool));
-
-        vm.prank(address(pool));
-        usdc.transfer(stranger, 800_000e6);
-
-        vm.warp(block.timestamp + 3 hours); // past the 1h window
-        vm.prank(keeper);
         assertTrue(monitor.checkPool(address(pool)));
 
         assertFalse(circuitBreaker.poolPaused(address(pool)));
-    }
-
-    function test_checkPool_leavesAGentleDeclineAlone() public {
-        vm.prank(keeper);
-        monitor.checkPool(address(pool));
-
-        vm.prank(address(pool));
-        usdc.transfer(stranger, 200_000e6); // 10%, under the 30% threshold
-
-        vm.warp(block.timestamp + 10 minutes);
-        vm.prank(keeper);
-        assertTrue(monitor.checkPool(address(pool)));
-
-        assertFalse(circuitBreaker.poolPaused(address(pool)));
-    }
-
-    /// @dev An already-paused pool is still measured: the record is what tells you afterwards
-    ///      whether it kept draining while paused.
-    function test_checkPool_keepsRecordingWhileAlreadyPaused() public {
-        vm.prank(owner);
-        circuitBreaker.pausePool(address(pool), "manual");
-
-        vm.prank(address(pool));
-        usdc.transfer(stranger, 900_000e6);
-
-        vm.prank(keeper);
-        monitor.checkPool(address(pool));
-
-        assertEq(monitor.lastKnownTvl(address(pool)), 1_100_000e18);
     }
 
     /// @dev The return value answers one question — did the liquidity pass — and not "is this pool
@@ -210,46 +169,6 @@ contract PoolLiquidityMonitorTest is Test {
         vm.prank(owner);
         vm.expectRevert("BELOW_ABSOLUTE_MIN");
         monitor.setMinPoolTvl(1e18);
-    }
-
-    /// @dev The bounds exist so that holding RISK_ADMIN is not the same as being able to switch the
-    ///      check off. A 0.1% threshold pauses every pool on noise; a 99% one pauses none.
-    function test_setTvlDropThreshold_rejectsValuesOutsideTheBounds() public {
-        // Read the bounds first: vm.prank and vm.expectRevert both apply to the next call, and a
-        // getter inlined into the argument would be that call.
-        uint256 min = monitor.MIN_TVL_DROP_BPS();
-        uint256 max = monitor.MAX_TVL_DROP_BPS();
-
-        vm.prank(owner);
-        vm.expectRevert("OUT_OF_BOUNDS");
-        monitor.setTvlDropThreshold(min - 1);
-
-        vm.prank(owner);
-        vm.expectRevert("OUT_OF_BOUNDS");
-        monitor.setTvlDropThreshold(max + 1);
-
-        vm.prank(owner);
-        monitor.setTvlDropThreshold(2000);
-        assertEq(monitor.tvlDropThresholdBps(), 2000, "a value inside the bounds still goes through");
-    }
-
-    /// @dev Same idea on the window: too short and every check finds no baseline to compare against,
-    ///      too long and a week-old reading counts as recent.
-    function test_setTvlDropWindow_rejectsValuesOutsideTheBounds() public {
-        uint256 min = monitor.MIN_TVL_DROP_WINDOW();
-        uint256 max = monitor.MAX_TVL_DROP_WINDOW();
-
-        vm.prank(owner);
-        vm.expectRevert("OUT_OF_BOUNDS");
-        monitor.setTvlDropWindow(min - 1);
-
-        vm.prank(owner);
-        vm.expectRevert("OUT_OF_BOUNDS");
-        monitor.setTvlDropWindow(max + 1);
-
-        vm.prank(owner);
-        monitor.setTvlDropWindow(1800);
-        assertEq(monitor.tvlDropWindow(), 1800, "a value inside the bounds still goes through");
     }
 
     function test_constructor_rejectsABreakerFromAnotherCore() public {

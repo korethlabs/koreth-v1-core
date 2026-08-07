@@ -22,6 +22,23 @@ contract RiskManager {
     uint256 public currentGlobalBorrows;
     mapping(ILPAdapter.LPType => uint256) public lpTypeCurrentBorrows;
 
+    // --- Daily Borrow-Increase Rate Limit (defense-in-depth over the hard caps, 18-dec USD) ---
+    // Throttles how much NEW borrow principal can be drawn from the shared pool per rolling day. The
+    // hard caps above bound total exposure but not its RATE, so a slow bleed that stays under them
+    // could still drain the pool over time; this bounds that. Unlike the external PoolLiquidityMonitor
+    // this measures a flow the protocol itself mediates (every borrow routes through here), so it is
+    // a true outflow accumulator (à la ERC-7265) and cannot be evaded by chunking — sub-limit borrows
+    // simply sum within the window. Tumbling 24h window like Aave/Revert Lend; the boundary seam is
+    // bounded by globalBorrowCap, so it can never exceed total exposure.
+    //
+    // 0 = disabled. This is safe-by-default here (unlike borrowCap, whose 0 means "blocked"): the
+    // limit sits ABOVE the already-fail-closed global and per-type caps, so a missing config forgoes
+    // an extra throttle but opens no exploit. Enable it via setDailyBorrowIncreaseLimit.
+    uint256 public dailyBorrowIncreaseLimit;
+    uint256 public dailyBorrowUsedInWindow; // new borrow principal recorded in the current window
+    uint256 public dailyBorrowWindowStart; // timestamp the current window began
+    uint256 public constant DAILY_BORROW_WINDOW = 1 days;
+
     // --- Collateral registry (per LP type) ---
     // Single source of truth for collateral-risk params in the shared-pool model. All bps except
     // haircut (bps applied to collateral value) and borrowCap (18-dec USD). enabled gates deposits
@@ -60,6 +77,7 @@ contract RiskManager {
 
     // --- Events ---
     event GlobalBorrowCapUpdated(uint256 oldValue, uint256 newValue);
+    event DailyBorrowIncreaseLimitUpdated(uint256 oldValue, uint256 newValue);
     event LPTypeBorrowCapUpdated(ILPAdapter.LPType indexed lpType, uint256 cap);
     event CollateralConfigSet(ILPAdapter.LPType indexed lpType);
     event MaxPositionValueUpdated(uint256 oldValue, uint256 newValue);
@@ -140,6 +158,21 @@ contract RiskManager {
         // Check 4: LP type borrow cap (no zero-escape — 0 means blocked, see NO_BORROW_CAP)
         if (borrowAmountUsd > cfg.borrowCap || lpTypeCurrentBorrows[lpType] > cfg.borrowCap - borrowAmountUsd) {
             return (false, "LP_TYPE_CAP_REACHED");
+        }
+
+        // Check 5: daily borrow-increase rate limit. Only NEW principal counts — accrual is not
+        // new borrowing and routes through recordAccrual, which never touches this window. A
+        // tumbling window (reset, not slide) keeps this O(1): the first borrow after the window
+        // elapses starts a fresh 24h bucket. Skipped entirely when the limit is 0 (disabled), so
+        // no window state is written until an admin opts in.
+        if (dailyBorrowIncreaseLimit > 0) {
+            bool newWindow = block.timestamp >= dailyBorrowWindowStart + DAILY_BORROW_WINDOW;
+            uint256 usedInWindow = newWindow ? 0 : dailyBorrowUsedInWindow;
+            if (usedInWindow + borrowAmountUsd > dailyBorrowIncreaseLimit) {
+                return (false, "DAILY_BORROW_LIMIT");
+            }
+            if (newWindow) dailyBorrowWindowStart = block.timestamp;
+            dailyBorrowUsedInWindow = usedInWindow + borrowAmountUsd;
         }
 
         // Atomically record the borrow (no gap between validate and record)
@@ -279,6 +312,16 @@ contract RiskManager {
         require(cap > 0, "ZERO_CAP");
         emit GlobalBorrowCapUpdated(globalBorrowCap, cap);
         globalBorrowCap = cap;
+    }
+
+    /// @notice Set the per-day cap on NEW borrow principal drawn from the shared pool (18-dec USD).
+    /// @dev 0 disables the throttle (see the storage comment for why that is safe here). Changing
+    ///      the limit does not reset the in-flight window: the next borrow re-evaluates the current
+    ///      usage against the new limit, so lowering it can immediately block further borrows this
+    ///      window, and raising it frees room at once — both intended for an operational lever.
+    function setDailyBorrowIncreaseLimit(uint256 limit) external onlyRiskAdmin {
+        emit DailyBorrowIncreaseLimitUpdated(dailyBorrowIncreaseLimit, limit);
+        dailyBorrowIncreaseLimit = limit;
     }
 
     /// @notice Adjust only the borrow cap of an already-configured collateral type.
