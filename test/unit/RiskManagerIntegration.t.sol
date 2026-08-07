@@ -313,6 +313,141 @@ contract RiskManagerIntegrationTest is Test {
         le.borrow(posId, 10_000e18);
     }
 
+    // ========== Daily Borrow-Increase Rate Limit (Oracle M-1 defense-in-depth) ==========
+
+    /// @dev The limit sums NEW principal within a tumbling 24h window and cannot be evaded by
+    ///      chunking: two sub-limit borrows in the same window still add up to a breach.
+    function test_borrow_enforces_dailyBorrowIncreaseLimit() public {
+        vm.prank(owner);
+        rm.setDailyBorrowIncreaseLimit(30_000e18);
+
+        oracle.setPrice(100_000e18);
+        vm.prank(alice);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+
+        vm.prank(alice);
+        le.borrow(posId, 20_000e18);
+
+        // 20K already drawn this window; another 15K would total 35K > 30K.
+        vm.prank(alice);
+        vm.expectRevert("DAILY_BORROW_LIMIT");
+        le.borrow(posId, 15_000e18);
+    }
+
+    /// @dev A tumbling window: once DAILY_BORROW_WINDOW elapses the bucket resets to zero, so the
+    ///      same borrower can draw a fresh day's worth.
+    function test_borrow_dailyLimitResetsAfterWindow() public {
+        vm.prank(owner);
+        rm.setDailyBorrowIncreaseLimit(30_000e18);
+
+        oracle.setPrice(100_000e18);
+        vm.prank(alice);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+
+        vm.prank(alice);
+        le.borrow(posId, 30_000e18); // exhausts the window
+
+        vm.prank(alice);
+        vm.expectRevert("DAILY_BORROW_LIMIT");
+        le.borrow(posId, 1e18);
+
+        // Past the window: bucket resets, borrowing resumes.
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(alice);
+        le.borrow(posId, 25_000e18);
+    }
+
+    /// @dev 0 disables the throttle — it must not block any borrow (safe-by-default, unlike the
+    ///      per-type cap whose 0 means "blocked").
+    function test_borrow_dailyLimitDisabledByDefault() public {
+        oracle.setPrice(100_000e18);
+        vm.prank(alice);
+        uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
+        vm.roll(block.number + 2);
+
+        vm.prank(alice);
+        le.borrow(posId, 50_000e18); // no daily limit set → passes
+    }
+
+    // The property tests below drive validateAndRecordBorrow directly (as the LendingEngine) to
+    // exercise the accumulator in isolation, without the deposit/oracle/block plumbing borrow() needs.
+    // positionValue 1M is under maxPositionValue (10M) and the default V2 cap is NO_BORROW_CAP, so
+    // only the daily limit is under test.
+
+    /// @dev The window sums GROSS new principal and is NOT reduced on repay: a repay+re-borrow churn
+    ///      within one window still hits the limit even though live exposure never exceeded it.
+    ///      Netting repays would let churn evade the throttle — the one thing a flow limit must
+    ///      resist — so this pins that invariant. (test_borrow_repayFreesCapacity proves the opposite
+    ///      for the GLOBAL cap, so the two must not be conflated.)
+    function test_dailyLimit_isGrossFlowNotReducedByRepay() public {
+        vm.prank(owner);
+        rm.setDailyBorrowIncreaseLimit(30_000e18);
+
+        vm.prank(address(le));
+        rm.validateAndRecordBorrow(30_000e18, 1_000_000e18, ILPAdapter.LPType.UniswapV2);
+
+        // Repaying frees global + per-type capacity but must NOT refill the daily window.
+        vm.prank(address(le));
+        rm.recordRepay(30_000e18, ILPAdapter.LPType.UniswapV2);
+
+        vm.prank(address(le));
+        (bool valid, string memory reason) = rm.validateAndRecordBorrow(1e18, 1_000_000e18, ILPAdapter.LPType.UniswapV2);
+        assertFalse(valid, "repay must not refill the daily window");
+        assertEq(reason, "DAILY_BORROW_LIMIT");
+    }
+
+    /// @dev Only NEW principal counts. Interest accrual routes through recordAccrual, which must not
+    ///      consume daily headroom — otherwise a long-lived position's accrual would throttle
+    ///      unrelated healthy borrowers.
+    function test_dailyLimit_accrualDoesNotConsumeWindow() public {
+        vm.prank(owner);
+        rm.setDailyBorrowIncreaseLimit(30_000e18);
+
+        // A large accrual moves the global counter but must leave the daily window untouched.
+        vm.prank(address(le));
+        rm.recordAccrual(100_000e18, ILPAdapter.LPType.UniswapV2);
+
+        vm.prank(address(le));
+        (bool valid,) = rm.validateAndRecordBorrow(30_000e18, 1_000_000e18, ILPAdapter.LPType.UniswapV2);
+        assertTrue(valid, "accrual must not consume the daily window");
+    }
+
+    /// @dev The check is `used + amount > limit`, so a borrow of EXACTLY the limit passes and only
+    ///      the next wei is rejected.
+    function test_dailyLimit_exactLimitPassesThenOneWeiReverts() public {
+        vm.prank(owner);
+        rm.setDailyBorrowIncreaseLimit(30_000e18);
+
+        vm.prank(address(le));
+        (bool valid,) = rm.validateAndRecordBorrow(30_000e18, 1_000_000e18, ILPAdapter.LPType.UniswapV2);
+        assertTrue(valid, "a borrow of exactly the limit must pass");
+
+        vm.prank(address(le));
+        (bool valid2, string memory reason) = rm.validateAndRecordBorrow(1, 1_000_000e18, ILPAdapter.LPType.UniswapV2);
+        assertFalse(valid2, "one wei past the limit must be rejected");
+        assertEq(reason, "DAILY_BORROW_LIMIT");
+    }
+
+    /// @dev Lowering the limit mid-window is an operational lever: if usage already meets or exceeds
+    ///      the new limit, further borrows are blocked immediately without waiting for a window reset.
+    function test_dailyLimit_loweringMidWindowBlocksFurtherBorrows() public {
+        vm.prank(owner);
+        rm.setDailyBorrowIncreaseLimit(30_000e18);
+
+        vm.prank(address(le));
+        rm.validateAndRecordBorrow(20_000e18, 1_000_000e18, ILPAdapter.LPType.UniswapV2);
+
+        vm.prank(owner);
+        rm.setDailyBorrowIncreaseLimit(15_000e18); // below the 20k already drawn this window
+
+        vm.prank(address(le));
+        (bool valid, string memory reason) = rm.validateAndRecordBorrow(1e18, 1_000_000e18, ILPAdapter.LPType.UniswapV2);
+        assertFalse(valid, "lowering the limit below current usage blocks further borrows");
+        assertEq(reason, "DAILY_BORROW_LIMIT");
+    }
+
     // ========== Position Value Cap on Borrow ==========
 
     function test_borrow_enforces_positionValueCap() public {
@@ -434,6 +569,15 @@ contract RiskManagerIntegrationTest is Test {
     event DepositRecorded(uint256 valueUsd, address indexed pool, uint256 newPoolSupply);
     event WithdrawRecorded(uint256 valueUsd, address indexed pool, uint256 newPoolSupply);
     event BorrowTrackingDrift(uint256 tracked, uint256 repaid, bool isGlobal);
+    event DailyBorrowIncreaseLimitUpdated(uint256 oldValue, uint256 newValue);
+
+    function test_setDailyBorrowIncreaseLimit_emitsEventAndStores() public {
+        vm.expectEmit(false, false, false, true);
+        emit DailyBorrowIncreaseLimitUpdated(0, 30_000e18);
+        vm.prank(owner);
+        rm.setDailyBorrowIncreaseLimit(30_000e18);
+        assertEq(rm.dailyBorrowIncreaseLimit(), 30_000e18, "setter must store the new limit");
+    }
 
     /// @dev lpType is checked as topic1: indexers reconstruct per-collateral exposure from these
     ///      events, so attributing a borrow to the wrong type is a real (silent) bug.
