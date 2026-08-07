@@ -166,7 +166,13 @@ contract RiskManager {
         // elapses starts a fresh 24h bucket. Skipped entirely when the limit is 0 (disabled), so
         // no window state is written until an admin opts in.
         if (dailyBorrowIncreaseLimit > 0) {
-            bool newWindow = block.timestamp >= dailyBorrowWindowStart + DAILY_BORROW_WINDOW;
+            // dailyBorrowWindowStart == 0 means no window has ever opened (fresh deploy, or the
+            // first borrow after an admin enables the limit): treat it as a new window so the
+            // bucket anchors to the current time rather than to timestamp 0. Without this the
+            // first window would stay pinned at 0 on any chain whose clock has not yet passed
+            // DAILY_BORROW_WINDOW (dev/test chains), never resetting.
+            bool newWindow =
+                dailyBorrowWindowStart == 0 || block.timestamp >= dailyBorrowWindowStart + DAILY_BORROW_WINDOW;
             uint256 usedInWindow = newWindow ? 0 : dailyBorrowUsedInWindow;
             if (usedInWindow + borrowAmountUsd > dailyBorrowIncreaseLimit) {
                 return (false, "DAILY_BORROW_LIMIT");
