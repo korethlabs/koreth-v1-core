@@ -23,7 +23,7 @@ contract RiskManager {
     mapping(ILPAdapter.LPType => uint256) public lpTypeCurrentBorrows;
 
     // --- Daily Borrow-Increase Rate Limit (defense-in-depth over the hard caps, 18-dec USD) ---
-    // Throttles how much NEW borrow principal can be drawn from the shared pool per rolling day. The
+    // Throttles how much NEW borrow principal can be drawn from the shared pool per 24h window. The
     // hard caps above bound total exposure but not its RATE, so a slow bleed that stays under them
     // could still drain the pool over time; this bounds that. Unlike the external PoolLiquidityMonitor
     // this measures a flow the protocol itself mediates (every borrow routes through here), so it is
