@@ -114,6 +114,12 @@ contract AccessControlNegativeTest is Test {
         rm.setGlobalBorrowCap(50_000e18);
     }
 
+    function test_setDailyBorrowIncreaseLimit_revertsUnauthorized() public {
+        vm.prank(attacker);
+        vm.expectRevert("NOT_RISK_ADMIN");
+        rm.setDailyBorrowIncreaseLimit(30_000e18);
+    }
+
     function test_setLPTypeBorrowCap_revertsUnauthorized() public {
         vm.prank(attacker);
         vm.expectRevert("NOT_RISK_ADMIN");
