@@ -300,13 +300,11 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             // realizedUsd via _valueUsd on the collateral tokens. That single canonical registry is the
             // same ruler the rest of this function already values debt against, so the refund0/refund1
             // ratio is manipulation-neutral regardless of the pool's spot state. _valueUsd fails closed
-            // on a missing/stale collateral feed (NO_PRICE_FEED / STALE_PRICE).
-            //
-            // NOTE: getPositionValue prices the same underlyings through the LP oracle's OWN immutable
-            // priceFeedRegistry, which registerOracle does not force to equal core's. In the intended
-            // wiring they are one address and the clamp adds no feed requirement beyond the seize; if an
-            // operator lets them diverge, the clamp can revert where getPositionValue did not — a
-            // fail-closed regression that surfaces the misconfiguration instead of mispricing the refund.
+            // on a missing/stale collateral feed (NO_PRICE_FEED / STALE_PRICE), but getPositionValue
+            // prices the very same underlyings through the LP oracle, which now also resolves the registry
+            // live from core.getPriceFeedRegistry() per call (UniswapV2Oracle/UniswapV3Oracle._registry()).
+            // The clamp therefore requires no feed beyond what valuing the position already required, and a
+            // registry rotation moves both measurements together — no divergence to exploit.
             //
             // The transfer is DEFERRED to the terminal routing block: the recipient depends on badDebt,
             // which is only known after the debt is re-read post-seize. The mulDiv stays strictly inside
