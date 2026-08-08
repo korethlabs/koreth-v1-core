@@ -16,6 +16,7 @@ import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {ILendingPool} from "../../src/interfaces/ILendingPool.sol";
 import {RiskManager} from "../../src/security/RiskManager.sol";
+import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {MockLPAdapter} from "../mocks/MockLPAdapter.sol";
 import {MockLPOracle} from "../mocks/MockLPOracle.sol";
@@ -145,7 +146,16 @@ contract FullLifecycleTest is Test {
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
         core.whitelistLpPool(TestPools.asContract(lpToken));
-        TestPricing.wireStable(core, address(usdc));
+        PriceFeedRegistry priceRegistry = TestPricing.wireStable(core, address(usdc));
+        // WETH is the pool's other underlying. The over-seize clamp (Liquidation M-1) values the
+        // realized token0/token1 through the registry, and in production getPositionValue already
+        // requires both underlyings priced (UniswapV2Oracle/UniswapV3Oracle both read
+        // priceFeedRegistry.getPrice(token0/token1)) — the MockLPOracle used here bypasses that, so
+        // wiring WETH restores production parity. At $200 the pool's fixed 25 WETH + 25K USDC
+        // composition is worth exactly the $30K oracle price used by the partial-liquidation test, so
+        // the clamp is a no-op there; the full-debt test intentionally undervalues via the oracle, so
+        // the clamp correctly refunds the over-seized excess without disturbing its debt/LP assertions.
+        TestPricing.priceAsset(priceRegistry, address(weth), 200e18);
         core.registerLendingPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         // V2 collateral: 65% LTV / 75% liq / 5% bonus / no haircut / $10M borrow cap

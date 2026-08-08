@@ -19,6 +19,7 @@ import {MockERC20} from "../mocks/MockERC20.sol";
 import {RiskManager} from "../../src/security/RiskManager.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {TestPricing} from "../helpers/TestPricing.sol";
+import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
 import {TestPools} from "../helpers/TestPools.sol";
 import {TestSecurity} from "../helpers/TestSecurity.sol";
 
@@ -122,7 +123,12 @@ contract V3LiquidationPaths is Test {
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
         core.whitelistLpPool(TestPools.asContract(lpToken));
         core.whitelistLpPool(TestPools.asContract(v2LpToken));
-        TestPricing.wireStable(core, address(usdc));
+        // Price both underlyings in the registry: the over-seize clamp (Liquidation M-1) re-values the
+        // seized token0/token1 at Chainlink, so a nonzero WETH seize needs a WETH feed. $200 keeps the
+        // pool composition (25 WETH + 25_000 USDC = $30k) below the oracle position value at liquidation
+        // ($35k), so the clamp stays a no-op and the legacy exact-balance assertions hold.
+        PriceFeedRegistry priceRegistry = TestPricing.wireStable(core, address(usdc));
+        TestPricing.priceAsset(priceRegistry, address(weth), 200e18);
         core.registerLendingPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());

@@ -23,15 +23,22 @@ import {PriceFeedRegistry} from "./PriceFeedRegistry.sol";
 ///      Result is in 18-decimal USD.
 contract UniswapV2Oracle is ILPOracle {
     ProtocolCore public immutable core;
-    PriceFeedRegistry public immutable priceFeedRegistry;
 
-    constructor(address _core, address _priceFeedRegistry) {
+    constructor(address _core) {
         require(_core != address(0), "ZERO_CORE");
         require(_core.code.length > 0, "NOT_CONTRACT");
-        require(_priceFeedRegistry != address(0), "ZERO_REGISTRY");
-        require(_priceFeedRegistry.code.length > 0, "NOT_CONTRACT");
         core = ProtocolCore(_core);
-        priceFeedRegistry = PriceFeedRegistry(_priceFeedRegistry);
+    }
+
+    /// @dev Resolve the price registry live from core rather than caching it. core.setPriceFeedRegistry
+    ///      can rotate the registry, and every other consumer (LendingEngine, PositionManager,
+    ///      LiquidationEngine, PoolLiquidityMonitor) already reads it per-call through the same getter;
+    ///      an immutable snapshot here would silently price positions against a stale registry after a
+    ///      rotation, diverging from the debt valuation. getPriceFeedRegistry() fails closed
+    ///      (PRICE_REGISTRY_UNSET) and setPriceFeedRegistry enforces the registry is bound to this core,
+    ///      so the per-call read inherits both guarantees.
+    function _registry() internal view returns (PriceFeedRegistry) {
+        return PriceFeedRegistry(core.getPriceFeedRegistry());
     }
 
     // --- ILPOracle Implementation ---
@@ -103,6 +110,7 @@ contract UniswapV2Oracle is ILPOracle {
         uint256 reserve1 = _normalizeTo18(uint256(reserve1Raw), dec1);
 
         // Get prices from PriceFeedRegistry (18-decimal USD)
+        PriceFeedRegistry priceFeedRegistry = _registry();
         uint256 price0 = priceFeedRegistry.getPrice(token0);
         uint256 price1 = priceFeedRegistry.getPrice(token1);
 

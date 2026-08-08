@@ -59,9 +59,10 @@ contract UniswapV3OracleForkTest is Test {
         priceFeedRegistry.setPriceFeed(DAI, CL_DAI_USD);
         // Use generous staleness for fork testing (node may not be fully synced)
         priceFeedRegistry.setMaxStaleness(86_400); // 24 hours
+        core.setPriceFeedRegistry(address(priceFeedRegistry));
         vm.stopPrank();
 
-        oracle = new UniswapV3OracleForkHarness(address(core), UNI_V3_NFT_MANAGER, address(priceFeedRegistry));
+        oracle = new UniswapV3OracleForkHarness(address(core), UNI_V3_NFT_MANAGER);
         nftManager = INonfungiblePositionManager(UNI_V3_NFT_MANAGER);
     }
 
@@ -423,13 +424,7 @@ contract UniswapV3OracleForkTest is Test {
 
 /// @notice Harness exposing the internal Chainlink-implied sqrtPrice helper for fork assertions.
 contract UniswapV3OracleForkHarness is UniswapV3Oracle {
-    constructor(
-        address _core,
-        address _positionManager,
-        address _priceFeedRegistry
-    )
-        UniswapV3Oracle(_core, _positionManager, _priceFeedRegistry)
-    {}
+    constructor(address _core, address _positionManager) UniswapV3Oracle(_core, _positionManager) {}
 
     function exposed_chainlinkSqrtPriceX96(
         uint256 price0,

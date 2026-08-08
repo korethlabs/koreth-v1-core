@@ -49,13 +49,7 @@ contract MockNFTManagerV3 {
 
 /// @notice Harness exposing the internal Chainlink-implied sqrtPrice helper.
 contract UniswapV3OracleHarness is UniswapV3Oracle {
-    constructor(
-        address _core,
-        address _positionManager,
-        address _priceFeedRegistry
-    )
-        UniswapV3Oracle(_core, _positionManager, _priceFeedRegistry)
-    {}
+    constructor(address _core, address _positionManager) UniswapV3Oracle(_core, _positionManager) {}
 
     function exposed_chainlinkSqrtPriceX96(
         uint256 price0,
@@ -111,10 +105,11 @@ contract UniswapV3OracleCompositionTest is Test {
         registry = new PriceFeedRegistry(address(core));
         registry.setPriceFeed(address(token0), address(feed0));
         registry.setPriceFeed(address(token1), address(feed1));
+        core.setPriceFeedRegistry(address(registry));
         vm.stopPrank();
 
         nft = new MockNFTManagerV3();
-        oracle = new UniswapV3OracleHarness(address(core), address(nft), address(registry));
+        oracle = new UniswapV3OracleHarness(address(core), address(nft));
     }
 
     function _price(

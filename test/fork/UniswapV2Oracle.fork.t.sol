@@ -42,9 +42,10 @@ contract UniswapV2OracleForkTest is Test {
         // Fork may have stale Chainlink data — increase tolerance for testing
         priceFeedRegistry.setMaxStaleness(86_400); // 24h for fork tests
         core.whitelistLpPool(UNI_V2_WETH_USDC);
+        core.setPriceFeedRegistry(address(priceFeedRegistry));
         vm.stopPrank();
 
-        oracle = new UniswapV2Oracle(address(core), address(priceFeedRegistry));
+        oracle = new UniswapV2Oracle(address(core));
     }
 
     // ========== Basic Pricing ==========
@@ -134,17 +135,19 @@ contract UniswapV2OracleForkTest is Test {
     // ========== Missing Feed ==========
 
     function test_missingFeed_reverts() public {
-        // Deploy oracle with empty registry (no feeds registered)
-        // Pool is already whitelisted on core, so the pool check passes
-        vm.prank(owner);
+        // Point core at an empty registry (no feeds). The oracle now reads
+        // core.getPriceFeedRegistry() per call, so rotating core's registry must make pricing
+        // fail closed with NO_PRICE_FEED — the empty-feed path moved from the constructor to core.
+        vm.startPrank(owner);
         PriceFeedRegistry emptyRegistry = new PriceFeedRegistry(address(core));
-        UniswapV2Oracle oracle2 = new UniswapV2Oracle(address(core), address(emptyRegistry));
+        core.setPriceFeedRegistry(address(emptyRegistry));
+        vm.stopPrank();
 
         IUniswapV2Pair pair = IUniswapV2Pair(UNI_V2_WETH_USDC);
         uint256 amount = pair.totalSupply() / 100;
 
         vm.expectRevert("NO_PRICE_FEED");
-        oracle2.getRawPrice(UNI_V2_WETH_USDC, 0, amount);
+        oracle.getRawPrice(UNI_V2_WETH_USDC, 0, amount);
     }
 
     function test_unsupportedPool_revertsNotContract() public {

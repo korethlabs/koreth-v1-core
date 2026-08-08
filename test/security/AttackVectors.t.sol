@@ -19,6 +19,7 @@ import {MockERC20} from "../mocks/MockERC20.sol";
 import {RiskManager} from "../../src/security/RiskManager.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {TestPricing} from "../helpers/TestPricing.sol";
+import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
 import {TestPools} from "../helpers/TestPools.sol";
 import {TestSecurity} from "../helpers/TestSecurity.sol";
 
@@ -111,7 +112,11 @@ contract AttackVectorTests is Test {
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.whitelistLpPool(TestPools.asContract(lpToken));
-        TestPricing.wireStable(core, address(usdc));
+        // Price token0 (WETH) too: the over-seize clamp (M-1) re-values the seized underlying at
+        // Chainlink, so any nonzero WETH seize needs a WETH feed. These attack tests assert debt
+        // reduction / status, not exact balances, so the exact price only needs to be a live feed.
+        PriceFeedRegistry priceRegistry = TestPricing.wireStable(core, address(usdc));
+        TestPricing.priceAsset(priceRegistry, address(weth), 200e18);
         core.registerLendingPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
