@@ -56,6 +56,7 @@ contract LiquidationEngineTest is Test {
         uint256 liquidatorProfit
     );
     event MaxLiquidationPortionUpdated(uint256 oldValue, uint256 newValue);
+    event LiquidationOverSeizeRefunded(uint256 indexed positionId, uint256 refund0, uint256 refund1);
 
     function setUp() public {
         usdc = new MockERC20("USDC", "USDC", 18);
@@ -122,6 +123,12 @@ contract LiquidationEngineTest is Test {
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
         core.whitelistLpPool(TestPools.asContract(lpToken));
         priceRegistry = TestPricing.wireStable(core, address(usdc));
+        // WETH is the pool's other underlying. At liquidation time the default position holds
+        // 25 WETH + 25,000 USDC and the oracle values it at $30k, so WETH is worth $200 here: the
+        // registry-valued underlying then equals the oracle target and the over-seize clamp
+        // (Liquidation M-1) is a no-op for the default tests. Tests that deliberately diverge WETH
+        // from this move the feed themselves.
+        TestPricing.priceAsset(priceRegistry, address(weth), 200e18);
         core.registerLendingPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV2, RiskConfig.defaultConfig());
@@ -829,6 +836,147 @@ contract LiquidationEngineTest is Test {
         // Position still in Borrowed status
         IPositionManager.Position memory pos = pm.getPosition(posId);
         assertEq(uint8(pos.status), uint8(IPositionManager.PositionStatus.Borrowed));
+    }
+
+    // ========== Liquidation M-1: over-seize clamp ==========
+
+    /// @dev The seize is sized against the Chainlink fair value (oracle), but unwind hands over
+    ///      tokens at the pool's spot composition. When the underlying is worth more at Chainlink
+    ///      than the seize target, the surplus must go back to the borrower — not the liquidator.
+    ///      Here WETH is moved to $400 while the oracle still values the position at $30k, so a
+    ///      partial seize realizes more than repay+bonus. The excess of each token is refunded.
+    function test_liquidate_overSeize_refundsExcessToBorrower() public {
+        uint256 posId = _createLiquidatablePosition(); // oracle $30k, HF 0.75
+
+        // WETH is really worth $400 at Chainlink — double what the default position assumes.
+        vm.prank(owner);
+        TestPricing.feedFor(priceRegistry, address(weth)).setAnswer(400e18);
+
+        // Partial seize: repay $10k of the $30k debt. collateralToSeize = 10.5k < positionValue 30k.
+        uint256 repayAmount = 10_000e18;
+        usdc.mint(liquidator, repayAmount);
+        vm.prank(liquidator);
+        usdc.approve(address(liq), repayAmount);
+
+        // liquidityToRemove = 100e18 * 10_500 / 30_000 = 35e18 → unwind gives 8.75 WETH + 8_750 USDC.
+        // realized @ Chainlink = 8.75*400 + 8_750 = 12_250; target 10_500 → keep 10_500/12_250.
+        // keep0 = 8.75 * 10_500/12_250 = 7.5 WETH; refund0 = 1.25 WETH.
+        // keep1 = 8_750 * 10_500/12_250 = 7_500 USDC; refund1 = 1_250 USDC.
+        uint256 aliceWethBefore = weth.balanceOf(alice);
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+        uint256 liqWethBefore = weth.balanceOf(liquidator);
+        uint256 liqUsdcBefore = usdc.balanceOf(liquidator);
+
+        vm.expectEmit(true, false, false, true, address(liq));
+        emit LiquidationOverSeizeRefunded(posId, 1.25e18, 1250e18);
+
+        vm.prank(liquidator);
+        liq.liquidate(posId, repayAmount, block.timestamp + 1 hours, 0, 0);
+
+        assertEq(weth.balanceOf(alice) - aliceWethBefore, 1.25e18, "borrower refunded the excess WETH");
+        assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, 1250e18, "borrower refunded the excess USDC");
+
+        // The M-1 invariant: the liquidator cannot pocket more than the Chainlink seize target
+        // (repay + bonus). Pre-clamp the unwind produced 8.75 WETH + 8_750 USDC; after the clamp the
+        // liquidator's take is the kept 7.5 WETH + 7_500 USDC (minus any protocol fee, never more).
+        // Bounding each token catches a double-spend where the borrower is refunded yet the liquidator
+        // is still paid the full pre-clamp amount, and bounding their Chainlink value pins the target.
+        // token1 is USDC, which is also the borrow asset the liquidator just paid out, so its balance
+        // net-decreases; add back the repay to isolate the seized-collateral inflow.
+        uint256 liqWeth = weth.balanceOf(liquidator) - liqWethBefore;
+        uint256 liqUsdc = usdc.balanceOf(liquidator) + repayAmount - liqUsdcBefore;
+        assertLe(liqWeth, 7.5e18, "liquidator WETH take capped at the kept share");
+        assertLe(liqUsdc, 7500e18, "liquidator USDC take capped at the kept share");
+        // WETH is $400, USDC $1 (both 18-dec here) → value in 18-dec USD.
+        assertLe(liqWeth * 400 + liqUsdc, 10_500e18, "liquidator's realized value capped at repay+bonus");
+    }
+
+    /// @dev The mirror case: when the pool's spot composition agrees with Chainlink, the clamp is a
+    ///      no-op — no refund, no event. WETH stays at its consistent $200, so realized == target.
+    function test_liquidate_noOverSeize_whenConsistent_noRefund() public {
+        uint256 posId = _createLiquidatablePosition();
+
+        uint256 repayAmount = 10_000e18; // partial
+        usdc.mint(liquidator, repayAmount);
+        vm.prank(liquidator);
+        usdc.approve(address(liq), repayAmount);
+
+        uint256 aliceWethBefore = weth.balanceOf(alice);
+
+        vm.recordLogs();
+        vm.prank(liquidator);
+        liq.liquidate(posId, repayAmount, block.timestamp + 1 hours, 0, 0);
+
+        assertEq(weth.balanceOf(alice), aliceWethBefore, "no refund when realized equals the target");
+
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+        for (uint256 i = 0; i < entries.length; i++) {
+            assertTrue(
+                entries[i].topics[0] != keccak256("LiquidationOverSeizeRefunded(uint256,uint256,uint256)"),
+                "clamp must not fire when pricing is consistent"
+            );
+        }
+    }
+
+    /// @dev The clamp is gated to partial seizures. On a full seizure the whole position is taken and
+    ///      any surplus over the debt is returned through the full-close residual path, so clamping
+    ///      here would double-refund. Even with WETH marked up, a full seize emits no refund event.
+    function test_liquidate_fullSeize_notClamped() public {
+        vm.prank(owner);
+        liq.setMaxLiquidationPortion(10_000);
+
+        uint256 posId = _createLiquidatablePosition(); // HF 0.75 → full seize on full repay
+
+        vm.prank(owner);
+        TestPricing.feedFor(priceRegistry, address(weth)).setAnswer(400e18);
+
+        uint256 totalDebt = le.getDebt(posId);
+        usdc.mint(liquidator, totalDebt);
+        vm.prank(liquidator);
+        usdc.approve(address(liq), totalDebt);
+
+        vm.recordLogs();
+        vm.prank(liquidator);
+        liq.liquidate(posId, totalDebt, block.timestamp + 1 hours, 0, 0);
+
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+        for (uint256 i = 0; i < entries.length; i++) {
+            assertTrue(
+                entries[i].topics[0] != keccak256("LiquidationOverSeizeRefunded(uint256,uint256,uint256)"),
+                "full seizure must not go through the partial-seize clamp"
+            );
+        }
+    }
+
+    /// @dev The clamp values the seized underlying through the same registry as the debt leg, so a
+    ///      collateral feed that stops updating must stop the liquidation, not be waved through with a
+    ///      stale price. In the mock harness getPositionValue is oracle-driven and never touches the
+    ///      registry, so the clamp's _valueUsd is the sole registry read of WETH here — isolating the
+    ///      new collateral-side dependency this fix introduces. Fails closed, per protocol rule.
+    function test_liquidate_overSeize_staleCollateralFeed_reverts() public {
+        uint256 posId = _createLiquidatablePosition(); // oracle $30k, HF 0.75
+
+        uint256 repayAmount = 10_000e18; // partial → reaches the clamp
+        usdc.mint(liquidator, repayAmount);
+        vm.prank(liquidator);
+        usdc.approve(address(liq), repayAmount);
+
+        // Freeze the WETH feed at an early timestamp and move past maxStaleness (1h). getPrice() in
+        // _valueUsd(WETH, amount0) must reject it. The borrow (USDC) leg is left live, so the revert
+        // can only originate from the clamp's collateral valuation.
+        uint256 answeredAt = 1000;
+        vm.warp(answeredAt + 2 hours);
+        vm.mockCall(
+            address(TestPricing.feedFor(priceRegistry, address(weth))),
+            abi.encodeWithSignature("latestRoundData()"),
+            abi.encode(uint80(1), int256(400e18), answeredAt, answeredAt, uint80(1))
+        );
+
+        vm.prank(liquidator);
+        vm.expectRevert("STALE_PRICE");
+        liq.liquidate(posId, repayAmount, block.timestamp + 1 hours, 0, 0);
+
+        vm.clearMockedCalls();
     }
 
     // ========== Token Transfer Coverage ==========

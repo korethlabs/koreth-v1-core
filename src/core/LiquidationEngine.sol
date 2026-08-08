@@ -62,6 +62,9 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     /// @notice Emitted when a capped partial liquidation leaves a position still in debt with
     ///         collateral above the dust threshold — latent under-collateralization to monitor.
     event ResidualInsolvency(uint256 indexed positionId, uint256 remainingDebt, uint256 remainingValue);
+    /// @notice Emitted when unwind realized more value (at spot) than the Chainlink-sized seize
+    ///         target, and the excess underlying was refunded to the borrower (Liquidation M-1).
+    event LiquidationOverSeizeRefunded(uint256 indexed positionId, uint256 refund0, uint256 refund1);
 
     function _acl() internal view returns (ACLManager) {
         return core.aclManager();
@@ -271,6 +274,35 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
                 positionManager.reducePositionAmount(positionId, amountToReduce);
             }
             (amount0, amount1) = adapter.unwind(pos.lpToken, pos.tokenId, liquidityToRemove);
+
+            // Step 7b: Clamp an over-seize (Liquidation M-1). liquidityToRemove was sized against the
+            // Chainlink fair value (positionValue), but unwind realizes tokens at the pool's actual
+            // spot composition. When spot diverges from Chainlink, the realized tokens can be worth
+            // more than collateralToSeizeNormalized (repay + bonus) — the liquidator would pocket the
+            // difference at the borrower's expense. Re-value what came out at Chainlink and, if it
+            // exceeds the target, refund the proportional excess of each token to the borrower.
+            //
+            // Only on a partial seize. The full-seize branch above is reached exactly when
+            // collateralToSeizeNormalized >= positionValue, and on a full unwind realizedUsd equals the
+            // whole position's Chainlink value == positionValue <= target — so the clamp would be a
+            // mathematical no-op there anyway. Gating it out keeps the full-close residual path (which
+            // already returns any leftover to the borrower) as the single owner of full-seize surplus.
+            // This never reverts and never reads the pool — realizedUsd comes from the same registry as
+            // the seize target, so the two are measured on one ruler and their ratio is manipulation-neutral.
+            if (liquidityToRemove256 < totalLiquidity) {
+                uint256 realizedUsd = _valueUsd(pos.token0, amount0) + _valueUsd(pos.token1, amount1);
+                if (realizedUsd > collateralToSeizeNormalized) {
+                    uint256 keep0 = Math.mulDiv(amount0, collateralToSeizeNormalized, realizedUsd);
+                    uint256 keep1 = Math.mulDiv(amount1, collateralToSeizeNormalized, realizedUsd);
+                    uint256 refund0 = amount0 - keep0;
+                    uint256 refund1 = amount1 - keep1;
+                    amount0 = keep0;
+                    amount1 = keep1;
+                    if (refund0 > 0) OZIERC20(pos.token0).safeTransfer(pos.owner, refund0);
+                    if (refund1 > 0) OZIERC20(pos.token1).safeTransfer(pos.owner, refund1);
+                    emit LiquidationOverSeizeRefunded(positionId, refund0, refund1);
+                }
+            }
         }
 
         // Step 8: Protocol fee — taken from underlying tokens.
@@ -459,6 +491,14 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     function _getRepayValueUsd(address borrowAsset, uint256 amount, uint8 decimals) internal view returns (uint256) {
         require(decimals <= 36, "INVALID_DECIMALS");
         return PriceFeedRegistry(core.getPriceFeedRegistry()).getUsdValue(borrowAsset, amount, decimals);
+    }
+
+    /// @notice Value a token amount in 18-dec USD through the Chainlink registry.
+    /// @dev Same source and reverts-on-missing-feed discipline as _getRepayValueUsd; used to measure
+    ///      what a partial unwind actually realized so an over-seize can be clamped (Liquidation M-1).
+    function _valueUsd(address token, uint256 amount) internal view returns (uint256) {
+        if (amount == 0) return 0;
+        return PriceFeedRegistry(core.getPriceFeedRegistry()).getUsdValue(token, amount, TokenUtils.safeDecimals(token));
     }
 
     // --- Storage Gap (UUPS upgrade safety) ---
