@@ -287,8 +287,10 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             // whole position's Chainlink value == positionValue <= target — so the clamp would be a
             // mathematical no-op there anyway. Gating it out keeps the full-close residual path (which
             // already returns any leftover to the borrower) as the single owner of full-seize surplus.
-            // This never reverts and never reads the pool — realizedUsd comes from the same registry as
-            // the seize target, so the two are measured on one ruler and their ratio is manipulation-neutral.
+            // realizedUsd never reads the pool — it comes from the same registry as the seize target, so
+            // the two are measured on one ruler and their ratio is manipulation-neutral. _valueUsd fails
+            // closed on a missing/stale collateral feed (NO_PRICE_FEED / STALE_PRICE), the same discipline
+            // the debt leg already enforces — a liquidation that can't price the collateral must not settle.
             if (liquidityToRemove256 < totalLiquidity) {
                 uint256 realizedUsd = _valueUsd(pos.token0, amount0) + _valueUsd(pos.token1, amount1);
                 if (realizedUsd > collateralToSeizeNormalized) {
