@@ -918,14 +918,19 @@ contract LiquidationEngineTest is Test {
         }
     }
 
-    /// @dev The clamp is gated to partial seizures. On a full seizure the whole position is taken and
-    ///      any surplus over the debt is returned through the full-close residual path, so clamping
-    ///      here would double-refund. Even with WETH marked up, a full seize emits no refund event.
-    function test_liquidate_fullSeize_notClamped() public {
+    /// @dev The clamp runs on FULL seizes too (Liquidation M-1 correctness gap). Fair LP pricing values
+    ///      the position at 2*sqrt(r0*p0 * r1*p1) while unwind realizes r0*p0 + r1*p1; by AM-GM the
+    ///      realized value is >= the fair value on an imbalanced pool, so a full seize can over-realize.
+    ///      Here WETH is marked to $400 (registry) while a full unwind is 25 WETH + 25,000 USDC = $35k
+    ///      realized against a repay+bonus target below that — the excess must be clamped. Because the
+    ///      full repay clears the debt (solvent close), the excess is refunded to the borrower, not the
+    ///      liquidator. An earlier version wrongly gated the clamp to partial seizes and left this surplus
+    ///      with the liquidator.
+    function test_liquidate_fullSeize_overSeize_refundsToBorrower() public {
         vm.prank(owner);
         liq.setMaxLiquidationPortion(10_000);
 
-        uint256 posId = _createLiquidatablePosition(); // HF 0.75 → full seize on full repay
+        uint256 posId = _createLiquidatablePosition(); // oracle $30k, HF 0.75 → full seize on full repay
 
         vm.prank(owner);
         TestPricing.feedFor(priceRegistry, address(weth)).setAnswer(400e18);
@@ -935,17 +940,98 @@ contract LiquidationEngineTest is Test {
         vm.prank(liquidator);
         usdc.approve(address(liq), totalDebt);
 
-        vm.recordLogs();
+        // Full unwind (100 units) → 25 WETH + 25,000 USDC. Realized @ Chainlink = 25*400 + 25_000 = 35_000.
+        // Target = repay + 5% bonus (USDC is $1, 18-dec here). realized 35_000 > target → clamp fires.
+        // keep = amount * target / realized (mulDiv floor); refund = amount - keep.
+        uint256 target = totalDebt + (totalDebt * 500) / 10_000;
+        uint256 realizedUsd = 35_000e18;
+        assertGt(realizedUsd, target, "full seize over-realizes: clamp must engage");
+        uint256 keep0 = (25e18 * target) / realizedUsd;
+        uint256 keep1 = (25_000e18 * target) / realizedUsd;
+        uint256 expectedRefund0 = 25e18 - keep0;
+        uint256 expectedRefund1 = 25_000e18 - keep1;
+
+        uint256 aliceWethBefore = weth.balanceOf(alice);
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+        uint256 liqWethBefore = weth.balanceOf(liquidator);
+        uint256 liqUsdcBefore = usdc.balanceOf(liquidator);
+
+        vm.expectEmit(true, false, false, true, address(liq));
+        emit LiquidationOverSeizeRefunded(posId, expectedRefund0, expectedRefund1);
+
         vm.prank(liquidator);
         liq.liquidate(posId, totalDebt, block.timestamp + 1 hours, 0, 0);
 
-        Vm.Log[] memory entries = vm.getRecordedLogs();
-        for (uint256 i = 0; i < entries.length; i++) {
-            assertTrue(
-                entries[i].topics[0] != keccak256("LiquidationOverSeizeRefunded(uint256,uint256,uint256)"),
-                "full seizure must not go through the partial-seize clamp"
-            );
-        }
+        // Debt fully cleared → solvent full close → excess refunded to the borrower (not the liquidator).
+        assertEq(
+            weth.balanceOf(alice) - aliceWethBefore, expectedRefund0, "borrower refunded excess WETH on full seize"
+        );
+        assertEq(
+            usdc.balanceOf(alice) - aliceUsdcBefore, expectedRefund1, "borrower refunded excess USDC on full seize"
+        );
+
+        // The liquidator's take is capped at the kept share (minus protocol fee, never more), and its
+        // Chainlink value never exceeds the repay+bonus target — the whole point of the clamp.
+        uint256 liqWeth = weth.balanceOf(liquidator) - liqWethBefore;
+        uint256 liqUsdc = usdc.balanceOf(liquidator) + totalDebt - liqUsdcBefore;
+        assertLe(liqWeth, keep0, "liquidator WETH take capped at kept share");
+        assertLe(liqUsdc, keep1, "liquidator USDC take capped at kept share");
+        assertLe(liqWeth * 400 + liqUsdc, target, "liquidator realized value capped at repay+bonus");
+    }
+
+    /// @dev The bad-debt routing (Liquidation M-1). When a full seize both over-realizes AND leaves the
+    ///      position underwater (debt not cleared, residual value below dust → writeoff), the excess is
+    ///      NOT refunded to the defaulting borrower — it is routed to the protocol/FeeCollector to offset
+    ///      the lenders' loss (mirrors the swept-fee bad-debt policy, and Revert Lend / Gearbox: surplus
+    ///      to the borrower only when solvent, socialized when underwater). Here the position value is
+    ///      pushed below dust while WETH is marked to $400, so a partial repay triggers a full seize that
+    ///      over-realizes; the writeoff sends the surplus to the collector, and the borrower gets nothing.
+    function test_liquidate_fullSeize_badDebt_refundsToProtocol() public {
+        uint256 posId = _createLiquidatablePosition(); // debt $30k
+
+        // Collapse the position value below the dust threshold ($1). getPositionValue stays here through
+        // the seize (mock oracle is amount-independent), so after a full unwind remainingValue <= dust
+        // → the debt that repay didn't cover is written off as bad debt.
+        vm.prank(owner);
+        oracle.setPrice(0.5e18);
+
+        vm.prank(owner);
+        TestPricing.feedFor(priceRegistry, address(weth)).setAnswer(400e18);
+
+        // Partial repay leaves debt outstanding → not a solvent close. collateralToSeize (5_250) >>
+        // positionValue (0.5) → full seize → unwind 25 WETH + 25_000 USDC, realized @ Chainlink 35_000.
+        uint256 repayAmount = 5000e18;
+        usdc.mint(liquidator, repayAmount);
+        vm.prank(liquidator);
+        usdc.approve(address(liq), repayAmount);
+
+        uint256 target = repayAmount + (repayAmount * 500) / 10_000; // 5_250
+        uint256 realizedUsd = 35_000e18;
+        uint256 keep0 = (25e18 * target) / realizedUsd; // 3.75 WETH
+        uint256 keep1 = (25_000e18 * target) / realizedUsd; // 3_750 USDC
+        uint256 expectedRefund0 = 25e18 - keep0; // 21.25 WETH
+        uint256 expectedRefund1 = 25_000e18 - keep1; // 21_250 USDC
+
+        address collector = address(liq.feeCollector());
+        uint256 aliceWethBefore = weth.balanceOf(alice);
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+        uint256 colWethBefore = weth.balanceOf(collector);
+        uint256 colUsdcBefore = usdc.balanceOf(collector);
+
+        vm.expectEmit(true, false, false, true, address(liq));
+        emit LiquidationOverSeizeRefunded(posId, expectedRefund0, expectedRefund1);
+
+        vm.prank(liquidator);
+        liq.liquidate(posId, repayAmount, block.timestamp + 1 hours, 0, 0);
+
+        // The defaulting borrower is paid nothing — the surplus offsets the lenders' loss instead.
+        assertEq(weth.balanceOf(alice), aliceWethBefore, "defaulting borrower gets no WETH refund");
+        assertEq(usdc.balanceOf(alice), aliceUsdcBefore, "defaulting borrower gets no USDC refund");
+
+        // The excess lands in the protocol's FeeCollector (>= refund; the Step 8 protocol fee also routes
+        // here, so the delta is at least the refund).
+        assertGe(weth.balanceOf(collector) - colWethBefore, expectedRefund0, "over-seize WETH routed to protocol");
+        assertGe(usdc.balanceOf(collector) - colUsdcBefore, expectedRefund1, "over-seize USDC routed to protocol");
     }
 
     /// @dev The clamp values the seized underlying through the same registry as the debt leg, so a

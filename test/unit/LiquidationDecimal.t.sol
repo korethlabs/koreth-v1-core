@@ -17,6 +17,7 @@ import {MockLPOracle} from "../mocks/MockLPOracle.sol";
 import {MockLendingPool} from "../mocks/MockLendingPool.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {TestPricing} from "../helpers/TestPricing.sol";
+import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
 import {RiskManager} from "../../src/security/RiskManager.sol";
 import {RiskConfig} from "../helpers/RiskConfig.sol";
 import {TestPools} from "../helpers/TestPools.sol";
@@ -121,7 +122,10 @@ contract LiquidationDecimalTest is Test {
         address borrowAsset = address(usdc6);
         // The price has to exist before the market can be listed -- ProtocolCore refuses to open
         // one it cannot value.
-        TestPricing.wire(core, address(usdc6), 1e18); // $1.00
+        PriceFeedRegistry registry = TestPricing.wire(core, address(usdc6), 1e18); // $1.00
+        // token0 (WETH) must be priced too: the over-seize clamp (M-1) re-values the seized underlying
+        // at Chainlink. $200 keeps the pool composition below the oracle value, so the clamp is a no-op.
+        TestPricing.priceAsset(registry, address(weth), 200e18);
         core.registerLendingPool(borrowAsset, address(market6));
         vm.stopPrank();
 
@@ -213,7 +217,9 @@ contract LiquidationDecimalTest is Test {
         address borrowAsset = address(wbtc);
         // The price has to exist before the market can be listed -- ProtocolCore refuses to open
         // one it cannot value.
-        TestPricing.wire(core, address(wbtc), 60_000e18); // $60K per BTC
+        PriceFeedRegistry registry = TestPricing.wire(core, address(wbtc), 60_000e18); // $60K per BTC
+        // token0 (WETH) must be priced too for the over-seize clamp (M-1); $200 keeps it a no-op.
+        TestPricing.priceAsset(registry, address(weth), 200e18);
         core.registerLendingPool(borrowAsset, address(marketBtc));
         vm.stopPrank();
 
@@ -278,7 +284,10 @@ contract LiquidationDecimalTest is Test {
         address borrowAsset = address(usdc6);
         // The price has to exist before the market can be listed -- ProtocolCore refuses to open
         // one it cannot value.
-        TestPricing.wire(core, address(usdc6), 1e18);
+        PriceFeedRegistry registry = TestPricing.wire(core, address(usdc6), 1e18);
+        // Collateral is WETH on both legs; price it for the over-seize clamp (M-1). $200 keeps the
+        // realized value below the seize target, so the clamp does not disturb the full-repay assertion.
+        TestPricing.priceAsset(registry, address(weth), 200e18);
         core.registerLendingPool(borrowAsset, address(market6));
         vm.stopPrank();
 

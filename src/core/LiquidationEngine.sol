@@ -241,6 +241,10 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
 
         uint256 amount0;
         uint256 amount1;
+        // Over-seize refund (Liquidation M-1), computed at Step 7b, routed at the terminal block once
+        // badDebt is known. Function-scoped so the deferred routing can read it after the seize.
+        uint256 refund0;
+        uint256 refund1;
 
         if (totalLiquidity == 0) {
             // No principal liquidity to seize. The swept fees are the only value available, so
@@ -279,31 +283,35 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             // Chainlink fair value (positionValue), but unwind realizes tokens at the pool's actual
             // spot composition. When spot diverges from Chainlink, the realized tokens can be worth
             // more than collateralToSeizeNormalized (repay + bonus) — the liquidator would pocket the
-            // difference at the borrower's expense. Re-value what came out at Chainlink and, if it
-            // exceeds the target, refund the proportional excess of each token to the borrower.
+            // difference. Re-value what came out at Chainlink and, if it exceeds the target, keep only
+            // the proportional share; the excess (refund0/refund1) is routed by solvency below.
             //
-            // Only on a partial seize. The full-seize branch above is reached exactly when
-            // collateralToSeizeNormalized >= positionValue, and on a full unwind realizedUsd equals the
-            // whole position's Chainlink value == positionValue <= target — so the clamp would be a
-            // mathematical no-op there anyway. Gating it out keeps the full-close residual path (which
-            // already returns any leftover to the borrower) as the single owner of full-seize surplus.
-            // realizedUsd never reads the pool — it comes from the same registry as the seize target, so
-            // the two are measured on one ruler and their ratio is manipulation-neutral. _valueUsd fails
-            // closed on a missing/stale collateral feed (NO_PRICE_FEED / STALE_PRICE), the same discipline
-            // the debt leg already enforces — a liquidation that can't price the collateral must not settle.
-            if (liquidityToRemove256 < totalLiquidity) {
-                uint256 realizedUsd = _valueUsd(pos.token0, amount0) + _valueUsd(pos.token1, amount1);
-                if (realizedUsd > collateralToSeizeNormalized) {
-                    uint256 keep0 = Math.mulDiv(amount0, collateralToSeizeNormalized, realizedUsd);
-                    uint256 keep1 = Math.mulDiv(amount1, collateralToSeizeNormalized, realizedUsd);
-                    uint256 refund0 = amount0 - keep0;
-                    uint256 refund1 = amount1 - keep1;
-                    amount0 = keep0;
-                    amount1 = keep1;
-                    if (refund0 > 0) OZIERC20(pos.token0).safeTransfer(pos.owner, refund0);
-                    if (refund1 > 0) OZIERC20(pos.token1).safeTransfer(pos.owner, refund1);
-                    emit LiquidationOverSeizeRefunded(positionId, refund0, refund1);
-                }
+            // This runs on FULL seizes too, and MUST. Fair LP pricing (V2 sqrt(k)) values the position
+            // at 2*sqrt(r0*p0 * r1*p1), while unwind realizes r0*p0 + r1*p1; by AM-GM the realized value
+            // is >= the fair value whenever the pool is imbalanced against Chainlink. A full seize
+            // (target >= positionValue) of an imbalanced pool therefore lets the liquidator over-realize
+            // while the borrower is left with nothing (full unwind = no residual LP) — so the clamp must
+            // not be gated to partial seizes, as an earlier version wrongly assumed.
+            //
+            // realizedUsd never reads the pool — it comes from the same registry as the seize target
+            // (getPositionValue already priced both underlyings earlier in this call, on the same
+            // maxStaleness window; the registry cannot be rotated intra-tx), so the two are measured on
+            // one ruler and their ratio is manipulation-neutral. _valueUsd fails closed on a missing/stale
+            // collateral feed (NO_PRICE_FEED / STALE_PRICE), but getPositionValue would already have
+            // reverted on that same feed — the clamp adds no liveness regression.
+            //
+            // The transfer is DEFERRED to the terminal routing block: the recipient depends on badDebt,
+            // which is only known after the debt is re-read post-seize. The mulDiv stays strictly inside
+            // the realizedUsd > target branch so a worthless full seize (realizedUsd == 0) cannot divide
+            // by zero (target == repay + bonus > 0, so realizedUsd == 0 fails the guard).
+            uint256 realizedUsd = _valueUsd(pos.token0, amount0) + _valueUsd(pos.token1, amount1);
+            if (realizedUsd > collateralToSeizeNormalized) {
+                uint256 keep0 = Math.mulDiv(amount0, collateralToSeizeNormalized, realizedUsd);
+                uint256 keep1 = Math.mulDiv(amount1, collateralToSeizeNormalized, realizedUsd);
+                refund0 = amount0 - keep0;
+                refund1 = amount1 - keep1;
+                amount0 = keep0;
+                amount1 = keep1;
             }
         }
 
@@ -419,6 +427,30 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
                 if (sweptFee0 > 0) OZIERC20(pos.token0).safeTransfer(pos.owner, sweptFee0);
                 if (sweptFee1 > 0) OZIERC20(pos.token1).safeTransfer(pos.owner, sweptFee1);
             }
+        }
+
+        // Route the over-seize refund (Liquidation M-1), computed at Step 7b. Same solvency policy as
+        // the swept fees: to the borrower on a normal/solvent liquidation, to the protocol on a bad-debt
+        // writeoff — a defaulting borrower has no equity claim while the lenders absorb the loss, so the
+        // AM-GM surplus offsets that loss instead of paying the defaulter (matches Revert Lend / Gearbox:
+        // surplus to the borrower when solvent, socialized to lenders/reserves when underwater).
+        // Deferred to here because the recipient depends on badDebt, unknown at seize time.
+        if (refund0 > 0 || refund1 > 0) {
+            if (badDebt) {
+                FeeCollector collector = getFeeCollector();
+                if (refund0 > 0) {
+                    OZIERC20(pos.token0).forceApprove(address(collector), refund0);
+                    collector.collectFee(pos.token0, refund0, address(this), "liquidation_overseize");
+                }
+                if (refund1 > 0) {
+                    OZIERC20(pos.token1).forceApprove(address(collector), refund1);
+                    collector.collectFee(pos.token1, refund1, address(this), "liquidation_overseize");
+                }
+            } else {
+                if (refund0 > 0) OZIERC20(pos.token0).safeTransfer(pos.owner, refund0);
+                if (refund1 > 0) OZIERC20(pos.token1).safeTransfer(pos.owner, refund1);
+            }
+            emit LiquidationOverSeizeRefunded(positionId, refund0, refund1);
         }
 
         // Credit the market's supply-cap tracker for the collateral value that left the protocol.
