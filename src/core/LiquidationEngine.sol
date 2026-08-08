@@ -63,7 +63,9 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     ///         collateral above the dust threshold — latent under-collateralization to monitor.
     event ResidualInsolvency(uint256 indexed positionId, uint256 remainingDebt, uint256 remainingValue);
     /// @notice Emitted when unwind realized more value (at spot) than the Chainlink-sized seize
-    ///         target, and the excess underlying was refunded to the borrower (Liquidation M-1).
+    ///         target and the excess underlying was refunded (Liquidation M-1). The excess goes to the
+    ///         borrower on a solvent close, or to the FeeCollector when the seize wrote off bad debt —
+    ///         see the terminal routing block for the recipient split.
     event LiquidationOverSeizeRefunded(uint256 indexed positionId, uint256 refund0, uint256 refund1);
 
     function _acl() internal view returns (ACLManager) {
@@ -293,12 +295,18 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             // while the borrower is left with nothing (full unwind = no residual LP) — so the clamp must
             // not be gated to partial seizes, as an earlier version wrongly assumed.
             //
-            // realizedUsd never reads the pool — it comes from the same registry as the seize target
-            // (getPositionValue already priced both underlyings earlier in this call, on the same
-            // maxStaleness window; the registry cannot be rotated intra-tx), so the two are measured on
-            // one ruler and their ratio is manipulation-neutral. _valueUsd fails closed on a missing/stale
-            // collateral feed (NO_PRICE_FEED / STALE_PRICE), but getPositionValue would already have
-            // reverted on that same feed — the clamp adds no liveness regression.
+            // realizedUsd never reads the pool — both it and the seize target are priced through
+            // core.getPriceFeedRegistry(): the target's repay leg via getUsdValue on the borrow asset,
+            // realizedUsd via _valueUsd on the collateral tokens. That single canonical registry is the
+            // same ruler the rest of this function already values debt against, so the refund0/refund1
+            // ratio is manipulation-neutral regardless of the pool's spot state. _valueUsd fails closed
+            // on a missing/stale collateral feed (NO_PRICE_FEED / STALE_PRICE).
+            //
+            // NOTE: getPositionValue prices the same underlyings through the LP oracle's OWN immutable
+            // priceFeedRegistry, which registerOracle does not force to equal core's. In the intended
+            // wiring they are one address and the clamp adds no feed requirement beyond the seize; if an
+            // operator lets them diverge, the clamp can revert where getPositionValue did not — a
+            // fail-closed regression that surfaces the misconfiguration instead of mispricing the refund.
             //
             // The transfer is DEFERRED to the terminal routing block: the recipient depends on badDebt,
             // which is only known after the debt is re-read post-seize. The mulDiv stays strictly inside
