@@ -181,13 +181,13 @@ abstract contract DeployBase is Script {
     function _deployOracles(ChainConfig memory cfg) internal {
         // V3 Oracle
         if (cfg.v3NftManager != address(0)) {
-            UniswapV3Oracle v3Oracle = new UniswapV3Oracle(address(core), cfg.v3NftManager, address(priceFeedRegistry));
+            UniswapV3Oracle v3Oracle = new UniswapV3Oracle(address(core), cfg.v3NftManager);
             core.registerOracle(ILPAdapter.LPType.UniswapV3, address(v3Oracle));
         }
 
         // V2 Oracle
         if (cfg.v2Factory != address(0)) {
-            UniswapV2Oracle v2Oracle = new UniswapV2Oracle(address(core), address(priceFeedRegistry));
+            UniswapV2Oracle v2Oracle = new UniswapV2Oracle(address(core));
             core.registerOracle(ILPAdapter.LPType.UniswapV2, address(v2Oracle));
         }
 

@@ -131,19 +131,23 @@ library LiquidityAmountsLib {
 contract UniswapV3Oracle is ILPOracle {
     ProtocolCore public immutable core;
     INonfungiblePositionManager public immutable positionManager;
-    PriceFeedRegistry public immutable priceFeedRegistry;
 
-    constructor(address _core, address _positionManager, address _priceFeedRegistry) {
-        require(
-            _core != address(0) && _positionManager != address(0) && _priceFeedRegistry != address(0), "ZERO_ADDRESS"
-        );
-        require(
-            _core.code.length > 0 && _positionManager.code.length > 0 && _priceFeedRegistry.code.length > 0,
-            "NOT_CONTRACT"
-        );
+    constructor(address _core, address _positionManager) {
+        require(_core != address(0) && _positionManager != address(0), "ZERO_ADDRESS");
+        require(_core.code.length > 0 && _positionManager.code.length > 0, "NOT_CONTRACT");
         core = ProtocolCore(_core);
         positionManager = INonfungiblePositionManager(_positionManager);
-        priceFeedRegistry = PriceFeedRegistry(_priceFeedRegistry);
+    }
+
+    /// @dev Resolve the price registry live from core rather than caching it. core.setPriceFeedRegistry
+    ///      can rotate the registry, and every other consumer (LendingEngine, PositionManager,
+    ///      LiquidationEngine, PoolLiquidityMonitor) already reads it per-call through the same getter;
+    ///      an immutable snapshot here would silently price positions against a stale registry after a
+    ///      rotation, diverging from the debt valuation. getPriceFeedRegistry() fails closed
+    ///      (PRICE_REGISTRY_UNSET) and setPriceFeedRegistry enforces the registry is bound to this core,
+    ///      so the per-call read inherits both guarantees.
+    function _registry() internal view returns (PriceFeedRegistry) {
+        return PriceFeedRegistry(core.getPriceFeedRegistry());
     }
 
     // --- ILPOracle Implementation ---
@@ -216,6 +220,7 @@ contract UniswapV3Oracle is ILPOracle {
         uint8 dec0 = IERC20(token0).decimals();
         uint8 dec1 = IERC20(token1).decimals();
         require(dec0 <= 36 && dec1 <= 36, "INVALID_DECIMALS");
+        PriceFeedRegistry priceFeedRegistry = _registry();
         uint256 price0 = priceFeedRegistry.getPrice(token0); // 18 decimals USD
         uint256 price1 = priceFeedRegistry.getPrice(token1); // 18 decimals USD
 
