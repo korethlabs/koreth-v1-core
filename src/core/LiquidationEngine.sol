@@ -67,6 +67,19 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     ///         borrower on a solvent close, or to the FeeCollector when the seize wrote off bad debt —
     ///         see the terminal routing block for the recipient split.
     event LiquidationOverSeizeRefunded(uint256 indexed positionId, uint256 refund0, uint256 refund1);
+    /// @notice Emitted when a protocol-fee leg could not be pushed to the FeeCollector during a
+    ///         liquidation (e.g. the token blocklists the collector, or the push yields zero received)
+    ///         and was escrowed in this engine instead of reverting the liquidation. The tokens stay
+    ///         here until settled via flushProtocolFees.
+    event ProtocolFeeDeferred(address indexed token, uint256 amount, string feeType);
+    /// @notice Emitted when escrowed protocol fees were later pushed to the FeeCollector.
+    event ProtocolFeeFlushed(address indexed token, uint256 amount);
+    /// @notice Emitted when a borrower payout (swept fees / over-seize refund) could not be
+    ///         transferred during a liquidation (e.g. the account is on a token blocklist) and was
+    ///         escrowed for pull-payment instead of reverting the liquidation. Claim via claim().
+    event WithdrawalDeferred(address indexed account, address indexed token, uint256 amount);
+    /// @notice Emitted when a borrower claimed an escrowed payout.
+    event WithdrawalClaimed(address indexed account, address indexed token, uint256 amount);
 
     function _acl() internal view returns (ACLManager) {
         return core.aclManager();
@@ -132,6 +145,77 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
         FeeCollector collector = feeCollector;
         require(address(collector) != address(0), "FEE_COLLECTOR_UNSET");
         return collector;
+    }
+
+    // --- Non-blocking settlement ---
+    // A liquidation's job is to clear debt. The protocol-fee cut and the borrower payouts are
+    // tail accounting and must NEVER be able to revert the liquidation — otherwise a token that
+    // blocklists the collector, or a borrower on a token blocklist, could brick liquidations and
+    // freeze bad debt in the market. Established lenders decouple the two: Aave/Compound/Morpho
+    // accrue the protocol cut as accounting rather than a revertable transfer, and OZ's
+    // PullPayment/Escrow is the canonical way to make an outbound payout non-blocking. Here: fees
+    // that can't be pushed are escrowed and flushed later; borrower payouts that can't be
+    // transferred fall back to pull-payment. Only debt repayment/writeoff stays mandatory.
+
+    /// @notice Push a protocol fee to the FeeCollector, or escrow it here if the push would revert.
+    /// @dev The collector is read directly (not via getFeeCollector) so an UNSET collector escrows
+    ///      rather than reverting the liquidation. The push can revert for reasons entirely outside
+    ///      the liquidator's control (collector paused, token blocklists the collector, fee-on-
+    ///      transfer yielding ZERO_RECEIVED); those are caught and the amount is booked to
+    ///      pendingProtocolFees, keeping the tokens in this engine for a later flush. The protocol's
+    ///      cut is therefore never skipped or misrouted — only deferred.
+    function _settleProtocolFee(address token, uint256 amount, string memory feeType) internal {
+        FeeCollector collector = feeCollector;
+        if (address(collector) != address(0)) {
+            OZIERC20(token).forceApprove(address(collector), amount);
+            try collector.collectFee(token, amount, address(this), feeType) {
+                return;
+            } catch {
+                // Push refused (paused / blocklisted / zero-received). Drop the dangling allowance
+                // and fall through to escrow so the liquidation still completes.
+                OZIERC20(token).forceApprove(address(collector), 0);
+            }
+        }
+        pendingProtocolFees[token] += amount;
+        escrowedBalance[token] += amount;
+        emit ProtocolFeeDeferred(token, amount, feeType);
+    }
+
+    /// @notice Transfer underlying to an account, or escrow it for pull-payment if the transfer fails.
+    /// @dev Mirrors SafeERC20's success test (call succeeded AND (no return data on a contract OR
+    ///      returned true)) but returns false instead of reverting, so a blocklisted borrower cannot
+    ///      brick the liquidation. On failure the amount is booked to pendingWithdrawals for claim().
+    function _payOrEscrow(address account, address token, uint256 amount) internal {
+        (bool ok, bytes memory data) = token.call(abi.encodeWithSelector(OZIERC20.transfer.selector, account, amount));
+        bool success = ok && (data.length == 0 ? token.code.length > 0 : abi.decode(data, (bool)));
+        if (success) return;
+        pendingWithdrawals[account][token] += amount;
+        escrowedBalance[token] += amount;
+        emit WithdrawalDeferred(account, token, amount);
+    }
+
+    /// @notice Settle escrowed protocol fees to the FeeCollector. Permissionless retry of a deferred
+    ///         push; reverts (rolling back the drain) if the collector still refuses, so it is safe
+    ///         to retry indefinitely once the collector is healthy.
+    function flushProtocolFees(address token) external nonReentrant {
+        uint256 amount = pendingProtocolFees[token];
+        require(amount > 0, "NO_PENDING_FEES");
+        FeeCollector collector = getFeeCollector();
+        pendingProtocolFees[token] = 0; // CEI — restored on revert
+        escrowedBalance[token] -= amount;
+        OZIERC20(token).forceApprove(address(collector), amount);
+        collector.collectFee(token, amount, address(this), "liquidation_flush");
+        emit ProtocolFeeFlushed(token, amount);
+    }
+
+    /// @notice Claim underlying escrowed for the caller when a liquidation payout could not be pushed.
+    function claim(address token) external nonReentrant {
+        uint256 amount = pendingWithdrawals[msg.sender][token];
+        require(amount > 0, "NO_PENDING_WITHDRAWAL");
+        pendingWithdrawals[msg.sender][token] = 0; // CEI — restored on revert
+        escrowedBalance[token] -= amount;
+        OZIERC20(token).safeTransfer(msg.sender, amount);
+        emit WithdrawalClaimed(msg.sender, token, amount);
     }
 
     // --- Core Logic ---
@@ -328,8 +412,11 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
         // the protocol should too. For truly worthless positions (amount0=amount1=0),
         // the fee is naturally 0.
         if (bonus > 0) {
-            FeeCollector collector = getFeeCollector();
-            uint256 feeBps = collector.liquidationFeeBps();
+            // Resolve the collector only to READ the fee rate. An unset collector is a deploy
+            // misconfiguration (not a liquidator-triggerable fault) and stays fail-closed here so the
+            // protocol's cut can't be silently skipped. The token MOVEMENT below is non-blocking
+            // (_settleProtocolFee): a collector that refuses the push escrows instead of reverting.
+            uint256 feeBps = getFeeCollector().liquidationFeeBps();
             // fee% of the bonus portion: (bonus / (10000 + bonus)) * feeBps / 10000
             // Simplified: feeBps * bonus / (10000 * (10000 + bonus))
             // Applied proportionally to each token amount.
@@ -340,16 +427,14 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
                 uint256 fee0 = Math.mulDiv(amount0, feeNumerator, denominator);
                 if (fee0 > 0) {
                     amount0 -= fee0;
-                    OZIERC20(pos.token0).forceApprove(address(collector), fee0);
-                    collector.collectFee(pos.token0, fee0, address(this), "liquidation");
+                    _settleProtocolFee(pos.token0, fee0, "liquidation");
                 }
             }
             if (amount1 > 0 && feeNumerator > 0) {
                 uint256 fee1 = Math.mulDiv(amount1, feeNumerator, denominator);
                 if (fee1 > 0) {
                     amount1 -= fee1;
-                    OZIERC20(pos.token1).forceApprove(address(collector), fee1);
-                    collector.collectFee(pos.token1, fee1, address(this), "liquidation");
+                    _settleProtocolFee(pos.token1, fee1, "liquidation");
                 }
             }
         }
@@ -418,20 +503,15 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
         // take a loss). The routing no longer degrades when the FeeCollector is missing: falling
         // back to the borrower there inverted the policy exactly when it mattered, paying the
         // defaulter out of a loss the lenders were absorbing.
+        // Both legs are non-blocking: the protocol leg escrows on a refused push, the borrower leg
+        // falls back to pull-payment — neither can revert the writeoff/close.
         if (sweptFee0 > 0 || sweptFee1 > 0) {
             if (badDebt) {
-                FeeCollector collector = getFeeCollector();
-                if (sweptFee0 > 0) {
-                    OZIERC20(pos.token0).forceApprove(address(collector), sweptFee0);
-                    collector.collectFee(pos.token0, sweptFee0, address(this), "liquidation_baddebt");
-                }
-                if (sweptFee1 > 0) {
-                    OZIERC20(pos.token1).forceApprove(address(collector), sweptFee1);
-                    collector.collectFee(pos.token1, sweptFee1, address(this), "liquidation_baddebt");
-                }
+                if (sweptFee0 > 0) _settleProtocolFee(pos.token0, sweptFee0, "liquidation_baddebt");
+                if (sweptFee1 > 0) _settleProtocolFee(pos.token1, sweptFee1, "liquidation_baddebt");
             } else {
-                if (sweptFee0 > 0) OZIERC20(pos.token0).safeTransfer(pos.owner, sweptFee0);
-                if (sweptFee1 > 0) OZIERC20(pos.token1).safeTransfer(pos.owner, sweptFee1);
+                if (sweptFee0 > 0) _payOrEscrow(pos.owner, pos.token0, sweptFee0);
+                if (sweptFee1 > 0) _payOrEscrow(pos.owner, pos.token1, sweptFee1);
             }
         }
 
@@ -442,19 +522,15 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
         // surplus to the borrower when solvent, socialized to lenders/reserves when underwater).
         // Deferred to here because the recipient depends on badDebt, unknown at seize time.
         if (refund0 > 0 || refund1 > 0) {
+            // Non-blocking, same split as the swept fees: protocol leg escrows on a refused push,
+            // borrower leg falls back to pull-payment. This is the worst place to block — an
+            // over-seize refund on a bad-debt writeoff must never revert.
             if (badDebt) {
-                FeeCollector collector = getFeeCollector();
-                if (refund0 > 0) {
-                    OZIERC20(pos.token0).forceApprove(address(collector), refund0);
-                    collector.collectFee(pos.token0, refund0, address(this), "liquidation_overseize");
-                }
-                if (refund1 > 0) {
-                    OZIERC20(pos.token1).forceApprove(address(collector), refund1);
-                    collector.collectFee(pos.token1, refund1, address(this), "liquidation_overseize");
-                }
+                if (refund0 > 0) _settleProtocolFee(pos.token0, refund0, "liquidation_overseize");
+                if (refund1 > 0) _settleProtocolFee(pos.token1, refund1, "liquidation_overseize");
             } else {
-                if (refund0 > 0) OZIERC20(pos.token0).safeTransfer(pos.owner, refund0);
-                if (refund1 > 0) OZIERC20(pos.token1).safeTransfer(pos.owner, refund1);
+                if (refund0 > 0) _payOrEscrow(pos.owner, pos.token0, refund0);
+                if (refund1 > 0) _payOrEscrow(pos.owner, pos.token1, refund1);
             }
             emit LiquidationOverSeizeRefunded(positionId, refund0, refund1);
         }
@@ -515,9 +591,13 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
 
     /// @notice Rescue tokens stuck in this contract (e.g., unexpected transfer)
     /// @dev Only callable by PoolAdmin. Cannot rescue during active liquidation (nonReentrant).
+    ///      Balances backing deferred settlements (escrowedBalance) are excluded so a rescue can never
+    ///      strand a borrower's claim() or a pending fee flush — only genuinely stray tokens leave.
     function rescueTokens(address token, address to, uint256 amount) external onlyPoolAdmin nonReentrant {
         require(token != address(0) && to != address(0), "ZERO_ADDRESS");
         require(amount > 0, "ZERO_AMOUNT");
+        uint256 rescuable = OZIERC20(token).balanceOf(address(this)) - escrowedBalance[token];
+        require(amount <= rescuable, "EXCEEDS_RESCUABLE");
         OZIERC20(token).safeTransfer(to, amount);
         emit TokensRescued(token, to, amount);
     }
@@ -541,7 +621,25 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
         return PriceFeedRegistry(core.getPriceFeedRegistry()).getUsdValue(token, amount, TokenUtils.safeDecimals(token));
     }
 
+    // --- Non-blocking settlement escrow ---
+    /// @notice Protocol-fee amounts that could not be pushed to the FeeCollector during a
+    ///         liquidation (e.g. the token blocklists the collector) and are held in this engine.
+    ///         Settle permissionlessly via flushProtocolFees once the collector accepts again.
+    ///         token => amount.
+    mapping(address => uint256) public pendingProtocolFees;
+
+    /// @notice Underlying owed to a borrower whose direct transfer failed during liquidation
+    ///         (e.g. the account is on a token blocklist). Pull-payment: the account claims via
+    ///         claim() once it can receive. account => token => amount.
+    mapping(address => mapping(address => uint256)) public pendingWithdrawals;
+
+    /// @notice Total per-token balance backing deferred settlements (pendingProtocolFees plus every
+    ///         account's pendingWithdrawals). rescueTokens excludes this so stuck-token rescues can
+    ///         never dip into funds owed to a borrower or the FeeCollector. token => amount.
+    mapping(address => uint256) public escrowedBalance;
+
     // --- Storage Gap (UUPS upgrade safety) ---
-    // Reduced from 50 to 49 after adding feeCollector.
-    uint256[49] private __gap;
+    // Reduced from 50 to 49 after adding feeCollector, then to 46 after adding the three
+    // non-blocking settlement escrow mappings (pendingProtocolFees, pendingWithdrawals, escrowedBalance).
+    uint256[46] private __gap;
 }
