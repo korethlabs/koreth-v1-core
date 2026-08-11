@@ -182,12 +182,21 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     }
 
     /// @notice Transfer underlying to an account, or escrow it for pull-payment if the transfer fails.
-    /// @dev Mirrors SafeERC20's success test (call succeeded AND (no return data on a contract OR
-    ///      returned true)) but returns false instead of reverting, so a blocklisted borrower cannot
-    ///      brick the liquidation. On failure the amount is booked to pendingWithdrawals for claim().
+    /// @dev Success test mirrors OpenZeppelin SafeERC20._callOptionalReturnBool: the raw return word
+    ///      is compared without abi.decode, so a non-standard return value (malformed data, a bare
+    ///      revert, or a truthy-but-not-1 word) is treated as failure rather than reverting. This is
+    ///      what keeps the payout leg non-blocking: a hostile or quirky token — or a blocklisted
+    ///      borrower — can only push the amount to pendingWithdrawals for claim(), never brick the
+    ///      liquidation. Success = call succeeded AND (no return data on a contract OR an exact `true`).
     function _payOrEscrow(address account, address token, uint256 amount) internal {
-        (bool ok, bytes memory data) = token.call(abi.encodeWithSelector(OZIERC20.transfer.selector, account, amount));
-        bool success = ok && (data.length == 0 ? token.code.length > 0 : abi.decode(data, (bool)));
+        bytes memory data = abi.encodeWithSelector(OZIERC20.transfer.selector, account, amount);
+        bool success;
+        assembly ("memory-safe") {
+            let ok := call(gas(), token, 0, add(data, 0x20), mload(data), 0, 0x20)
+            let returnSize := returndatasize()
+            let returnValue := mload(0)
+            success := and(ok, or(and(iszero(returnSize), gt(extcodesize(token), 0)), eq(returnValue, 1)))
+        }
         if (success) return;
         pendingWithdrawals[account][token] += amount;
         escrowedBalance[token] += amount;

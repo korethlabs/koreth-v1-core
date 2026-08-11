@@ -1300,6 +1300,39 @@ contract LiquidationEngineTest is Test {
         liq.claim(address(weth));
     }
 
+    /// @dev A non-standard token that RETURNS a malformed word (here a truthy-but-not-1 value) instead
+    ///      of reverting must not brick the payout leg either: abi.decode would revert on such data, so
+    ///      the raw-word success test treats it as failure and escrows. Same over-seize setup as
+    ///      test_liquidate_borrowerRefundEscrowed_whenTransferFails, but the WETH→alice transfer is
+    ///      mocked to return uint256(2) rather than reverting.
+    function test_liquidate_borrowerRefundEscrowed_whenTransferReturnsMalformed() public {
+        uint256 posId = _createLiquidatablePosition();
+
+        vm.prank(owner);
+        TestPricing.feedFor(priceRegistry, address(weth)).setAnswer(400e18);
+
+        uint256 repayAmount = 10_000e18;
+        usdc.mint(liquidator, repayAmount);
+        vm.prank(liquidator);
+        usdc.approve(address(liq), repayAmount);
+
+        // WETH.transfer(alice, *) returns a truthy-but-not-1 word: not an unambiguous success.
+        vm.mockCall(address(weth), abi.encodeWithSelector(weth.transfer.selector, alice), abi.encode(uint256(2)));
+
+        uint256 aliceWethBefore = weth.balanceOf(alice);
+
+        vm.expectEmit(true, true, false, true, address(liq));
+        emit WithdrawalDeferred(alice, address(weth), 1.25e18);
+
+        vm.prank(liquidator);
+        liq.liquidate(posId, repayAmount, block.timestamp + 1 hours, 0, 0);
+
+        vm.clearMockedCalls();
+
+        assertEq(weth.balanceOf(alice), aliceWethBefore, "malformed-return transfer did not credit alice");
+        assertEq(liq.pendingWithdrawals(alice, address(weth)), 1.25e18, "WETH refund escrowed for claim");
+    }
+
     /// @dev rescueTokens must never dip into balances backing a deferred settlement, otherwise a
     ///      well-meaning admin sweep would strand a borrower's claim() or a pending fee flush. We
     ///      escrow a WETH fee (collector blocklisted), then assert only the stray surplus is rescuable
