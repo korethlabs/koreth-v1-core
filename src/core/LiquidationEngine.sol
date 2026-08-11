@@ -187,7 +187,10 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     ///      revert, or a truthy-but-not-1 word) is treated as failure rather than reverting. This is
     ///      what keeps the payout leg non-blocking: a hostile or quirky token — or a blocklisted
     ///      borrower — can only push the amount to pendingWithdrawals for claim(), never brick the
-    ///      liquidation. Success = call succeeded AND (no return data on a contract OR an exact `true`).
+    ///      liquidation. The bool branch is gated on returndatasize() == 32 so mload(0) is only read
+    ///      when the full word was written by the call; a short (<32-byte) return never compares
+    ///      against stale scratch memory. Success = call succeeded AND (no return data on a contract
+    ///      OR exactly 32 bytes decoding to `true`).
     function _payOrEscrow(address account, address token, uint256 amount) internal {
         bytes memory data = abi.encodeWithSelector(OZIERC20.transfer.selector, account, amount);
         bool success;
@@ -195,7 +198,14 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             let ok := call(gas(), token, 0, add(data, 0x20), mload(data), 0, 0x20)
             let returnSize := returndatasize()
             let returnValue := mload(0)
-            success := and(ok, or(and(iszero(returnSize), gt(extcodesize(token), 0)), eq(returnValue, 1)))
+            success :=
+                and(
+                    ok,
+                    or(
+                        and(iszero(returnSize), gt(extcodesize(token), 0)),
+                        and(eq(returnSize, 0x20), eq(returnValue, 1))
+                    )
+                )
         }
         if (success) return;
         pendingWithdrawals[account][token] += amount;
