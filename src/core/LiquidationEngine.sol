@@ -198,14 +198,10 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             let ok := call(gas(), token, 0, add(data, 0x20), mload(data), 0, 0x20)
             let returnSize := returndatasize()
             let returnValue := mload(0)
-            success :=
-                and(
-                    ok,
-                    or(
-                        and(iszero(returnSize), gt(extcodesize(token), 0)),
-                        and(eq(returnSize, 0x20), eq(returnValue, 1))
-                    )
-                )
+            success := and(
+                ok,
+                or(and(iszero(returnSize), gt(extcodesize(token), 0)), and(eq(returnSize, 0x20), eq(returnValue, 1)))
+            )
         }
         if (success) return;
         pendingWithdrawals[account][token] += amount;
