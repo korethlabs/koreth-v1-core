@@ -605,7 +605,12 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     function rescueTokens(address token, address to, uint256 amount) external onlyPoolAdmin nonReentrant {
         require(token != address(0) && to != address(0), "ZERO_ADDRESS");
         require(amount > 0, "ZERO_AMOUNT");
-        uint256 rescuable = OZIERC20(token).balanceOf(address(this)) - escrowedBalance[token];
+        // Saturating subtraction: a rebasing or fee-on-transfer token can leave the actual balance
+        // below the nominal escrowed total, in which case nothing is rescuable — fail with the
+        // controlled EXCEEDS_RESCUABLE rather than an underflow panic.
+        uint256 balance = OZIERC20(token).balanceOf(address(this));
+        uint256 escrowed = escrowedBalance[token];
+        uint256 rescuable = balance > escrowed ? balance - escrowed : 0;
         require(amount <= rescuable, "EXCEEDS_RESCUABLE");
         OZIERC20(token).safeTransfer(to, amount);
         emit TokensRescued(token, to, amount);
