@@ -648,7 +648,8 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     mapping(address => uint256) public escrowedBalance;
 
     // --- Storage Gap (UUPS upgrade safety) ---
-    // Reduced from 50 to 49 after adding feeCollector, then to 46 after adding the three
-    // non-blocking settlement escrow mappings (pendingProtocolFees, pendingWithdrawals, escrowedBalance).
+    // Reserves this contract's storage to a fixed 50-slot footprint so future upgrades can append
+    // state without colliding with any child. 4 slots are occupied (feeCollector, pendingProtocolFees,
+    // pendingWithdrawals, escrowedBalance), leaving 46: adding a new variable consumes one gap slot.
     uint256[46] private __gap;
 }
