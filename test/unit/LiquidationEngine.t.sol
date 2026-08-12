@@ -1188,4 +1188,196 @@ contract LiquidationEngineTest is Test {
         // Profit is always 0 since liquidator receives raw tokens (not borrow asset)
         assertEq(profit, 0, "Profit must be 0 in no-swap design");
     }
+
+    // ========== Non-blocking fee/refund settlement ==========
+
+    event ProtocolFeeDeferred(address indexed token, uint256 amount, string feeType);
+    event ProtocolFeeFlushed(address indexed token, uint256 amount);
+    event WithdrawalDeferred(address indexed account, address indexed token, uint256 amount);
+    event WithdrawalClaimed(address indexed account, address indexed token, uint256 amount);
+
+    /// @dev The canonical vector is a token that blocklists the FeeCollector so the protocol-fee
+    ///      pull reverts (USDC/USDT-style). That must NOT brick the liquidation: the fee is escrowed in
+    ///      the engine and the debt is still repaid. We force ONLY the WETH engine→collector transferFrom
+    ///      to revert, so the WETH fee leg defers while everything else settles normally.
+    function test_liquidate_protocolFeeEscrowed_whenCollectorPushReverts() public {
+        uint256 posId = _createLiquidatablePosition();
+        (, uint256 maxRepay) = liq.isLiquidatable(posId);
+
+        usdc.mint(liquidator, maxRepay);
+        vm.prank(liquidator);
+        usdc.approve(address(liq), maxRepay);
+
+        address collector = address(liq.feeCollector());
+        // Prefix match: any WETH.transferFrom(engine -> collector, *) reverts. This is exactly the
+        // collectFee pull inside Step 8; the repay pull (USDC, from the liquidator) is unaffected.
+        vm.mockCallRevert(
+            address(weth),
+            abi.encodeWithSelector(weth.transferFrom.selector, address(liq), collector),
+            abi.encode("BLOCKLISTED")
+        );
+
+        uint256 debtBefore = le.getDebt(posId);
+        uint256 collectorWethBefore = weth.balanceOf(collector);
+
+        vm.prank(liquidator);
+        liq.liquidate(posId, maxRepay, block.timestamp + 1 hours, 0, 0);
+
+        vm.clearMockedCalls();
+
+        // Liquidation still cleared debt despite the fee push failing.
+        assertLt(le.getDebt(posId), debtBefore, "debt must still be repaid when the fee push reverts");
+        // The WETH fee was escrowed in the engine, not silently dropped and not sent to the collector.
+        uint256 escrowed = liq.pendingProtocolFees(address(weth));
+        assertGt(escrowed, 0, "WETH fee must be escrowed");
+        assertEq(weth.balanceOf(collector), collectorWethBefore, "collector received no WETH while blocklisted");
+        assertGe(weth.balanceOf(address(liq)), escrowed, "engine holds the escrowed WETH");
+
+        // Once the collector accepts WETH again, anyone can flush the escrow to it.
+        vm.expectEmit(true, false, false, true, address(liq));
+        emit ProtocolFeeFlushed(address(weth), escrowed);
+        liq.flushProtocolFees(address(weth));
+
+        assertEq(liq.pendingProtocolFees(address(weth)), 0, "escrow cleared after flush");
+        assertEq(weth.balanceOf(collector) - collectorWethBefore, escrowed, "flush delivered the fee to the collector");
+    }
+
+    function test_flushProtocolFees_revertsWhenNothingPending() public {
+        vm.expectRevert("NO_PENDING_FEES");
+        liq.flushProtocolFees(address(weth));
+    }
+
+    /// @dev A borrower on a token blocklist must not be able to brick their own liquidation. The
+    ///      over-seize refund to the borrower falls back to pull-payment when the direct transfer fails.
+    ///      Reuses the solvent over-seize scenario (WETH marked to $400) and blocks only WETH→alice, so
+    ///      the WETH refund is escrowed for claim while the USDC refund still lands directly.
+    function test_liquidate_borrowerRefundEscrowed_whenTransferFails() public {
+        uint256 posId = _createLiquidatablePosition();
+
+        vm.prank(owner);
+        TestPricing.feedFor(priceRegistry, address(weth)).setAnswer(400e18);
+
+        uint256 repayAmount = 10_000e18;
+        usdc.mint(liquidator, repayAmount);
+        vm.prank(liquidator);
+        usdc.approve(address(liq), repayAmount);
+
+        // Same arithmetic as test_liquidate_overSeize_refundsExcessToBorrower: refund0 = 1.25 WETH.
+        // Block ONLY the WETH payout to alice; the 1_250 USDC refund still transfers directly.
+        vm.mockCallRevert(
+            address(weth), abi.encodeWithSelector(weth.transfer.selector, alice), abi.encode("BLOCKLISTED")
+        );
+
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+        uint256 aliceWethBefore = weth.balanceOf(alice);
+
+        vm.expectEmit(true, true, false, true, address(liq));
+        emit WithdrawalDeferred(alice, address(weth), 1.25e18);
+
+        vm.prank(liquidator);
+        liq.liquidate(posId, repayAmount, block.timestamp + 1 hours, 0, 0);
+
+        vm.clearMockedCalls();
+
+        // WETH refund escrowed (alice untouched), USDC refund delivered directly.
+        assertEq(weth.balanceOf(alice), aliceWethBefore, "blocklisted borrower received no WETH directly");
+        assertEq(liq.pendingWithdrawals(alice, address(weth)), 1.25e18, "WETH refund escrowed for claim");
+        assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, 1250e18, "USDC refund still delivered directly");
+
+        // Borrower pulls the escrowed WETH once they can receive it again.
+        vm.expectEmit(true, true, false, true, address(liq));
+        emit WithdrawalClaimed(alice, address(weth), 1.25e18);
+        vm.prank(alice);
+        liq.claim(address(weth));
+
+        assertEq(weth.balanceOf(alice) - aliceWethBefore, 1.25e18, "borrower claimed the escrowed WETH");
+        assertEq(liq.pendingWithdrawals(alice, address(weth)), 0, "escrow cleared after claim");
+    }
+
+    function test_claim_revertsWhenNothingPending() public {
+        vm.prank(alice);
+        vm.expectRevert("NO_PENDING_WITHDRAWAL");
+        liq.claim(address(weth));
+    }
+
+    /// @dev A non-standard token that RETURNS a malformed word (here a truthy-but-not-1 value) instead
+    ///      of reverting must not brick the payout leg either: abi.decode would revert on such data, so
+    ///      the raw-word success test treats it as failure and escrows. Same over-seize setup as
+    ///      test_liquidate_borrowerRefundEscrowed_whenTransferFails, but the WETH→alice transfer is
+    ///      mocked to return uint256(2) rather than reverting.
+    function test_liquidate_borrowerRefundEscrowed_whenTransferReturnsMalformed() public {
+        uint256 posId = _createLiquidatablePosition();
+
+        vm.prank(owner);
+        TestPricing.feedFor(priceRegistry, address(weth)).setAnswer(400e18);
+
+        uint256 repayAmount = 10_000e18;
+        usdc.mint(liquidator, repayAmount);
+        vm.prank(liquidator);
+        usdc.approve(address(liq), repayAmount);
+
+        // WETH.transfer(alice, *) returns a truthy-but-not-1 word: not an unambiguous success.
+        vm.mockCall(address(weth), abi.encodeWithSelector(weth.transfer.selector, alice), abi.encode(uint256(2)));
+
+        uint256 aliceWethBefore = weth.balanceOf(alice);
+
+        vm.expectEmit(true, true, false, true, address(liq));
+        emit WithdrawalDeferred(alice, address(weth), 1.25e18);
+
+        vm.prank(liquidator);
+        liq.liquidate(posId, repayAmount, block.timestamp + 1 hours, 0, 0);
+
+        vm.clearMockedCalls();
+
+        assertEq(weth.balanceOf(alice), aliceWethBefore, "malformed-return transfer did not credit alice");
+        assertEq(liq.pendingWithdrawals(alice, address(weth)), 1.25e18, "WETH refund escrowed for claim");
+    }
+
+    /// @dev rescueTokens must never dip into balances backing a deferred settlement, otherwise a
+    ///      well-meaning admin sweep would strand a borrower's claim() or a pending fee flush. We
+    ///      escrow a WETH fee (collector blocklisted), then assert only the stray surplus is rescuable
+    ///      and the escrowed portion survives to be flushed.
+    function test_rescueTokens_cannotDrainEscrow() public {
+        uint256 posId = _createLiquidatablePosition();
+        (, uint256 maxRepay) = liq.isLiquidatable(posId);
+
+        usdc.mint(liquidator, maxRepay);
+        vm.prank(liquidator);
+        usdc.approve(address(liq), maxRepay);
+
+        address collector = address(liq.feeCollector());
+        vm.mockCallRevert(
+            address(weth),
+            abi.encodeWithSelector(weth.transferFrom.selector, address(liq), collector),
+            abi.encode("BLOCKLISTED")
+        );
+        vm.prank(liquidator);
+        liq.liquidate(posId, maxRepay, block.timestamp + 1 hours, 0, 0);
+        vm.clearMockedCalls();
+
+        uint256 escrowed = liq.pendingProtocolFees(address(weth));
+        assertGt(escrowed, 0, "WETH fee must be escrowed");
+        assertEq(liq.escrowedBalance(address(weth)), escrowed, "escrowedBalance tracks the deferred fee");
+
+        // Add a genuinely stray surplus on top of the escrowed balance.
+        uint256 stray = 3e18;
+        weth.mint(address(liq), stray);
+        address recipient = makeAddr("rescueRecipient");
+
+        // Rescuing more than the stray surplus (i.e. dipping into escrow) fails closed.
+        vm.prank(owner);
+        vm.expectRevert("EXCEEDS_RESCUABLE");
+        liq.rescueTokens(address(weth), recipient, stray + 1);
+
+        // Rescuing exactly the stray surplus succeeds and leaves the escrow intact.
+        vm.prank(owner);
+        liq.rescueTokens(address(weth), recipient, stray);
+        assertEq(weth.balanceOf(recipient), stray, "only the stray surplus is rescued");
+        assertGe(weth.balanceOf(address(liq)), escrowed, "engine still holds the escrowed WETH");
+
+        // The escrow is still fully flushable to the collector.
+        liq.flushProtocolFees(address(weth));
+        assertEq(liq.pendingProtocolFees(address(weth)), 0, "escrow cleared after flush");
+        assertEq(liq.escrowedBalance(address(weth)), 0, "escrowedBalance cleared after flush");
+    }
 }
