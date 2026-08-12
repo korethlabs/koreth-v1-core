@@ -85,8 +85,10 @@ contract HandoverTest is Test {
     }
 
     /// @dev The reason the handover is split in two. Revoking here would leave the ACL with the DAO
-    ///      while ownership stayed with the deployer — and setACLManager is onlyOwner, so the
-    ///      deployer could swap in an ACLManager granting itself everything back.
+    ///      while ownership stayed with the deployer — an owner-vs-DEFAULT_ADMIN split. The ACL swap
+    ///      being two-step (owner proposes, the current DEFAULT_ADMIN accepts) already denies the
+    ///      deployer a self-serving replacement in that window, but the handover still refuses to
+    ///      revoke early so ownership and the role authority move together.
     function test_finalize_revertsBeforeDaoAcceptsOwnership() public {
         deployerAccount.propose(aclManager, core, address(dao));
 
@@ -159,8 +161,8 @@ contract HandoverTest is Test {
         assertTrue(aclManager.isEmergencyAdmin(guardian), "the guardian is not the deployer's role to lose");
     }
 
-    /// @dev The takeover primitive the old half-handoff left open: ownership governs setACLManager,
-    ///      so once it has moved the deployer can no longer swap the permission system out.
+    /// @dev The takeover primitive the old half-handoff left open: ownership governs the ACL swap, so
+    ///      once it has moved the deployer cannot even propose a replacement permission system.
     function test_afterHandover_deployerCannotReplaceTheACL() public {
         deployerAccount.propose(aclManager, core, address(dao));
         dao.accept(core);
@@ -169,18 +171,52 @@ contract HandoverTest is Test {
         ACLManager hostile = new ACLManager(deployer);
 
         vm.expectRevert("NOT_OWNER");
-        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setACLManager, (address(hostile))));
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(hostile))));
 
         assertEq(address(core.aclManager()), address(aclManager));
     }
 
-    /// @dev Before the handover this is exactly what the deployer *can* do. Stated as a test so the
-    ///      launch posture is a documented property rather than something found during an audit.
+    /// @dev Before the handover this is exactly what the deployer *can* do — but now in two steps,
+    ///      because it holds both owner (proposes) and DEFAULT_ADMIN_ROLE (accepts). Stated as a test
+    ///      so the launch posture is a documented property rather than something found during an audit.
     function test_beforeHandover_deployerCanReplaceTheACL() public {
         ACLManager replacement = new ACLManager(deployer);
 
-        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setACLManager, (address(replacement))));
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(replacement))));
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.acceptACLManager, ()));
 
         assertEq(address(core.aclManager()), address(replacement));
+    }
+
+    /// @dev The finding this fix closes (AccessControl M-1): with owner and DEFAULT_ADMIN_ROLE held by
+    ///      different parties — the exact mid-handover window — a lone owner can no longer swap the ACL.
+    ///      It can propose, but acceptance is gated on the *current* role authority, which it lacks.
+    function test_aclSwap_loneOwnerCannotComplete_whenAdminDiverged() public {
+        // Force the divergence: propose gives the DAO DEFAULT_ADMIN_ROLE (and makes it pending owner
+        // without moving ownership), then the DAO revokes the deployer. Result: owner is still the
+        // deployer, DEFAULT_ADMIN_ROLE is the DAO's alone.
+        bytes32 adminRole = aclManager.DEFAULT_ADMIN_ROLE();
+        deployerAccount.propose(aclManager, core, address(dao));
+        vm.prank(address(dao));
+        aclManager.revokeRole(adminRole, deployer);
+
+        assertEq(core.owner(), deployer, "owner still the deployer");
+        assertFalse(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), deployer), "deployer lost DEFAULT_ADMIN");
+
+        ACLManager hostile = new ACLManager(deployer);
+
+        // Owner can still propose...
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(hostile))));
+        assertEq(core.pendingACLManager(), address(hostile));
+
+        // ...but cannot accept: it no longer holds DEFAULT_ADMIN_ROLE on the current manager.
+        vm.expectRevert("NOT_ACL_ADMIN");
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.acceptACLManager, ()));
+        assertEq(address(core.aclManager()), address(aclManager), "hostile swap did not take effect");
+
+        // The rightful authority (the DAO, which now holds DEFAULT_ADMIN) is the one that co-signs.
+        vm.prank(address(dao));
+        core.acceptACLManager();
+        assertEq(address(core.aclManager()), address(hostile), "current admin completes the two-step");
     }
 }

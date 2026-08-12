@@ -27,6 +27,8 @@ interface IPriceSource is ICoreBound {
 contract ProtocolCore {
     // --- Roles (via ACLManager) ---
     ACLManager public aclManager;
+    /// @notice ACLManager proposed by owner, awaiting acceptance by the incumbent role authority.
+    address public pendingACLManager;
     address public owner;
     address public pendingOwner;
 
@@ -77,6 +79,8 @@ contract ProtocolCore {
     event OwnershipTransferStarted(address indexed currentOwner, address indexed pendingOwner);
     event OwnershipTransferCancelled(address indexed currentOwner, address indexed cancelledPendingOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event ACLManagerTransferStarted(address indexed currentManager, address indexed pendingManager);
+    event ACLManagerTransferCancelled(address indexed currentManager, address indexed cancelledPendingManager);
     event ACLManagerUpdated(address indexed oldManager, address indexed newManager);
 
     // --- Modifiers ---
@@ -107,13 +111,44 @@ contract ProtocolCore {
         aclManager = ACLManager(_aclManager);
     }
 
-    // --- ACLManager ---
+    // --- ACLManager (two-step replacement) ---
 
-    function setACLManager(address _aclManager) external onlyOwner {
+    /// @notice Step 1: owner proposes a replacement ACLManager. Takes effect only once acceptACLManager
+    ///         is called by a holder of DEFAULT_ADMIN_ROLE on the *current* manager.
+    /// @dev The ACLManager is the source of truth for every operational role, and it is core-agnostic
+    ///      (no core() back-link to verify against, unlike the price registry / risk manager). A
+    ///      single-step onlyOwner setter therefore let whoever held owner repoint the whole protocol
+    ///      at a self-serving ACLManager in one call — a takeover if owner and DEFAULT_ADMIN_ROLE ever
+    ///      diverge (e.g. mid governance handover). Splitting the swap so the incumbent role authority
+    ///      must co-sign binds the two together: neither key alone can move it.
+    function setPendingACLManager(address _aclManager) external onlyOwner {
         require(_aclManager != address(0), "ZERO_ADDRESS");
         require(_aclManager.code.length > 0, "NOT_CONTRACT");
-        emit ACLManagerUpdated(address(aclManager), _aclManager);
-        aclManager = ACLManager(_aclManager);
+        if (pendingACLManager != address(0)) {
+            emit ACLManagerTransferCancelled(address(aclManager), pendingACLManager);
+        }
+        pendingACLManager = _aclManager;
+        emit ACLManagerTransferStarted(address(aclManager), _aclManager);
+    }
+
+    /// @notice Owner withdraws a pending ACLManager proposal before it is accepted.
+    function cancelACLManagerTransfer() external onlyOwner {
+        require(pendingACLManager != address(0), "NO_PENDING_TRANSFER");
+        emit ACLManagerTransferCancelled(address(aclManager), pendingACLManager);
+        pendingACLManager = address(0);
+    }
+
+    /// @notice Step 2: a DEFAULT_ADMIN_ROLE holder on the current ACLManager activates the proposal.
+    /// @dev Co-sign by the incumbent role authority is what makes the swap require both owner (who
+    ///      proposed) and DEFAULT_ADMIN_ROLE (who accepts). The check reads the current manager, so a
+    ///      hostile owner cannot self-approve through the replacement it is trying to install.
+    function acceptACLManager() external {
+        address newManager = pendingACLManager;
+        require(newManager != address(0), "NO_PENDING_TRANSFER");
+        require(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), msg.sender), "NOT_ACL_ADMIN");
+        emit ACLManagerUpdated(address(aclManager), newManager);
+        aclManager = ACLManager(newManager);
+        pendingACLManager = address(0);
     }
 
     // --- Registry Management ---
