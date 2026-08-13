@@ -57,7 +57,6 @@ contract ProtocolCore {
     ///         the names carry "Lp": these are the venues behind deposited LP positions, not
     ///         markets anyone borrows from.
     mapping(address => bool) public supportedLpPools;
-    mapping(address => uint256) public lpPoolAddedAt;
 
     // --- Shared Registry Addresses ---
     address public priceFeedRegistryAddr;
@@ -231,7 +230,6 @@ contract ProtocolCore {
         require(pool.code.length > 0, "NOT_CONTRACT");
         require(!supportedLpPools[pool], "ALREADY_WHITELISTED");
         supportedLpPools[pool] = true;
-        lpPoolAddedAt[pool] = block.timestamp;
         emit LpPoolWhitelisted(pool);
     }
 
@@ -244,7 +242,6 @@ contract ProtocolCore {
     function removeLpPool(address pool) external onlyPoolAdmin {
         require(supportedLpPools[pool], "NOT_WHITELISTED");
         supportedLpPools[pool] = false;
-        delete lpPoolAddedAt[pool];
         emit LpPoolRemoved(pool);
     }
 
@@ -347,15 +344,5 @@ contract ProtocolCore {
 
     function isLpPoolSupported(address pool) external view returns (bool) {
         return supportedLpPools[pool];
-    }
-
-    /// @notice How long an LP pool has been whitelisted as collateral backing, in seconds.
-    /// @dev Returns 0 for a pool that is not currently whitelisted — including one that was and is
-    ///      no longer, since removeLpPool clears the timestamp.
-    function getLpPoolAge(address pool) external view returns (uint256) {
-        if (!supportedLpPools[pool]) return 0;
-        uint256 addedAt = lpPoolAddedAt[pool];
-        if (addedAt == 0) return 0;
-        return block.timestamp - addedAt;
     }
 }
