@@ -353,7 +353,6 @@ contract ProtocolCoreTest is Test {
         core.whitelistLpPool(pool);
 
         assertTrue(core.isLpPoolSupported(pool));
-        assertEq(core.lpPoolAddedAt(pool), block.timestamp);
     }
 
     function test_whitelistLpPool_revertsAlreadyWhitelisted() public {
@@ -394,8 +393,6 @@ contract ProtocolCoreTest is Test {
         vm.stopPrank();
 
         assertFalse(core.isLpPoolSupported(pool));
-        // lpPoolAddedAt cleared on removal
-        assertEq(core.lpPoolAddedAt(pool), 0);
     }
 
     function test_removeLpPool_revertsNotWhitelisted() public {
@@ -778,36 +775,6 @@ contract ProtocolCoreTest is Test {
         assertFalse(core.isLpPoolSupported(pool));
     }
 
-    // ========== getLpPoolAge ==========
-
-    function test_getLpPoolAge_returnsZeroIfNeverAdded() public view {
-        assertEq(core.getLpPoolAge(address(0xdead)), 0);
-    }
-
-    function test_getLpPoolAge_returnsCorrectAge() public {
-        address pool = _pool("pool");
-        vm.prank(owner);
-        core.whitelistLpPool(pool);
-
-        vm.warp(block.timestamp + 3600);
-        assertEq(core.getLpPoolAge(pool), 3600);
-    }
-
-    function test_getLpPoolAge_zeroAfterRemoval() public {
-        address pool = _pool("pool");
-        vm.startPrank(owner);
-        core.whitelistLpPool(pool);
-        vm.stopPrank();
-
-        vm.warp(block.timestamp + 5000);
-
-        vm.prank(owner);
-        core.removeLpPool(pool);
-
-        // Removed pool returns 0 age (not currently supported)
-        assertEq(core.getLpPoolAge(pool), 0);
-    }
-
     // ========== Multiple LP types ==========
 
     function test_registerMultipleAdaptersAndOracles() public {
@@ -871,17 +838,6 @@ contract ProtocolCoreTest is Test {
         vm.prank(owner);
         vm.expectRevert("NOT_CONTRACT");
         core.whitelistLpPool(pool);
-    }
-
-    function testFuzz_getLpPoolAge_increases(uint256 elapsed) public {
-        elapsed = bound(elapsed, 1, 365 days);
-        address pool = _pool("pool");
-
-        vm.prank(owner);
-        core.whitelistLpPool(pool);
-
-        vm.warp(block.timestamp + elapsed);
-        assertEq(core.getLpPoolAge(pool), elapsed);
     }
 
     function testFuzz_transferOwnership_anyNonZero(address newOwner) public {
