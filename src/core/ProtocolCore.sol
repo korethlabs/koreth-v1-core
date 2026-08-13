@@ -145,6 +145,11 @@ contract ProtocolCore {
     function acceptACLManager() external {
         address newManager = pendingACLManager;
         require(newManager != address(0), "NO_PENDING_TRANSFER");
+        // Re-check code at acceptance, not only at proposal: an address that was a contract when
+        // proposed can be codeless by now (e.g. SELFDESTRUCT, or a not-yet-deployed CREATE2 target).
+        // Pointing aclManager at a codeless address would brick every onlyPoolAdmin/onlyEmergencyAdmin
+        // path, which reads roles through it.
+        require(newManager.code.length > 0, "NOT_CONTRACT");
         require(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), msg.sender), "NOT_ACL_ADMIN");
         emit ACLManagerUpdated(address(aclManager), newManager);
         aclManager = ACLManager(newManager);

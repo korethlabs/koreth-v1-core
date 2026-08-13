@@ -219,4 +219,19 @@ contract HandoverTest is Test {
         core.acceptACLManager();
         assertEq(address(core.aclManager()), address(hostile), "current admin completes the two-step");
     }
+
+    /// @dev A pending manager that was a contract at proposal time can be codeless by acceptance
+    ///      (SELFDESTRUCT, or a CREATE2 target not yet deployed). Accepting it would brick every
+    ///      role-gated path, so acceptance re-validates code length.
+    function test_acceptACLManager_revertsIfPendingLostCode() public {
+        ACLManager replacement = new ACLManager(deployer);
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(replacement))));
+
+        // Simulate the pending manager losing its code between proposal and acceptance.
+        vm.etch(address(replacement), "");
+
+        vm.expectRevert("NOT_CONTRACT");
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.acceptACLManager, ()));
+        assertEq(address(core.aclManager()), address(aclManager), "codeless swap did not take effect");
+    }
 }
