@@ -85,8 +85,10 @@ contract HandoverTest is Test {
     }
 
     /// @dev The reason the handover is split in two. Revoking here would leave the ACL with the DAO
-    ///      while ownership stayed with the deployer — and setACLManager is onlyOwner, so the
-    ///      deployer could swap in an ACLManager granting itself everything back.
+    ///      while ownership stayed with the deployer — an owner-vs-DEFAULT_ADMIN split. The ACL swap
+    ///      being two-step (owner proposes, the current DEFAULT_ADMIN accepts) already denies the
+    ///      deployer a self-serving replacement in that window, but the handover still refuses to
+    ///      revoke early so ownership and the role authority move together.
     function test_finalize_revertsBeforeDaoAcceptsOwnership() public {
         deployerAccount.propose(aclManager, core, address(dao));
 
@@ -159,8 +161,8 @@ contract HandoverTest is Test {
         assertTrue(aclManager.isEmergencyAdmin(guardian), "the guardian is not the deployer's role to lose");
     }
 
-    /// @dev The takeover primitive the old half-handoff left open: ownership governs setACLManager,
-    ///      so once it has moved the deployer can no longer swap the permission system out.
+    /// @dev The takeover primitive the old half-handoff left open: ownership governs the ACL swap, so
+    ///      once it has moved the deployer cannot even propose a replacement permission system.
     function test_afterHandover_deployerCannotReplaceTheACL() public {
         deployerAccount.propose(aclManager, core, address(dao));
         dao.accept(core);
@@ -169,18 +171,161 @@ contract HandoverTest is Test {
         ACLManager hostile = new ACLManager(deployer);
 
         vm.expectRevert("NOT_OWNER");
-        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setACLManager, (address(hostile))));
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(hostile))));
 
         assertEq(address(core.aclManager()), address(aclManager));
     }
 
-    /// @dev Before the handover this is exactly what the deployer *can* do. Stated as a test so the
-    ///      launch posture is a documented property rather than something found during an audit.
+    /// @dev Before the handover this is exactly what the deployer *can* do — but now in two steps,
+    ///      because it holds both owner (proposes) and DEFAULT_ADMIN_ROLE (accepts). Stated as a test
+    ///      so the launch posture is a documented property rather than something found during an audit.
     function test_beforeHandover_deployerCanReplaceTheACL() public {
         ACLManager replacement = new ACLManager(deployer);
 
-        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setACLManager, (address(replacement))));
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(replacement))));
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.acceptACLManager, ()));
 
         assertEq(address(core.aclManager()), address(replacement));
+    }
+
+    /// @dev With owner and DEFAULT_ADMIN_ROLE held by different parties — the exact mid-handover
+    ///      window — a lone owner can no longer swap the ACL. It can propose, but acceptance is gated
+    ///      on the *current* role authority, which it lacks.
+    function test_aclSwap_loneOwnerCannotComplete_whenAdminDiverged() public {
+        // Force the divergence: propose gives the DAO DEFAULT_ADMIN_ROLE (and makes it pending owner
+        // without moving ownership), then the DAO revokes the deployer. Result: owner is still the
+        // deployer, DEFAULT_ADMIN_ROLE is the DAO's alone.
+        bytes32 adminRole = aclManager.DEFAULT_ADMIN_ROLE();
+        deployerAccount.propose(aclManager, core, address(dao));
+        vm.prank(address(dao));
+        aclManager.revokeRole(adminRole, deployer);
+
+        assertEq(core.owner(), deployer, "owner still the deployer");
+        assertFalse(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), deployer), "deployer lost DEFAULT_ADMIN");
+
+        ACLManager hostile = new ACLManager(deployer);
+
+        // Owner can still propose...
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(hostile))));
+        assertEq(core.pendingACLManager(), address(hostile));
+
+        // ...but cannot accept: it no longer holds DEFAULT_ADMIN_ROLE on the current manager.
+        vm.expectRevert("NOT_ACL_ADMIN");
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.acceptACLManager, ()));
+        assertEq(address(core.aclManager()), address(aclManager), "hostile swap did not take effect");
+
+        // The rightful authority (the DAO, which now holds DEFAULT_ADMIN) is the one that co-signs.
+        vm.prank(address(dao));
+        core.acceptACLManager();
+        assertEq(address(core.aclManager()), address(hostile), "current admin completes the two-step");
+    }
+
+    /// @dev A pending manager that was a contract at proposal time can be codeless by acceptance
+    ///      (SELFDESTRUCT, or a CREATE2 target not yet deployed). Accepting it would brick every
+    ///      role-gated path, so acceptance re-validates code length.
+    function test_acceptACLManager_revertsIfPendingLostCode() public {
+        ACLManager replacement = new ACLManager(deployer);
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(replacement))));
+
+        // Simulate the pending manager losing its code between proposal and acceptance.
+        vm.etch(address(replacement), "");
+
+        vm.expectRevert("NOT_CONTRACT");
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.acceptACLManager, ()));
+        assertEq(address(core.aclManager()), address(aclManager), "codeless swap did not take effect");
+    }
+
+    function test_setPendingACLManager_revertsZeroAddress() public {
+        vm.expectRevert("ZERO_ADDRESS");
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(0))));
+    }
+
+    function test_setPendingACLManager_revertsNonContract() public {
+        vm.expectRevert("NOT_CONTRACT");
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (makeAddr("eoa"))));
+    }
+
+    function test_setPendingACLManager_revertsNotOwner() public {
+        ACLManager replacement = new ACLManager(deployer);
+        vm.prank(makeAddr("stranger"));
+        vm.expectRevert("NOT_OWNER");
+        core.setPendingACLManager(address(replacement));
+    }
+
+    function test_acceptACLManager_revertsWhenNothingPending() public {
+        vm.expectRevert("NO_PENDING_TRANSFER");
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.acceptACLManager, ()));
+    }
+
+    function test_cancelACLManagerTransfer_clearsPending() public {
+        ACLManager replacement = new ACLManager(deployer);
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(replacement))));
+        assertEq(core.pendingACLManager(), address(replacement));
+
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.cancelACLManagerTransfer, ()));
+        assertEq(core.pendingACLManager(), address(0), "pending must be cleared");
+        assertEq(address(core.aclManager()), address(aclManager), "current manager unchanged");
+    }
+
+    function test_cancelACLManagerTransfer_revertsWhenNothingPending() public {
+        vm.expectRevert("NO_PENDING_TRANSFER");
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.cancelACLManagerTransfer, ()));
+    }
+
+    function test_cancelACLManagerTransfer_revertsNotOwner() public {
+        ACLManager replacement = new ACLManager(deployer);
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(replacement))));
+        vm.prank(makeAddr("stranger"));
+        vm.expectRevert("NOT_OWNER");
+        core.cancelACLManagerTransfer();
+    }
+
+    /// @dev Re-proposing replaces the pending target and announces the withdrawal of the previous one.
+    function test_setPendingACLManager_overwriteEmitsCancellation() public {
+        ACLManager first = new ACLManager(deployer);
+        ACLManager second = new ACLManager(deployer);
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(first))));
+
+        vm.expectEmit(true, true, false, false, address(core));
+        emit ProtocolCore.ACLManagerTransferCancelled(address(aclManager), address(first));
+        vm.expectEmit(true, true, false, false, address(core));
+        emit ProtocolCore.ACLManagerTransferStarted(address(aclManager), address(second));
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(second))));
+
+        assertEq(core.pendingACLManager(), address(second));
+    }
+
+    function test_acceptACLManager_emitsUpdatedAndClearsPending() public {
+        ACLManager replacement = new ACLManager(deployer);
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(replacement))));
+
+        vm.expectEmit(true, true, false, false, address(core));
+        emit ProtocolCore.ACLManagerUpdated(address(aclManager), address(replacement));
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.acceptACLManager, ()));
+
+        assertEq(address(core.aclManager()), address(replacement), "manager swapped");
+        assertEq(core.pendingACLManager(), address(0), "pending cleared after accept");
+    }
+
+    /// @dev After the swap the role modifiers must read the NEW manager: a role granted only there
+    ///      now authorises, and one granted only on the old manager no longer does.
+    function test_afterSwap_roleChecksResolveAgainstNewManager() public {
+        // The replacement's admin/POOL_ADMIN is a fresh account, not the deployer.
+        address newAdmin = makeAddr("newAdmin");
+        ACLManager replacement = new ACLManager(newAdmin);
+
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.setPendingACLManager, (address(replacement))));
+        // Accept still needs DEFAULT_ADMIN on the current manager, which the deployer holds.
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.acceptACLManager, ()));
+
+        // Authorised only on the new manager: newAdmin (POOL_ADMIN there) can now whitelist. The pool
+        // must be a contract (whitelistLpPool checks code length), so reuse an existing one.
+        vm.prank(newAdmin);
+        core.whitelistLpPool(address(aclManager));
+
+        // The deployer is POOL_ADMIN only on the old manager, so it no longer passes onlyPoolAdmin.
+        assertFalse(replacement.isPoolAdmin(deployer), "deployer is not admin on the new manager");
+        vm.expectRevert("NOT_POOL_ADMIN");
+        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.whitelistLpPool, (makeAddr("pool2"))));
     }
 }

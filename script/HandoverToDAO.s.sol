@@ -15,8 +15,10 @@ import {ProtocolCore} from "../src/core/ProtocolCore.sol";
 ///
 ///      The order is not a preference. Revoking the deployer before the DAO owns ProtocolCore
 ///      would leave the ACL in the DAO's hands while ownership stayed with the deployer — and
-///      setACLManager is onlyOwner, so the deployer could point the protocol at a fresh ACLManager
-///      granting itself everything back. finalize() therefore refuses until ownership has moved.
+///      replacing the ACLManager is two-step (owner proposes, the current DEFAULT_ADMIN accepts), so
+///      that split alone no longer lets the deployer point the protocol at a fresh ACLManager granting
+///      itself everything back. finalize() still refuses until ownership has moved, so the two
+///      authorities are never left divergent.
 library Handover {
     /// @notice Give the DAO the admin roles and start the ownership transfer.
     /// @dev Grants and a pending owner, no revocations: the protocol still needs an operator until
