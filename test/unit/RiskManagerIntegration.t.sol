@@ -570,6 +570,7 @@ contract RiskManagerIntegrationTest is Test {
     event WithdrawRecorded(uint256 valueUsd, address indexed pool, uint256 newPoolSupply);
     event BorrowTrackingDrift(uint256 tracked, uint256 repaid, bool isGlobal);
     event DailyBorrowIncreaseLimitUpdated(uint256 oldValue, uint256 newValue);
+    event MinBorrowUsdUpdated(uint256 oldValue, uint256 newValue);
 
     function test_setDailyBorrowIncreaseLimit_emitsEventAndStores() public {
         vm.expectEmit(false, false, false, true);
@@ -577,6 +578,20 @@ contract RiskManagerIntegrationTest is Test {
         vm.prank(owner);
         rm.setDailyBorrowIncreaseLimit(30_000e18);
         assertEq(rm.dailyBorrowIncreaseLimit(), 30_000e18, "setter must store the new limit");
+    }
+
+    function test_setMinBorrowUsd_emitsEventAndStores() public {
+        vm.expectEmit(false, false, false, true);
+        emit MinBorrowUsdUpdated(0, 1000e18);
+        vm.prank(owner);
+        rm.setMinBorrowUsd(1000e18);
+        assertEq(rm.minBorrowUsd(), 1000e18, "setter must store the new floor");
+    }
+
+    function test_setMinBorrowUsd_onlyRiskAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert("NOT_RISK_ADMIN");
+        rm.setMinBorrowUsd(1000e18);
     }
 
     /// @dev lpType is checked as topic1: indexers reconstruct per-collateral exposure from these

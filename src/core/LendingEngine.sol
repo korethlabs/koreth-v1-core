@@ -136,6 +136,14 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
         uint256 maxBorrow = _getMaxBorrow(positionId, pos.borrowAsset, pos.lpType);
         require(newTotalDebt <= maxBorrow, "EXCEEDS_MAX_LTV");
 
+        // Minimum debt floor: the position's RESULTING total debt must clear the dust threshold, so
+        // a small top-up on an already-sized position passes while a fresh sub-floor borrow does not.
+        // Checked before the RiskManager records below so nothing is mutated on rejection.
+        uint256 minBorrowUsd = _riskManager().minBorrowUsd();
+        if (minBorrowUsd > 0) {
+            require(_toUsd(newTotalDebt, pos.borrowAsset) >= minBorrowUsd, "BELOW_MIN_BORROW");
+        }
+
         // RiskManager: validate caps (all in 18-dec USD)
         {
             RiskManager rm = _riskManager();
@@ -161,7 +169,7 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
 
     /// @inheritdoc ILendingEngine
     function repay(uint256 positionId, uint256 amount) external whenNotPaused nonReentrant {
-        _repayInternal(positionId, amount, msg.sender);
+        _repayInternal(positionId, amount, msg.sender, true);
     }
 
     /// @notice Repay debt on behalf of a borrower (used by LiquidationEngine)
@@ -174,7 +182,9 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
         onlyLiquidationEngine
         nonReentrant
     {
-        _repayInternal(positionId, repayAmount, msg.sender);
+        // enforceMinDebt = false: a capped partial liquidation may legitimately leave a remainder
+        // below the debt floor, and gating it here would brick the liquidation of such a position.
+        _repayInternal(positionId, repayAmount, msg.sender, false);
     }
 
     // --- View ---
@@ -201,7 +211,7 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
 
     // --- Internal ---
 
-    function _repayInternal(uint256 positionId, uint256 amount, address payer) internal {
+    function _repayInternal(uint256 positionId, uint256 amount, address payer, bool enforceMinDebt) internal {
         PositionManager.Position memory pos = positionManager.getPosition(positionId);
 
         address poolAddr = _getPoolAddr(pos.borrowAsset);
@@ -216,6 +226,16 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
         require(repayAmount <= currentDebt, "REPAY_EXCEEDS_DEBT");
 
         uint256 remainingDebt = currentDebt - repayAmount;
+
+        // No dust remainder on the user repay path: a partial repay must leave the position either
+        // fully closed or still above the floor, so a borrower cannot grind their own debt down to a
+        // size that is un-liquidatable in practice. To exit below the floor they repay in full.
+        if (enforceMinDebt && remainingDebt > 0) {
+            uint256 minBorrowUsd = _riskManager().minBorrowUsd();
+            if (minBorrowUsd > 0) {
+                require(_toUsd(remainingDebt, pos.borrowAsset) >= minBorrowUsd, "DUST_REMAINDER");
+            }
+        }
 
         // Interest accrued since this position was last touched, before debtInfo is overwritten.
         uint256 accrued = currentDebt - debtInfo[positionId].principal;

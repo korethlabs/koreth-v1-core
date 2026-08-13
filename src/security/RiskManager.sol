@@ -45,6 +45,20 @@ contract RiskManager {
     uint256 public dailyBorrowWindowStart; // timestamp the current window began
     uint256 public constant DAILY_BORROW_WINDOW = 1 days;
 
+    // --- Minimum Debt Floor (18-dec USD) ---
+    // A position's outstanding debt must be either zero or at least this value: enforced on borrow
+    // (resulting total debt) and on user repay (remaining debt) by LendingEngine. This is the debt
+    // floor pattern used by MakerDAO (`dust` per ilk) and Compound III (`baseBorrowMin`): it keeps
+    // positions from settling at a size where the collateral recoverable in a liquidation is worth
+    // less than the gas to seize it, so no economically un-liquidatable dust accumulates.
+    //
+    // 0 = disabled, mirroring dailyBorrowIncreaseLimit above: the floor sits ABOVE the fail-closed
+    // liquidation path (which independently guarantees a liquidatable position is always liquidatable),
+    // so a missing config forgoes the floor but opens no exploit. Enable it via setMinBorrowUsd. It
+    // does NOT gate liquidation repays — a partial seize is capped and may legitimately leave a
+    // remainder below the floor, which is expected and handled downstream.
+    uint256 public minBorrowUsd;
+
     // --- Collateral registry (per LP type) ---
     // Single source of truth for collateral-risk params in the shared-pool model. All bps except
     // haircut (bps applied to collateral value) and borrowCap (18-dec USD). enabled gates deposits
@@ -84,6 +98,7 @@ contract RiskManager {
     // --- Events ---
     event GlobalBorrowCapUpdated(uint256 oldValue, uint256 newValue);
     event DailyBorrowIncreaseLimitUpdated(uint256 oldValue, uint256 newValue);
+    event MinBorrowUsdUpdated(uint256 oldValue, uint256 newValue);
     event LPTypeBorrowCapUpdated(ILPAdapter.LPType indexed lpType, uint256 cap);
     event CollateralConfigSet(ILPAdapter.LPType indexed lpType);
     event MaxPositionValueUpdated(uint256 oldValue, uint256 newValue);
@@ -341,6 +356,15 @@ contract RiskManager {
     function setDailyBorrowIncreaseLimit(uint256 limit) external onlyRiskAdmin {
         emit DailyBorrowIncreaseLimitUpdated(dailyBorrowIncreaseLimit, limit);
         dailyBorrowIncreaseLimit = limit;
+    }
+
+    /// @notice Set the minimum outstanding debt a position may carry (18-dec USD). 0 disables it.
+    /// @dev Enforced by LendingEngine on borrow (resulting total debt) and on user repay (remaining
+    ///      debt must be 0 or >= this). Lowering or disabling it never forces existing positions to
+    ///      change; raising it only constrains the next borrow/repay, not positions already below it.
+    function setMinBorrowUsd(uint256 minUsd) external onlyRiskAdmin {
+        emit MinBorrowUsdUpdated(minBorrowUsd, minUsd);
+        minBorrowUsd = minUsd;
     }
 
     /// @notice Adjust only the borrow cap of an already-configured collateral type.
