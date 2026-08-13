@@ -138,7 +138,8 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
 
         // Minimum debt floor: the position's RESULTING total debt must clear the dust threshold, so
         // a small top-up on an already-sized position passes while a fresh sub-floor borrow does not.
-        // Checked before the RiskManager records below so nothing is mutated on rejection.
+        // Checked before the RiskManager records below, so a rejection never has to unwind cap
+        // accounting (the whole tx reverts anyway; this just keeps the record call off the reject path).
         uint256 minBorrowUsd = _riskManager().minBorrowUsd();
         if (minBorrowUsd > 0) {
             require(_toUsd(newTotalDebt, pos.borrowAsset) >= minBorrowUsd, "BELOW_MIN_BORROW");
