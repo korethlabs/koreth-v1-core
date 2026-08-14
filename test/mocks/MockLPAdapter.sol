@@ -181,9 +181,11 @@ contract MockLPAdapter is ILPAdapter {
         return supportedTokens[lpToken];
     }
 
-    // Fee-collection capability. Defaults to keying off the LP type (concentrated-liquidity NFT
-    // positions hold fees separately), but tests can override it to prove the liquidation path
-    // consults the capability flag rather than a hardcoded type.
+    // Fee-collection capability. The default reports true only for LPType.UniswapV3 — matching the
+    // existing V3 fee-sweep tests so they keep passing untouched. Any other LP type (including the
+    // other concentrated-liquidity NFT types) reports false unless a test opts in via
+    // setSupportsFeeCollection(true); tests exercising a non-V3 fee-bearing adapter must set it
+    // explicitly, which also proves the liquidation path consults the flag rather than the type.
     bool private _overrideFeeCollection;
     bool private _feeCollectionSet;
 
