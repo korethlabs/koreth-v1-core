@@ -332,6 +332,130 @@ contract LendingEngineTest is Test {
         le.repayOnBehalf(posId, 5000e18);
     }
 
+    // ========== Minimum Debt Floor (Liquidation M-2) ==========
+    // usdc is 18-dec and wired 1:1 to USD, so a minBorrowUsd of N e18 maps to N usdc of debt.
+
+    /// @dev A fresh borrow whose resulting total debt is below the floor is rejected, so no dust
+    ///      position — one too small to be worth liquidating — can be created.
+    function test_borrow_revertsBelowMinBorrowFloor() public {
+        vm.prank(owner);
+        riskManager.setMinBorrowUsd(5000e18);
+
+        uint256 posId = _depositPosition(alice);
+
+        vm.prank(alice);
+        vm.expectRevert("BELOW_MIN_BORROW");
+        le.borrow(posId, 1000e18);
+    }
+
+    /// @dev A borrow landing exactly on the floor passes: the check is `>=`, so the floor itself is
+    ///      an allowed debt size.
+    function test_borrow_atExactFloorSucceeds() public {
+        vm.prank(owner);
+        riskManager.setMinBorrowUsd(5000e18);
+
+        uint256 posId = _depositPosition(alice);
+
+        vm.prank(alice);
+        le.borrow(posId, 5000e18);
+        assertEq(le.getDebt(posId), 5000e18);
+    }
+
+    /// @dev The floor is checked against the RESULTING TOTAL debt, not the increment: once a position
+    ///      is above the floor, a top-up smaller than the floor is fine. Otherwise routine small
+    ///      draws on a healthy position would be blocked.
+    function test_borrow_topUpBelowFloorAllowedWhenTotalAboveFloor() public {
+        vm.prank(owner);
+        riskManager.setMinBorrowUsd(5000e18);
+
+        uint256 posId = _depositPosition(alice);
+
+        vm.startPrank(alice);
+        le.borrow(posId, 5000e18); // opens exactly at the floor
+        le.borrow(posId, 1e18); // increment is far below the floor, but total (5001) clears it
+        vm.stopPrank();
+
+        assertEq(le.getDebt(posId), 5001e18);
+    }
+
+    /// @dev 0 disables the floor (safe-by-default): a tiny borrow that would otherwise be dust passes
+    ///      when no floor is configured.
+    function test_borrow_minFloorDisabledByDefault() public {
+        uint256 posId = _depositPosition(alice);
+
+        vm.prank(alice);
+        le.borrow(posId, 1e18);
+        assertEq(le.getDebt(posId), 1e18);
+    }
+
+    /// @dev A partial user repay may not leave a sub-floor remainder: to exit below the floor the
+    ///      borrower must repay in full. This stops a borrower grinding their own debt down to a size
+    ///      that is un-liquidatable in practice.
+    function test_repay_revertsLeavingDustRemainder() public {
+        uint256 posId = _depositAndBorrow(alice, 20_000e18);
+
+        vm.prank(owner);
+        riskManager.setMinBorrowUsd(5000e18);
+
+        vm.prank(alice);
+        usdc.approve(address(market), 16_000e18);
+
+        // Would leave 4000 (< 5000 floor) outstanding.
+        vm.prank(alice);
+        vm.expectRevert("DUST_REMAINDER");
+        le.repay(posId, 16_000e18);
+    }
+
+    /// @dev A full repay is always allowed regardless of the floor: the remainder is zero, which the
+    ///      floor explicitly permits (either 0 or >= floor).
+    function test_repay_fullRepayAllowedBelowFloor() public {
+        uint256 posId = _depositAndBorrow(alice, 20_000e18);
+
+        vm.prank(owner);
+        riskManager.setMinBorrowUsd(50_000e18); // floor above the entire debt
+
+        vm.prank(alice);
+        usdc.approve(address(market), 20_000e18);
+
+        vm.prank(alice);
+        le.repay(posId, type(uint256).max);
+        assertEq(le.getDebt(posId), 0);
+    }
+
+    /// @dev Repaying down to exactly the floor is allowed: the remainder equals the floor, and the
+    ///      check is `>=`.
+    function test_repay_downToExactFloorAllowed() public {
+        uint256 posId = _depositAndBorrow(alice, 20_000e18);
+
+        vm.prank(owner);
+        riskManager.setMinBorrowUsd(5000e18);
+
+        vm.prank(alice);
+        usdc.approve(address(market), 15_000e18);
+
+        vm.prank(alice);
+        le.repay(posId, 15_000e18); // leaves exactly 5000
+        assertEq(le.getDebt(posId), 5000e18);
+    }
+
+    /// @dev The floor does NOT gate liquidation repays: a capped partial seize may legitimately leave
+    ///      a sub-floor remainder, and gating it here would brick the liquidation of such a position.
+    function test_repayOnBehalf_notGatedByFloor() public {
+        uint256 posId = _depositAndBorrow(alice, 20_000e18);
+
+        vm.prank(owner);
+        riskManager.setMinBorrowUsd(5000e18);
+
+        usdc.mint(liquidationEngine, 16_000e18);
+        vm.prank(liquidationEngine);
+        usdc.approve(address(market), 16_000e18);
+
+        // Leaves 4000 (< 5000 floor) — allowed on the liquidation path.
+        vm.prank(liquidationEngine);
+        le.repayOnBehalf(posId, 16_000e18);
+        assertEq(le.getDebt(posId), 4000e18);
+    }
+
     // ========== PM-5: Borrow Cooldown ==========
 
     function test_borrow_revertsSameBlock() public {

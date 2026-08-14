@@ -584,6 +584,12 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             maxRepay = (totalDebt * maxLiquidationPortion) / 10_000;
         }
 
+        // Floor of 1: the partial branch above can round a tiny debt down to 0, which would report
+        // the position liquidatable while telling liquidate() that nothing may be repaid — a state
+        // no caller could act on, leaving the position stuck. The minimum debt floor
+        // (RiskManager.minBorrowUsd) keeps normal positions well clear of this, but a capped partial
+        // liquidation can still grind a position down into dust, so this guarantees such a remainder
+        // stays liquidatable rather than becoming un-closable.
         if (maxRepay == 0) maxRepay = 1;
 
         return (true, maxRepay);
