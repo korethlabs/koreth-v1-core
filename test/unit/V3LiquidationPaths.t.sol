@@ -265,6 +265,92 @@ contract V3LiquidationPaths is Test {
         assertGt(weth.balanceOf(liquidator), liqWethBefore, "liquidator receives principal proceeds");
     }
 
+    // ========== 2c. Fee-sweep keys off supportsFeeCollection(), not the LP type (Adapters M-2) ==========
+
+    /// @dev Proves the sweep is driven by the adapter's capability flag, not a hardcoded enum.
+    ///      A V3-typed adapter that declares supportsFeeCollection() == false has its fees left
+    ///      untouched: no collectFees() sweep runs, so the borrower receives nothing even though
+    ///      fees were set on the mock. This is the negative twin of the fix — the old hardcoded
+    ///      `lpType == UniswapV3` check would have swept here regardless.
+    function test_feeSweep_skippedWhenAdapterDeclaresNoFeeCollection() public {
+        vm.prank(alice);
+        uint256 posId = pm.deposit(lpToken, 42, 0, borrowAsset);
+        vm.roll(block.number + 3);
+        vm.prank(alice);
+        le.borrow(posId, 30_000e18);
+
+        // V3-typed adapter, but it declares it does NOT hold fees separately.
+        v3Adapter.setSupportsFeeCollection(false);
+        v3Adapter.setMockFees(3e18, 3000e18);
+        v3Adapter.setUnwindAmounts(25e18, 25_000e18);
+        oracle.setPrice(35_000e18); // HF < 1 → liquidatable
+
+        (, uint256 maxRepay) = liq.isLiquidatable(posId);
+        uint256 partialRepay = maxRepay / 2;
+
+        uint256 aliceWethBefore = weth.balanceOf(alice);
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+
+        usdc.mint(liquidator, partialRepay);
+        vm.startPrank(liquidator);
+        usdc.approve(address(liq), partialRepay);
+        liq.liquidate(posId, partialRepay, block.timestamp, 0, 0);
+        vm.stopPrank();
+
+        // No sweep ran, so the borrower receives none of the mock fees.
+        assertEq(weth.balanceOf(alice), aliceWethBefore, "no WETH fees swept when capability is false");
+        assertEq(usdc.balanceOf(alice), aliceUsdcBefore, "no USDC fees swept when capability is false");
+    }
+
+    /// @dev The positive twin: a non-UniswapV3 LP type (here PancakeSwapV3) that declares
+    ///      supportsFeeCollection() == true IS swept on a partial liquidation. Under the old
+    ///      hardcoded `lpType == UniswapV3` check this future NFT adapter would have been skipped,
+    ///      letting a partial liquidation over-collect the borrower's uncollected fees.
+    function test_feeSweep_appliesToNonV3AdapterThatDeclaresFeeCollection() public {
+        address pcsLpToken = makeAddr("pcsLpToken");
+
+        MockLPAdapter pcsAdapter = new MockLPAdapter(ILPAdapter.LPType.PancakeSwapV3);
+        pcsAdapter.setSupportedToken(pcsLpToken, true);
+        pcsAdapter.setTokenReturns(address(weth), address(usdc));
+        pcsAdapter.setUnwindAmounts(25e18, 25_000e18);
+        pcsAdapter.setMockLiquidity(1_000_000);
+        pcsAdapter.setMockFees(3e18, 3000e18);
+        pcsAdapter.setSupportsFeeCollection(true); // future NFT adapter that holds fees separately
+        weth.mint(address(pcsAdapter), 1_000_000e18);
+        usdc.mint(address(pcsAdapter), 1_000_000e18);
+
+        vm.startPrank(owner);
+        core.registerAdapter(ILPAdapter.LPType.PancakeSwapV3, address(pcsAdapter));
+        core.registerOracle(ILPAdapter.LPType.PancakeSwapV3, address(oracle));
+        core.whitelistLpPool(TestPools.asContract(pcsLpToken));
+        riskManager.setCollateralConfig(ILPAdapter.LPType.PancakeSwapV3, RiskConfig.defaultConfig());
+        vm.stopPrank();
+
+        oracle.setPrice(50_000e18); // healthy at borrow time
+        vm.prank(alice);
+        uint256 posId = pm.deposit(pcsLpToken, 42, 0, borrowAsset);
+        vm.roll(block.number + 3);
+        vm.prank(alice);
+        le.borrow(posId, 30_000e18);
+        oracle.setPrice(35_000e18); // HF < 1 → liquidatable
+
+        (, uint256 maxRepay) = liq.isLiquidatable(posId);
+        uint256 partialRepay = maxRepay / 2;
+
+        uint256 aliceWethBefore = weth.balanceOf(alice);
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+
+        usdc.mint(liquidator, partialRepay);
+        vm.startPrank(liquidator);
+        usdc.approve(address(liq), partialRepay);
+        liq.liquidate(posId, partialRepay, block.timestamp, 0, 0);
+        vm.stopPrank();
+
+        // Borrower receives ALL swept fees despite the adapter not being UniswapV3.
+        assertEq(weth.balanceOf(alice), aliceWethBefore + 3e18, "borrower receives all swept WETH fees");
+        assertEq(usdc.balanceOf(alice), aliceUsdcBefore + 3000e18, "borrower receives all swept USDC fees");
+    }
+
     // ========== 3. minAmount slippage revert ==========
 
     function test_slippage_reverts() public {

@@ -119,4 +119,12 @@ interface ILPAdapter {
 
     /// @notice Check if this adapter supports a given LP token/pool
     function isSupported(address lpToken) external view returns (bool);
+
+    /// @notice Whether this adapter holds uncollected trading fees separately from principal
+    ///         liquidity, so they must be swept via collectFees before an unwind.
+    /// @dev True for concentrated-liquidity NFT adapters, where fees accrue inside the position NFT
+    ///      apart from principal; false for ERC-20 LP adapters, whose fees compound into the pool
+    ///      reserves and are never held separately. The liquidation path consults this so a partial
+    ///      seize sweeps a fee-bearing adapter automatically, instead of matching a hardcoded type.
+    function supportsFeeCollection() external view returns (bool);
 }

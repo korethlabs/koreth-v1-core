@@ -180,4 +180,19 @@ contract MockLPAdapter is ILPAdapter {
     function isSupported(address lpToken) external view override returns (bool) {
         return supportedTokens[lpToken];
     }
+
+    // Fee-collection capability. Defaults to keying off the LP type (concentrated-liquidity NFT
+    // positions hold fees separately), but tests can override it to prove the liquidation path
+    // consults the capability flag rather than a hardcoded type.
+    bool private _overrideFeeCollection;
+    bool private _feeCollectionSet;
+
+    function setSupportsFeeCollection(bool v) external {
+        _overrideFeeCollection = v;
+        _feeCollectionSet = true;
+    }
+
+    function supportsFeeCollection() external view override returns (bool) {
+        return _feeCollectionSet ? _overrideFeeCollection : _lpType == LPType.UniswapV3;
+    }
 }

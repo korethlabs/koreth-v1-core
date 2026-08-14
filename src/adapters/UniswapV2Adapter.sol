@@ -236,4 +236,11 @@ contract UniswapV2Adapter is ILPAdapter {
             return false;
         }
     }
+
+    /// @inheritdoc ILPAdapter
+    /// @dev V2 fees compound into the pair reserves; there are no separately held fees to sweep
+    ///      (collectFees is a no-op returning zero).
+    function supportsFeeCollection() external pure returns (bool) {
+        return false;
+    }
 }

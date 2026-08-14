@@ -101,8 +101,15 @@ contract PancakeSwapAdapter is ILPAdapter {
     }
 
     /// @inheritdoc ILPAdapter
-    function isSupported(address lpToken) external view returns (bool) {
-        if (isV3) return lpToken == v3NftManager;
+    /// @dev Every functional method reverts NOT_IMPLEMENTED, so this reports unsupported until
+    ///      the adapter is built out — mirroring the other Phase 2 stubs. Returning true here would
+    ///      let _detectLPType route collateral into an adapter that cannot service it.
+    function isSupported(address) external pure returns (bool) {
+        return false; // Phase 2 — not yet implemented
+    }
+
+    /// @inheritdoc ILPAdapter
+    function supportsFeeCollection() external pure returns (bool) {
         return false; // Phase 2 — not yet implemented
     }
 }

@@ -85,4 +85,9 @@ contract AerodromeAdapter is ILPAdapter {
     function isSupported(address) external pure returns (bool) {
         return false; // Phase 2 — not yet implemented
     }
+
+    /// @inheritdoc ILPAdapter
+    function supportsFeeCollection() external pure returns (bool) {
+        return false; // Phase 2 — not yet implemented
+    }
 }
