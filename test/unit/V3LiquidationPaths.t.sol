@@ -265,7 +265,7 @@ contract V3LiquidationPaths is Test {
         assertGt(weth.balanceOf(liquidator), liqWethBefore, "liquidator receives principal proceeds");
     }
 
-    // ========== 2c. Fee-sweep keys off supportsFeeCollection(), not the LP type (Adapters M-2) ==========
+    // ========== 2c. Fee-sweep keys off supportsFeeCollection(), not the LP type ==========
 
     /// @dev Proves the sweep is driven by the adapter's capability flag, not a hardcoded enum.
     ///      A V3-typed adapter that declares supportsFeeCollection() == false has its fees left

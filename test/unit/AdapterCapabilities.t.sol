@@ -12,7 +12,7 @@ import {PancakeSwapAdapter} from "../../src/adapters/PancakeSwapAdapter.sol";
 
 /// @title AdapterCapabilities
 /// @notice Verifies each adapter's self-declared capability flags: supportsFeeCollection()
-///         (Adapters M-2) and the stub isSupported() safety default (Adapters M-1).
+///         and the stub isSupported() safety default.
 contract AdapterCapabilities is Test {
     ProtocolCore internal core;
 
@@ -25,7 +25,7 @@ contract AdapterCapabilities is Test {
         core = new ProtocolCore(address(this), address(acl));
     }
 
-    // --- supportsFeeCollection() (Adapters M-2) ---
+    // --- supportsFeeCollection() ---
     // Only concentrated-liquidity NFT adapters hold uncollected fees apart from principal, so the
     // liquidation fee-sweep must key off this flag rather than a hardcoded LP type.
 
@@ -54,7 +54,7 @@ contract AdapterCapabilities is Test {
         assertFalse(adapter.supportsFeeCollection(), "Pancake stub declares no separate fees");
     }
 
-    // --- isSupported() safety default on the PancakeSwap stub (Adapters M-1) ---
+    // --- isSupported() safety default on the PancakeSwap stub ---
     // Every functional method reverts NOT_IMPLEMENTED, so the V3 branch must not report support;
     // otherwise _detectLPType could route collateral into an adapter that cannot service it.
 
