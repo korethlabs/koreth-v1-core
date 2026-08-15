@@ -319,17 +319,18 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
         require(adapterAddr != address(0), "ADAPTER_NOT_SET");
         ILPAdapter adapter = ILPAdapter(adapterAddr);
 
-        // Step 6a: Sweep uncollected V3 fees out BEFORE seizing principal. Uncollected fees are
-        // the borrower's yield, NOT collateral (the oracle values principal only). Sweeping them
-        // here means unwind() seizes principal only and cannot over-collect fees on a partial
+        // Step 6a: Sweep uncollected fees out BEFORE seizing principal. Uncollected fees are the
+        // borrower's yield, NOT collateral (the oracle values principal only). Sweeping them here
+        // means unwind() seizes principal only and cannot over-collect fees on a partial
         // liquidation. The swept fees are routed at the end: to the borrower on a normal
-        // liquidation, to the protocol on a bad-debt writeoff (policy b).
-        // Gated to UniswapV3 (the only V3-NFT adapter with an implemented collectFees). When
-        // PancakeSwapV3/Aerodrome NFT adapters ship, extend this condition to sweep their fees
-        // too — otherwise a partial liquidation would over-collect their uncollected fees.
+        // liquidation, to the protocol on a bad-debt writeoff.
+        // The adapter itself declares via supportsFeeCollection() whether it holds fees separately
+        // from principal (concentrated-liquidity NFT positions do; ERC-20 LP compounds fees into
+        // reserves and does not), so a new fee-bearing adapter is swept automatically instead of
+        // relying on a hardcoded per-type check here.
         uint256 sweptFee0;
         uint256 sweptFee1;
-        if (pos.lpType == ILPAdapter.LPType.UniswapV3) {
+        if (adapter.supportsFeeCollection()) {
             (sweptFee0, sweptFee1) = adapter.collectFees(pos.lpToken, pos.tokenId);
         }
 

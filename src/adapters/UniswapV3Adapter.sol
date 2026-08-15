@@ -320,6 +320,12 @@ contract UniswapV3Adapter is ILPAdapter {
         return lpToken == address(nftManager);
     }
 
+    /// @inheritdoc ILPAdapter
+    /// @dev V3 positions hold uncollected fees in the NFT, separate from principal liquidity.
+    function supportsFeeCollection() external pure returns (bool) {
+        return true;
+    }
+
     /// @notice ERC721 receiver hook — restricts safeTransferFrom to prevent stuck NFTs
     /// @dev validateAndLock uses transferFrom (not safeTransferFrom) so this hook only fires
     ///      if someone calls safeTransferFrom directly. Restricted to V3 NFT manager only,
