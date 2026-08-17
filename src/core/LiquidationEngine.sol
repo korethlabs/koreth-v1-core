@@ -455,6 +455,12 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             }
         }
 
+        // Slippage protection — checked on the post-fee net amounts (so the liquidator's minimums
+        // account for the protocol fee) and BEFORE the transfers below, keeping checks-effects-
+        // interactions ordering: validate the outcome, then move funds.
+        require(amount0 >= minAmount0, "SLIPPAGE_AMOUNT0");
+        require(amount1 >= minAmount1, "SLIPPAGE_AMOUNT1");
+
         // Step 9: Send remaining underlying tokens to liquidator — NO SWAP
         if (amount0 > 0) {
             OZIERC20(pos.token0).safeTransfer(msg.sender, amount0);
@@ -462,10 +468,6 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
         if (amount1 > 0) {
             OZIERC20(pos.token1).safeTransfer(msg.sender, amount1);
         }
-
-        // Slippage protection — checked AFTER fees so liquidator gets accurate net amounts
-        require(amount0 >= minAmount0, "SLIPPAGE_AMOUNT0");
-        require(amount1 >= minAmount1, "SLIPPAGE_AMOUNT1");
 
         // Step 10: Handle full debt repayment — return remaining LP to borrower
         // Track how much collateral value leaves the market for RiskManager supply-cap accounting:

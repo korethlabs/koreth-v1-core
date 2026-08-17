@@ -32,6 +32,7 @@ contract PoolFactory {
     }
 
     constructor(address _core, address _poolImplementation) {
+        require(_core != address(0) && _poolImplementation != address(0), "ZERO_ADDRESS");
         core = ProtocolCore(_core);
         poolImplementation = _poolImplementation;
     }

@@ -667,7 +667,10 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         uint8 borrowDecimals = TokenUtils.safeDecimals(borrowAsset);
         uint256 debtUsd = PriceFeedRegistry(core.getPriceFeedRegistry()).getUsdValue(borrowAsset, debt, borrowDecimals);
 
-        if (debtUsd == 0) return type(uint256).max;
+        // debt > 0 is guaranteed above, so a debtUsd that rounded to 0 is dust, not a debt-free
+        // position: floor it to 1 wei of USD rather than returning max. Returning max would mark a
+        // position that still owes principal as infinitely healthy and therefore un-liquidatable.
+        if (debtUsd == 0) debtUsd = 1;
         uint256 numerator = Math.mulDiv(collateralValue, cc.liquidationThreshold, 10_000);
         return Math.mulDiv(numerator, 1e18, debtUsd);
     }

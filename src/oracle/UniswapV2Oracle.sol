@@ -4,10 +4,10 @@ pragma solidity ^0.8.26;
 import {ILPOracle} from "../interfaces/ILPOracle.sol";
 import {ILPOracleHub} from "../interfaces/ILPOracleHub.sol";
 import {IUniswapV2Pair} from "../interfaces/external/IUniswapV2.sol";
-import {IERC20} from "../interfaces/IERC20.sol";
 import {ProtocolCore} from "../core/ProtocolCore.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {LPMath} from "../libraries/LPMath.sol";
+import {TokenUtils} from "../libraries/TokenUtils.sol";
 import {PriceFeedRegistry} from "./PriceFeedRegistry.sol";
 
 /// @title UniswapV2Oracle
@@ -104,8 +104,8 @@ contract UniswapV2Oracle is ILPOracle {
         // Normalize reserves to 18 decimals
         // Note: totalSupply is passed raw — Uniswap V2 LP tokens are always 18 decimals,
         // matching the 18-dec normalized reserves. LPMath.fairLPValueV2 expects this.
-        uint8 dec0 = IERC20(token0).decimals();
-        uint8 dec1 = IERC20(token1).decimals();
+        uint8 dec0 = TokenUtils.safeDecimals(token0);
+        uint8 dec1 = TokenUtils.safeDecimals(token1);
         uint256 reserve0 = _normalizeTo18(uint256(reserve0Raw), dec0);
         uint256 reserve1 = _normalizeTo18(uint256(reserve1Raw), dec1);
 
