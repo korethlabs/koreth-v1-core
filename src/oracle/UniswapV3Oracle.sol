@@ -3,9 +3,9 @@ pragma solidity ^0.8.26;
 
 import {ILPOracle} from "../interfaces/ILPOracle.sol";
 import {ILPOracleHub} from "../interfaces/ILPOracleHub.sol";
-import {IERC20} from "../interfaces/IERC20.sol";
 import {ProtocolCore} from "../core/ProtocolCore.sol";
 import {PriceFeedRegistry} from "./PriceFeedRegistry.sol";
+import {TokenUtils} from "../libraries/TokenUtils.sol";
 import {INonfungiblePositionManager} from "../interfaces/external/IUniswapV3.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -217,9 +217,10 @@ contract UniswapV3Oracle is ILPOracle {
             positionManager.positions(tokenId);
 
         // Step 2: Get token decimals and Chainlink prices (both 18-dec USD, fail-closed).
-        uint8 dec0 = IERC20(token0).decimals();
-        uint8 dec1 = IERC20(token1).decimals();
-        require(dec0 <= 36 && dec1 <= 36, "INVALID_DECIMALS");
+        // safeDecimals wraps decimals() in try/catch (non-standard tokens revert cleanly) and
+        // enforces the <= 36 bound, so a separate range check is no longer needed here.
+        uint8 dec0 = TokenUtils.safeDecimals(token0);
+        uint8 dec1 = TokenUtils.safeDecimals(token1);
         PriceFeedRegistry priceFeedRegistry = _registry();
         uint256 price0 = priceFeedRegistry.getPrice(token0); // 18 decimals USD
         uint256 price1 = priceFeedRegistry.getPrice(token1); // 18 decimals USD
