@@ -126,7 +126,7 @@ contract LiquidationEngineTest is Test {
         // WETH is the pool's other underlying. At liquidation time the default position holds
         // 25 WETH + 25,000 USDC and the oracle values it at $30k, so WETH is worth $200 here: the
         // registry-valued underlying then equals the oracle target and the over-seize clamp
-        // (Liquidation M-1) is a no-op for the default tests. Tests that deliberately diverge WETH
+        // is a no-op for the default tests. Tests that deliberately diverge WETH
         // from this move the feed themselves.
         TestPricing.priceAsset(priceRegistry, address(weth), 200e18);
         core.registerLendingPool(address(usdc), address(market));
@@ -838,7 +838,7 @@ contract LiquidationEngineTest is Test {
         assertEq(uint8(pos.status), uint8(IPositionManager.PositionStatus.Borrowed));
     }
 
-    // ========== Liquidation M-1: over-seize clamp ==========
+    // ========== Over-seize clamp ==========
 
     /// @dev The seize is sized against the Chainlink fair value (oracle), but unwind hands over
     ///      tokens at the pool's spot composition. When the underlying is worth more at Chainlink
@@ -876,7 +876,7 @@ contract LiquidationEngineTest is Test {
         assertEq(weth.balanceOf(alice) - aliceWethBefore, 1.25e18, "borrower refunded the excess WETH");
         assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, 1250e18, "borrower refunded the excess USDC");
 
-        // The M-1 invariant: the liquidator cannot pocket more than the Chainlink seize target
+        // The over-seize invariant: the liquidator cannot pocket more than the Chainlink seize target
         // (repay + bonus). Pre-clamp the unwind produced 8.75 WETH + 8_750 USDC; after the clamp the
         // liquidator's take is the kept 7.5 WETH + 7_500 USDC (minus any protocol fee, never more).
         // Bounding each token catches a double-spend where the borrower is refunded yet the liquidator
@@ -918,7 +918,7 @@ contract LiquidationEngineTest is Test {
         }
     }
 
-    /// @dev The clamp runs on FULL seizes too (Liquidation M-1 correctness gap). Fair LP pricing values
+    /// @dev The clamp runs on FULL seizes too (correctness gap). Fair LP pricing values
     ///      the position at 2*sqrt(r0*p0 * r1*p1) while unwind realizes r0*p0 + r1*p1; by AM-GM the
     ///      realized value is >= the fair value on an imbalanced pool, so a full seize can over-realize.
     ///      Here WETH is marked to $400 (registry) while a full unwind is 25 WETH + 25,000 USDC = $35k
@@ -979,7 +979,7 @@ contract LiquidationEngineTest is Test {
         assertLe(liqWeth * 400 + liqUsdc, target, "liquidator realized value capped at repay+bonus");
     }
 
-    /// @dev The bad-debt routing (Liquidation M-1). When a full seize both over-realizes AND leaves the
+    /// @dev The bad-debt routing. When a full seize both over-realizes AND leaves the
     ///      position underwater (debt not cleared, residual value below dust → writeoff), the excess is
     ///      NOT refunded to the defaulting borrower — it is routed to the protocol/FeeCollector to offset
     ///      the lenders' loss (mirrors the swept-fee bad-debt policy, and Revert Lend / Gearbox: surplus

@@ -123,7 +123,7 @@ contract V3LiquidationPaths is Test {
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
         core.whitelistLpPool(TestPools.asContract(lpToken));
         core.whitelistLpPool(TestPools.asContract(v2LpToken));
-        // Price both underlyings in the registry: the over-seize clamp (Liquidation M-1) re-values the
+        // Price both underlyings in the registry: the over-seize clamp re-values the
         // seized token0/token1 at Chainlink, so a nonzero WETH seize needs a WETH feed. $200 keeps the
         // pool composition (25 WETH + 25_000 USDC = $30k) below the oracle position value at liquidation
         // ($35k), so the clamp stays a no-op and the legacy exact-balance assertions hold.

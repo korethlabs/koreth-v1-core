@@ -116,12 +116,12 @@ contract PoolLiquidityMonitorTest is Test {
         assertTrue(circuitBreaker.poolPaused(address(pool)), "a pool this thin must stop taking deposits");
     }
 
-    // ========== No drop check (Oracle M-1) ==========
+    // ========== No drop check ==========
 
     /// @dev The monitor is a floor, not a drop detector. A pool that lost 40% of its liquidity but
     ///      is still above the floor passes — deliberately. The removed drop-% check stored a single
     ///      previous reading as its baseline and overwrote it every call, so a drain in sub-threshold
-    ///      steps reset the baseline each time and never tripped (Oracle M-1). It protected nothing
+    ///      steps reset the baseline each time and never tripped. It protected nothing
     ///      the rest of the system does not already cover: collateral is valued off Chainlink not the
     ///      pool's own price, and liquidation seizes underlying tokens without swapping through the
     ///      pool, so pool depth gates neither a position's value nor whether it can be realised.

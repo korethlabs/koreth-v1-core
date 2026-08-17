@@ -62,7 +62,7 @@ contract OracleFailureE2E is E2EBase {
     }
 
     // ========================================================================
-    // 3. Chainlink/pool divergence does NOT brick pricing (H-1 fix)
+    // 3. Chainlink/pool divergence does NOT brick pricing
     // ========================================================================
 
     /// @dev The oracle derives composition from Chainlink alone, so a large gap between the pool and
@@ -92,7 +92,7 @@ contract OracleFailureE2E is E2EBase {
         uint256 maxBorrowAfter = lendingEngine.getMaxBorrow(posId);
         assertLt(maxBorrowAfter, maxBorrowBefore, "capacity should drop with the crashed price, not revert");
 
-        // Liquidation checks must also stay live (this is the whole point of the H-1 fix).
+        // Liquidation checks must also stay live (this is the whole point of the Chainlink-derived pricing).
         liquidationEngine.isLiquidatable(posId);
 
         console.log("=== Chainlink Divergence Does Not Brick Pricing ===");

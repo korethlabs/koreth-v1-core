@@ -116,7 +116,7 @@ library LiquidityAmountsLib {
 ///      Why no TWAP + deviation cross-check anymore: a reverting consistency guard on the price
 ///      path is a liveness hazard — during a crash the pool TWAP lags Chainlink, the deviation
 ///      trips, and every liquidation reverts precisely when liquidations are needed, converting a
-///      market move into avoidable bad debt (audit finding H-1). Battle-tested lenders (Aave,
+///      market move into avoidable bad debt. Battle-tested lenders (Aave,
 ///      Morpho) trust a single oracle for BOTH borrow and liquidation and never revert on a price
 ///      disagreement. Deriving composition from Chainlink removes the pool-price attack surface
 ///      entirely, so there is nothing left to cross-check.
@@ -228,7 +228,7 @@ contract UniswapV3Oracle is ILPOracle {
         // Step 3: Derive the position's composition from the CHAINLINK-implied price, NOT the pool
         // tick. This is what makes valuation both manipulation-resistant (no pool state a flash
         // loan can move) and liquidation-safe (no consistency guard that can revert during a
-        // crash — audit finding H-1). See _chainlinkSqrtPriceX96.
+        // crash). See _chainlinkSqrtPriceX96.
         uint160 sqrtPriceX96 = _chainlinkSqrtPriceX96(price0, price1, dec0, dec1);
         uint160 sqrtPriceAX96 = TickMathLib.getSqrtRatioAtTick(tickLower);
         uint160 sqrtPriceBX96 = TickMathLib.getSqrtRatioAtTick(tickUpper);

@@ -332,7 +332,7 @@ contract LendingEngineTest is Test {
         le.repayOnBehalf(posId, 5000e18);
     }
 
-    // ========== Minimum Debt Floor (Liquidation M-2) ==========
+    // ========== Minimum Debt Floor ==========
     // usdc is 18-dec and wired 1:1 to USD, so a minBorrowUsd of N e18 maps to N usdc of debt.
 
     /// @dev A fresh borrow whose resulting total debt is below the floor is rejected, so no dust

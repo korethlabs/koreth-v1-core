@@ -127,7 +127,7 @@ contract MultiUserConcurrent is E2EBase {
         assertTrue(liquidatedCount > 0 || (!liqA2 && !liqC2), "Inconsistent state");
     }
 
-    /// @notice USDC depeg scenario — pricing stays live and simply reflects the new price (H-1 fix).
+    /// @notice USDC depeg scenario — pricing stays live and simply reflects the new price.
     /// @dev The oracle prices collateral from Chainlink directly, so a USDC depeg does NOT revert
     ///      health-factor or liquidation queries (the old TWAP-vs-Chainlink deviation guard was
     ///      removed — it converted a depeg into a protocol freeze). The health factor moves with the

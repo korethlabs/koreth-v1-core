@@ -147,7 +147,7 @@ contract FullLifecycleTest is Test {
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
         core.whitelistLpPool(TestPools.asContract(lpToken));
         PriceFeedRegistry priceRegistry = TestPricing.wireStable(core, address(usdc));
-        // WETH is the pool's other underlying. The over-seize clamp (Liquidation M-1) values the
+        // WETH is the pool's other underlying. The over-seize clamp values the
         // realized token0/token1 through the registry, and in production getPositionValue already
         // requires both underlyings priced (UniswapV2Oracle/UniswapV3Oracle both read
         // priceFeedRegistry.getPrice(token0/token1)) — the MockLPOracle used here bypasses that, so
