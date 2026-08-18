@@ -49,10 +49,7 @@ contract LiquidationEngineTest is Test {
 
     // Events
     event LiquidationExecuted(
-        uint256 indexed positionId,
-        address indexed liquidator,
-        uint256 repayAmount,
-        uint256 collateralSeized
+        uint256 indexed positionId, address indexed liquidator, uint256 repayAmount, uint256 collateralSeized
     );
     event MaxLiquidationPortionUpdated(uint256 oldValue, uint256 newValue);
     event LiquidationOverSeizeRefunded(uint256 indexed positionId, uint256 refund0, uint256 refund1);
@@ -1171,7 +1168,6 @@ contract LiquidationEngineTest is Test {
         // At least one of the underlying tokens should be received
         assertTrue(wethAfter > wethBefore || usdcAfter > usdcBefore, "Liquidator must receive underlying tokens");
     }
-
 
     // ========== Non-blocking fee/refund settlement ==========
 

@@ -11,10 +11,7 @@ interface ILiquidationEngine {
     /// @param repayAmount Borrow asset amount sent by liquidator (fully applied to debt)
     /// @param collateralSeized USD value (18 decimals) of collateral removed from position
     event LiquidationExecuted(
-        uint256 indexed positionId,
-        address indexed liquidator,
-        uint256 repayAmount,
-        uint256 collateralSeized
+        uint256 indexed positionId, address indexed liquidator, uint256 repayAmount, uint256 collateralSeized
     );
 
     /// @notice Liquidate an unhealthy position
