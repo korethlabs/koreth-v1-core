@@ -47,9 +47,11 @@ contract MockAccruingLendingPool is ILendingPool {
     }
 
     function transferIn(address from, uint256 amount) external {
-        if (amount <= _state.totalBorrow) {
-            _state.totalBorrow -= amount;
-        }
+        // Clamp to zero on overpay: accrueInterest() advances borrowIndex without touching
+        // totalBorrow, so an interest-inclusive repay can legitimately exceed it. Leaving the counter
+        // untouched in that case (as a bare `if (amount <= totalBorrow)` would) desyncs the mock's
+        // accounting; clamping keeps it non-negative and consistent, mirroring recordDeficit.
+        _state.totalBorrow = amount >= _state.totalBorrow ? 0 : _state.totalBorrow - amount;
         require(IERC20(_config.borrowAsset).transferFrom(from, address(this), amount), "TRANSFER_IN_FAILED");
     }
 
