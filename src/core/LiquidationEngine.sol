@@ -461,14 +461,6 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
         require(amount0 >= minAmount0, "SLIPPAGE_AMOUNT0");
         require(amount1 >= minAmount1, "SLIPPAGE_AMOUNT1");
 
-        // Step 9: Send remaining underlying tokens to liquidator — NO SWAP
-        if (amount0 > 0) {
-            OZIERC20(pos.token0).safeTransfer(msg.sender, amount0);
-        }
-        if (amount1 > 0) {
-            OZIERC20(pos.token1).safeTransfer(msg.sender, amount1);
-        }
-
         // Step 10: Handle full debt repayment — return remaining LP to borrower
         // Track how much collateral value leaves the market for RiskManager supply-cap accounting:
         // a full close removes the whole position value; a partial removes only the seized value.
@@ -555,6 +547,17 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
 
         // Credit the market's supply-cap tracker for the collateral value that left the protocol.
         positionManager.recordCollateralSeized(positionId, supplyRemovedUsd);
+
+        // Step 9: Send remaining underlying tokens to liquidator — NO SWAP. Deferred to the very
+        // end so it is the last interaction: with a callback-capable collateral token the liquidator
+        // only ever gets control after the position state is fully finalized (liquidated, LP
+        // returned, supply-cap credited), keeping checks-effects-interactions ordering intact.
+        if (amount0 > 0) {
+            OZIERC20(pos.token0).safeTransfer(msg.sender, amount0);
+        }
+        if (amount1 > 0) {
+            OZIERC20(pos.token1).safeTransfer(msg.sender, amount1);
+        }
 
         // profit is not directly calculable here since liquidator receives two tokens.
         // The event emits collateralSeized in USD for off-chain profit tracking.
