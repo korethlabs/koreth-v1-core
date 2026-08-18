@@ -439,6 +439,11 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         // Health check: if position has debt, must remain solvent
         if (pos.status == PositionStatus.Borrowed) {
             require(address(lendingEngine) != address(0), "LENDING_ENGINE_NOT_SET");
+            // Accrue before reading the health factor: getHealthFactor -> getDebt reads the
+            // pool's borrow index as of the last accrual, which understates debt (and overstates
+            // health) on a pool that has not accrued this block. Poke accrual first so the check
+            // runs against interest-inclusive debt, matching borrow() and liquidate().
+            lendingEngine.accrueInterest(pos.borrowAsset);
             uint256 hf = this.getHealthFactor(positionId);
             require(hf >= 1e18, "UNHEALTHY_AFTER_REMOVAL");
         }
@@ -499,6 +504,10 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         // Defense-in-depth: verify position is still healthy after transformation
         // (skip if position was closed during transform — e.g., full deleverage)
         if (pos.status == PositionStatus.Borrowed && address(lendingEngine) != address(0)) {
+            // Accrue before reading the health factor, for the same reason as removeCollateral:
+            // getHealthFactor reads debt at the last accrual, so without this a stale pool would
+            // gate the transform against understated debt.
+            lendingEngine.accrueInterest(pos.borrowAsset);
             uint256 hf = this.getHealthFactor(positionId);
             require(hf >= 1e18, "UNHEALTHY_AFTER_TRANSFORM");
         }
