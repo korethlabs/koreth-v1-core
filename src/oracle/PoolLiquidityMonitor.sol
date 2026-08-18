@@ -26,8 +26,8 @@ interface IPoolTokens {
 ///      The price-deviation check is gone rather than fixed, because there is no longer a
 ///      pool-reported price to check against. UniswapV3Oracle derives a range position's
 ///      composition from an implied price computed off Chainlink feeds, never from the pool's tick,
-///      so there is no TWAP to reconcile with Chainlink (audit finding H-1: a reverting deviation
-///      guard on this path froze liquidations during a crash). UniswapV2Oracle needs no equivalent
+///      so there is no TWAP to reconcile with Chainlink (a reverting deviation guard on this path
+///      would freeze liquidations during a crash). UniswapV2Oracle needs no equivalent
 ///      either: fair value per LP token is 2*sqrt(k)*sqrt(p0*p1)/totalSupply, where the pool
 ///      contributes only k and totalSupply, neither of which a swap can move. Neither oracle trusts
 ///      a pool-reported price, so there is nothing left to cross-validate.
@@ -114,7 +114,7 @@ contract PoolLiquidityMonitor {
     ///      An absolute floor, and nothing more. An earlier design also paused on a sharp *drop* vs a
     ///      recent observation, but that comparison stored the previous reading as its baseline and
     ///      overwrote it every call, so a drain in sub-threshold steps reset the baseline each time
-    ///      and never tripped (audit finding Oracle M-1). It was dropped rather than repaired with a
+    ///      and never tripped. It was dropped rather than repaired with a
     ///      windowed high-water-mark, because the drop check protected nothing the rest of the system
     ///      does not already cover: collateral is valued off Chainlink, never the pool's own price
     ///      (see UniswapV3Oracle / UniswapV2Oracle), so a drained pool cannot inflate a position's

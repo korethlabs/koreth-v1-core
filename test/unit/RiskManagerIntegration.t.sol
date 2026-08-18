@@ -313,7 +313,7 @@ contract RiskManagerIntegrationTest is Test {
         le.borrow(posId, 10_000e18);
     }
 
-    // ========== Daily Borrow-Increase Rate Limit (Oracle M-1 defense-in-depth) ==========
+    // ========== Daily Borrow-Increase Rate Limit (defense-in-depth) ==========
 
     /// @dev The limit sums NEW principal within a tumbling 24h window and cannot be evaded by
     ///      chunking: two sub-limit borrows in the same window still add up to a breach.

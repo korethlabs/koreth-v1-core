@@ -310,12 +310,12 @@ contract UniswapV3OracleForkTest is Test {
     }
 
     // ========================================================
-    // TEST 7: Pricing never reverts on a Chainlink/pool disagreement (H-1 liveness)
+    // TEST 7: Pricing never reverts on a Chainlink/pool disagreement (liveness)
     // ========================================================
 
     /// @dev The oracle derives composition purely from Chainlink, so there is no TWAP-vs-Chainlink
     ///      consistency guard that could revert. Even a large forced divergence between the pool and
-    ///      Chainlink must still price (this is the whole point of the H-1 fix — liquidations must
+    ///      Chainlink must still price (this is the whole point of the Chainlink-derived pricing — liquidations must
     ///      stay live during a crash). Here we push Chainlink ETH to 10x and 0.1x and assert the
     ///      call still returns a value.
     function test_oracle_pricingLiveUnderDivergence() public {

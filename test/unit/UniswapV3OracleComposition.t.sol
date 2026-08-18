@@ -66,11 +66,11 @@ contract UniswapV3OracleHarness is UniswapV3Oracle {
 }
 
 /// @title UniswapV3OracleCompositionTest
-/// @notice Unit tests for the Chainlink-derived composition oracle (H-1 fix).
+/// @notice Unit tests for the Chainlink-derived composition oracle.
 /// @dev The oracle derives a V3 position's token split from TRUSTED Chainlink prices, never from
 ///      the pool tick. Consequences these tests pin down:
 ///        - there is no pool read, so no manipulation surface and no consistency guard that can
-///          revert during a crash (the H-1 failure mode);
+///          revert during a crash (the crash-time DoS failure mode);
 ///        - a below-range position is pure token0 (price1-independent), an above-range position is
 ///          pure token1 (price0-independent);
 ///        - the implied sqrtPrice mirrors MakerDAO's GUniLPOracle arithmetic and fails closed
@@ -209,7 +209,7 @@ contract UniswapV3OracleCompositionTest is Test {
         assertGt(vA, 0, "value must be positive");
     }
 
-    /// @dev H-1 liveness: a large Chainlink move (crash or spike) must never revert pricing. There
+    /// @dev Liveness: a large Chainlink move (crash or spike) must never revert pricing. There
     ///      is no pool cross-check left to trip — liquidation stays live.
     function test_crashDoesNotRevert() public {
         nft.setPosition(address(token0), address(token1), 500, 190_000, 210_000, 1e12);

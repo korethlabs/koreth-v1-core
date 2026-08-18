@@ -63,7 +63,7 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     ///         collateral above the dust threshold — latent under-collateralization to monitor.
     event ResidualInsolvency(uint256 indexed positionId, uint256 remainingDebt, uint256 remainingValue);
     /// @notice Emitted when unwind realized more value (at spot) than the Chainlink-sized seize
-    ///         target and the excess underlying was refunded (Liquidation M-1). The excess goes to the
+    ///         target and the excess underlying was refunded. The excess goes to the
     ///         borrower on a solvent close, or to the FeeCollector when the seize wrote off bad debt —
     ///         see the terminal routing block for the recipient split.
     event LiquidationOverSeizeRefunded(uint256 indexed positionId, uint256 refund0, uint256 refund1);
@@ -343,7 +343,7 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
 
         uint256 amount0;
         uint256 amount1;
-        // Over-seize refund (Liquidation M-1), computed at Step 7b, routed at the terminal block once
+        // Over-seize refund, computed at Step 7b, routed at the terminal block once
         // badDebt is known. Function-scoped so the deferred routing can read it after the seize.
         uint256 refund0;
         uint256 refund1;
@@ -381,7 +381,7 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             }
             (amount0, amount1) = adapter.unwind(pos.lpToken, pos.tokenId, liquidityToRemove);
 
-            // Step 7b: Clamp an over-seize (Liquidation M-1). liquidityToRemove was sized against the
+            // Step 7b: Clamp an over-seize. liquidityToRemove was sized against the
             // Chainlink fair value (positionValue), but unwind realizes tokens at the pool's actual
             // spot composition. When spot diverges from Chainlink, the realized tokens can be worth
             // more than collateralToSeizeNormalized (repay + bonus) — the liquidator would pocket the
@@ -517,7 +517,7 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
         }
 
         // Route the swept V3 fees: to the borrower on a normal liquidation, to the protocol on a
-        // bad-debt writeoff (policy b — a defaulting borrower shouldn't keep fees while lenders
+        // bad-debt writeoff (a defaulting borrower shouldn't keep fees while lenders
         // take a loss). The routing no longer degrades when the FeeCollector is missing: falling
         // back to the borrower there inverted the policy exactly when it mattered, paying the
         // defaulter out of a loss the lenders were absorbing.
@@ -533,7 +533,7 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             }
         }
 
-        // Route the over-seize refund (Liquidation M-1), computed at Step 7b. Same solvency policy as
+        // Route the over-seize refund, computed at Step 7b. Same solvency policy as
         // the swept fees: to the borrower on a normal/solvent liquidation, to the protocol on a bad-debt
         // writeoff — a defaulting borrower has no equity claim while the lenders absorb the loss, so the
         // AM-GM surplus offsets that loss instead of paying the defaulter (matches Revert Lend / Gearbox:
@@ -644,7 +644,7 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
 
     /// @notice Value a token amount in 18-dec USD through the Chainlink registry.
     /// @dev Same source and reverts-on-missing-feed discipline as _getRepayValueUsd; used to measure
-    ///      what a partial unwind actually realized so an over-seize can be clamped (Liquidation M-1).
+    ///      what a partial unwind actually realized so an over-seize can be clamped.
     function _valueUsd(address token, uint256 amount) internal view returns (uint256) {
         if (amount == 0) return 0;
         return PriceFeedRegistry(core.getPriceFeedRegistry()).getUsdValue(token, amount, TokenUtils.safeDecimals(token));
