@@ -100,6 +100,11 @@ contract UniswapV2Adapter is ILPAdapter {
         require(to != address(this), "CANNOT_UNLOCK_TO_SELF");
         require(amount > 0, "ZERO_AMOUNT");
 
+        // Re-validate the pair's authenticity before moving tokens, matching the sibling
+        // liquidity functions: transfer only what a genuine pair from our factory can back.
+        require(lpToken.code.length > 0, "NOT_CONTRACT");
+        require(IUniswapV2Pair(lpToken).factory() == address(v2Factory), "NOT_OUR_FACTORY");
+
         OZIERC20(lpToken).safeTransfer(to, amount);
 
         emit PositionUnlocked(lpToken, to, amount);
