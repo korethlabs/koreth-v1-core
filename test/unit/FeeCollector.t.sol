@@ -166,54 +166,6 @@ contract FeeCollectorTest is Test {
         assertEq(usdc.balanceOf(insurance), 500e6 + 300e6); // 800
     }
 
-    // ========== calculateInterestSplit ==========
-
-    function test_calculateInterestSplit_curvePool() public view {
-        // Curve reserve factor = 10%
-        (uint256 protocolShare, uint256 lenderShare) = fc.calculateInterestSplit(10_000e18, ILPAdapter.LPType.Curve);
-        assertEq(protocolShare, 1000e18); // 10%
-        assertEq(lenderShare, 9000e18); // 90%
-    }
-
-    function test_calculateInterestSplit_uniswapV3() public view {
-        // UniswapV3 reserve factor = 20%
-        (uint256 protocolShare, uint256 lenderShare) = fc.calculateInterestSplit(10_000e18, ILPAdapter.LPType.UniswapV3);
-        assertEq(protocolShare, 2000e18);
-        assertEq(lenderShare, 8000e18);
-    }
-
-    function test_calculateInterestSplit_aerodrome() public view {
-        // Aerodrome reserve factor = 25%
-        (uint256 protocolShare, uint256 lenderShare) = fc.calculateInterestSplit(10_000e18, ILPAdapter.LPType.Aerodrome);
-        assertEq(protocolShare, 2500e18);
-        assertEq(lenderShare, 7500e18);
-    }
-
-    function test_calculateInterestSplit_sumEqualsTotal() public view {
-        (uint256 p, uint256 l) = fc.calculateInterestSplit(12_345e18, ILPAdapter.LPType.UniswapV3);
-        assertEq(p + l, 12_345e18);
-    }
-
-    // ========== calculateLiquidationFee ==========
-
-    function test_calculateLiquidationFee_default70Percent() public view {
-        // Default liquidation fee = 70% of bonus to protocol
-        (uint256 protocolFee, uint256 liquidatorNet) = fc.calculateLiquidationFee(5000e18);
-        assertEq(protocolFee, 3500e18); // 70%
-        assertEq(liquidatorNet, 1500e18); // 30%
-    }
-
-    function test_calculateLiquidationFee_sumEqualsInput() public view {
-        (uint256 fee, uint256 net) = fc.calculateLiquidationFee(7777e18);
-        assertEq(fee + net, 7777e18);
-    }
-
-    function test_calculateLiquidationFee_zeroInput() public view {
-        (uint256 fee, uint256 net) = fc.calculateLiquidationFee(0);
-        assertEq(fee, 0);
-        assertEq(net, 0);
-    }
-
     // ========== Setters ==========
 
     function test_setReserveFactor_success() public {
@@ -254,12 +206,6 @@ contract FeeCollectorTest is Test {
         vm.prank(owner);
         vm.expectRevert("OUT_OF_BOUNDS");
         fc.setLiquidationFee(49); // Below MIN_PROTOCOL_BONUS_SHARE (50 = 0.5%)
-    }
-
-    function test_setManagementFee_deprecated() public {
-        vm.prank(owner);
-        vm.expectRevert("DEPRECATED");
-        fc.setManagementFee(50);
     }
 
     function test_setInsuranceFundShare_success() public {
@@ -314,16 +260,5 @@ contract FeeCollectorTest is Test {
         assertEq(usdc.balanceOf(insurance), expectedInsurance);
         assertEq(usdc.balanceOf(treasury), expectedTreasury);
         assertEq(usdc.balanceOf(insurance) + usdc.balanceOf(treasury), total);
-    }
-
-    function testFuzz_calculateInterestSplit_noLoss(uint256 interest, uint256 rfBps) public {
-        interest = bound(interest, 0, type(uint128).max);
-        rfBps = bound(rfBps, 500, 5000);
-
-        vm.prank(owner);
-        fc.setReserveFactor(ILPAdapter.LPType.UniswapV3, rfBps);
-
-        (uint256 p, uint256 l) = fc.calculateInterestSplit(interest, ILPAdapter.LPType.UniswapV3);
-        assertEq(p + l, interest, "Interest split must not lose tokens");
     }
 }

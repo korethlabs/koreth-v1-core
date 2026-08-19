@@ -47,8 +47,6 @@ contract FeeCollector is ReentrancyGuard {
     uint256 public constant MAX_RESERVE_FACTOR = 5000; // 50%
     uint256 public constant MIN_PROTOCOL_BONUS_SHARE = 50; // 0.5% of bonus
     uint256 public constant MAX_PROTOCOL_BONUS_SHARE = 9000; // 90% of bonus
-    /// @dev Deprecated — management fee not implemented
-    uint256 private constant __DEPRECATED_MAX_MANAGEMENT_FEE = 100;
     uint256 public constant MAX_INSURANCE_SHARE = 5000; // 50%
 
     // --- Fee Recipients ---
@@ -204,36 +202,6 @@ contract FeeCollector is ReentrancyGuard {
         emit ExcessSwept(token, to, excess);
     }
 
-    // --- View ---
-
-    function getReserveFactor(ILPAdapter.LPType lpType) external view returns (uint256) {
-        uint256 rf = reserveFactorBps[lpType];
-        return rf > 0 ? rf : defaultReserveFactorBps;
-    }
-
-    function calculateInterestSplit(
-        uint256 totalInterest,
-        ILPAdapter.LPType lpType
-    )
-        external
-        view
-        returns (uint256 protocolShare, uint256 lenderShare)
-    {
-        uint256 rf = reserveFactorBps[lpType];
-        if (rf == 0) rf = defaultReserveFactorBps;
-        protocolShare = (totalInterest * rf) / 10_000;
-        lenderShare = totalInterest - protocolShare;
-    }
-
-    function calculateLiquidationFee(uint256 liquidatorProfit)
-        external
-        view
-        returns (uint256 protocolFee, uint256 liquidatorNet)
-    {
-        protocolFee = (liquidatorProfit * liquidationFeeBps) / 10_000;
-        liquidatorNet = liquidatorProfit - protocolFee;
-    }
-
     // --- Admin (DAO controlled) ---
 
     function setReserveFactor(ILPAdapter.LPType lpType, uint256 _bps) external onlyRiskAdmin {
@@ -252,11 +220,6 @@ contract FeeCollector is ReentrancyGuard {
         require(_bps >= MIN_PROTOCOL_BONUS_SHARE && _bps <= MAX_PROTOCOL_BONUS_SHARE, "OUT_OF_BOUNDS");
         emit LiquidationFeeUpdated(liquidationFeeBps, _bps);
         liquidationFeeBps = _bps;
-    }
-
-    /// @dev Deprecated — management fee not implemented
-    function setManagementFee(uint256) external pure {
-        revert("DEPRECATED");
     }
 
     function setInsuranceFundShare(uint256 _bps) external onlyRiskAdmin {
