@@ -174,7 +174,7 @@ contract LiquidationDecimalTest is Test {
         uint256 wethBefore = weth.balanceOf(liquidator);
 
         vm.prank(liquidator);
-        uint256 profit = liq.liquidate(posId, maxRepay, block.timestamp + 1 hours, 0, 0);
+        liq.liquidate(posId, maxRepay, block.timestamp + 1 hours, 0, 0);
 
         // Verify outcomes
         uint256 debtAfter = le.getDebt(posId);
@@ -182,9 +182,6 @@ contract LiquidationDecimalTest is Test {
 
         uint256 amountAfter = pm.getPosition(posId).amount;
         assertLt(amountAfter, 100e18, "Position amount must decrease");
-
-        // Profit is always 0 (liquidator receives raw underlying tokens)
-        assertEq(profit, 0, "Profit must be 0 in no-swap design");
 
         // Liquidator received underlying tokens (WETH + USDC6) from unwind
         uint256 wethAfter = weth.balanceOf(liquidator);

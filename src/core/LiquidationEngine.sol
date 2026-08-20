@@ -258,7 +258,6 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     /// @param deadline Unix timestamp after which the call reverts (EXPIRED)
     /// @param minAmount0 Min token0 the liquidator accepts from the seized principal (slippage)
     /// @param minAmount1 Min token1 the liquidator accepts from the seized principal (slippage)
-    /// @return profit Always 0 here (liquidator receives two tokens; see LiquidationExecuted event)
     function liquidate(
         uint256 positionId,
         uint256 repayAmount,
@@ -269,7 +268,6 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
         external
         whenNotPaused
         nonReentrant
-        returns (uint256 profit)
     {
         require(repayAmount > 0, "ZERO_AMOUNT");
         require(block.timestamp <= deadline, "EXPIRED");
@@ -559,11 +557,9 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             OZIERC20(pos.token1).safeTransfer(msg.sender, amount1);
         }
 
-        // profit is not directly calculable here since liquidator receives two tokens.
-        // The event emits collateralSeized in USD for off-chain profit tracking.
-        profit = 0;
-
-        emit LiquidationExecuted(positionId, msg.sender, repayAmount, collateralToSeizeNormalized, profit);
+        // The liquidator's profit is implicit in the raw underlying tokens received (NO-SWAP); the
+        // event emits collateralSeized in USD for off-chain profit tracking.
+        emit LiquidationExecuted(positionId, msg.sender, repayAmount, collateralToSeizeNormalized);
     }
 
     /// @notice Health factor below which 100% liquidation is allowed (prevents bad debt)

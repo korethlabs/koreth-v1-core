@@ -49,11 +49,7 @@ contract LiquidationEngineTest is Test {
 
     // Events
     event LiquidationExecuted(
-        uint256 indexed positionId,
-        address indexed liquidator,
-        uint256 repayAmount,
-        uint256 collateralSeized,
-        uint256 liquidatorProfit
+        uint256 indexed positionId, address indexed liquidator, uint256 repayAmount, uint256 collateralSeized
     );
     event MaxLiquidationPortionUpdated(uint256 oldValue, uint256 newValue);
     event LiquidationOverSeizeRefunded(uint256 indexed positionId, uint256 refund0, uint256 refund1);
@@ -415,7 +411,7 @@ contract LiquidationEngineTest is Test {
         // LiquidationExecuted should be the last event
         bool found = false;
         for (uint256 i = 0; i < entries.length; i++) {
-            if (entries[i].topics[0] == keccak256("LiquidationExecuted(uint256,address,uint256,uint256,uint256)")) {
+            if (entries[i].topics[0] == keccak256("LiquidationExecuted(uint256,address,uint256,uint256)")) {
                 found = true;
                 assertEq(entries[i].topics[1], bytes32(posId));
                 assertEq(entries[i].topics[2], bytes32(uint256(uint160(liquidator))));
@@ -1171,22 +1167,6 @@ contract LiquidationEngineTest is Test {
         // Net USDC change = received USDC from unwind - spent repayAmount
         // At least one of the underlying tokens should be received
         assertTrue(wethAfter > wethBefore || usdcAfter > usdcBefore, "Liquidator must receive underlying tokens");
-    }
-
-    function test_liquidate_profitIsZero() public {
-        uint256 posId = _createLiquidatablePosition();
-
-        (, uint256 maxRepay) = liq.isLiquidatable(posId);
-
-        usdc.mint(liquidator, maxRepay);
-        vm.prank(liquidator);
-        usdc.approve(address(liq), maxRepay);
-
-        vm.prank(liquidator);
-        uint256 profit = liq.liquidate(posId, maxRepay, block.timestamp + 1 hours, 0, 0);
-
-        // Profit is always 0 since liquidator receives raw tokens (not borrow asset)
-        assertEq(profit, 0, "Profit must be 0 in no-swap design");
     }
 
     // ========== Non-blocking fee/refund settlement ==========
