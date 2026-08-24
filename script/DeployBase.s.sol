@@ -51,9 +51,12 @@ abstract contract DeployBase is Script {
         // through an outage with no revert, no event and no failing test. Stating address(0) is a
         // decision ("this chain has no sequencer"); omitting it was an accident waiting to happen.
         address clSequencerUptime;
-        // Pools to whitelist
-        address v2Pool; // V2 pair to whitelist (address(0) = skip)
-        address v3Pool; // V3 pool to whitelist (address(0) = skip)
+        // AMM pools to curate as collateral backing. Sets rather than single addresses because that
+        // is what the protocol stores: supportedLpPools is a mapping, and a chain can accept any
+        // number of pairs. An empty array says this chain lists none of that kind — a decision the
+        // profile states, where address(0) used to be a sentinel the loop had to know about.
+        address[] v2Pools;
+        address[] v3Pools;
         // Collateral risk params
         uint256 maxLtv; // bps (e.g., 6500 = 65%)
         uint256 liquidationThreshold; // bps
@@ -81,6 +84,25 @@ abstract contract DeployBase is Script {
 
     // --- Abstract: subclass provides config ---
     function _config() internal virtual returns (ChainConfig memory);
+
+    // --- Config helpers ---
+    // Solidity has no dynamic array literal — `[a, b]` is an address[2] and will not convert — so a
+    // profile would otherwise have to build every pool list into locals before the ChainConfig
+    // literal, splitting the config across two places. These keep it one expression.
+
+    /// @notice A pool list holding one pool.
+    function _pools(address pool) internal pure returns (address[] memory list) {
+        list = new address[](1);
+        list[0] = pool;
+    }
+
+    /// @notice A pool list holding three pools.
+    function _pools(address a, address b, address c) internal pure returns (address[] memory list) {
+        list = new address[](3);
+        list[0] = a;
+        list[1] = b;
+        list[2] = c;
+    }
 
     // --- Entry Point ---
     function run() external {
@@ -266,8 +288,12 @@ abstract contract DeployBase is Script {
 
     function _createPools(ChainConfig memory cfg) internal {
         // Whitelist collateral pools (the underlying LP pools, not the lending pool)
-        if (cfg.v3Pool != address(0)) core.whitelistLpPool(cfg.v3Pool);
-        if (cfg.v2Pool != address(0)) core.whitelistLpPool(cfg.v2Pool);
+        for (uint256 i = 0; i < cfg.v3Pools.length; i++) {
+            core.whitelistLpPool(cfg.v3Pools[i]);
+        }
+        for (uint256 i = 0; i < cfg.v2Pools.length; i++) {
+            core.whitelistLpPool(cfg.v2Pools[i]);
+        }
 
         // Shared-pool model: create ONE lending pool for the primary stablecoin, then whitelist
         // each configured collateral type against it (borrow cap is per-collateral in RiskManager).

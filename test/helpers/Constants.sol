@@ -34,16 +34,20 @@ library Constants {
     address constant CL_USDC_USD = 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6;
     address constant CL_BTC_USD = 0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c;
     address constant CL_DAI_USD = 0xAed0c38402a5d19df6E4c03F4E2DceD6e29c1ee9;
+    address constant CL_USDT_USD = 0x3E7d1eAB13ad0104d2750B8863b489D65364e32D;
     address constant CL_STETH_USD = 0xCfE54B5cD566aB89272946F602D76Ea879CAb4a8;
 
     // --- Uniswap V3 Pools (high liquidity) ---
     address constant UNI_V3_WETH_USDC_500 = 0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640; // 0.05% fee
     address constant UNI_V3_WETH_USDC_3000 = 0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8; // 0.3% fee
+    address constant UNI_V3_WETH_DAI_3000 = 0xC2e9F25Be6257c210d7Adf0D4Cd6E3E881ba25f8;
+    address constant UNI_V3_WETH_USDT_3000 = 0x4e68Ccd3E89f51C3074ca5072bbAC773960dFa36;
     address constant UNI_V3_WBTC_WETH_3000 = 0xCBCdF9626bC03E24f779434178A73a0B4bad62eD;
 
     // --- Uniswap V2 Pairs ---
     address constant UNI_V2_WETH_USDC = 0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc;
     address constant UNI_V2_WETH_DAI = 0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11;
+    address constant UNI_V2_WETH_USDT = 0x0d4a11d5EEaaC28EC3F61d100daF4d40471f1852;
 
     // --- Whales (for impersonation in tests) ---
     address constant WETH_WHALE = 0xF04a5cC80B1E94C69B48f5ee68a08CD2F09A7c3E;

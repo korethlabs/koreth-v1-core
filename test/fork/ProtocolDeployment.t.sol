@@ -47,8 +47,15 @@ contract ProtocolDeploymentTest is ForkTestBase {
 
     function test_lpPoolsWhitelisted() public view {
         assertTrue(core.isLpPoolSupported(Constants.UNI_V3_WETH_USDC_3000));
+        assertTrue(core.isLpPoolSupported(Constants.UNI_V3_WETH_DAI_3000));
+        assertTrue(core.isLpPoolSupported(Constants.UNI_V3_WETH_USDT_3000));
         assertTrue(core.isLpPoolSupported(Constants.UNI_V2_WETH_USDC));
+        assertTrue(core.isLpPoolSupported(Constants.UNI_V2_WETH_DAI));
+        assertTrue(core.isLpPoolSupported(Constants.UNI_V2_WETH_USDT));
         assertFalse(core.isLpPoolSupported(address(0x1234)));
+        // The 0.05% WETH/USDC pool is a real pool holding the same pair, and is not whitelisted.
+        // Whitelisting is per pool, not per pair — a fee tier is a separate listing decision.
+        assertFalse(core.isLpPoolSupported(Constants.UNI_V3_WETH_USDC_500));
     }
 
     function test_lendingPoolCreated() public view {

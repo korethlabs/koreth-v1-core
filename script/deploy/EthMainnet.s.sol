@@ -41,9 +41,11 @@ contract DeployEthMainnet is DeployBase {
             clStablecoinUsd: 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6, // USDC/USD
             // No sequencer on this chain — L1 and its testnets order their own blocks.
             clSequencerUptime: address(0),
-            // Pools
-            v2Pool: 0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc, // WETH/USDC V2
-            v3Pool: 0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8, // WETH/USDC 0.3% V3
+            // Pools — WETH/USDC only. The local profile also lists WETH/DAI and WETH/USDT; they are
+            // deliberately not here, because listing a pair on mainnet is a risk decision about its
+            // depth and its feeds, not a symmetry to keep with a fork.
+            v2Pools: _pools(0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc), // WETH/USDC V2
+            v3Pools: _pools(0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8), // WETH/USDC 0.3% V3
             // Market params (production — conservative)
             maxLtv: 6500,
             liquidationThreshold: 7500,
