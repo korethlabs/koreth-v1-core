@@ -60,9 +60,20 @@ contract DeployLocal is DeployBase {
             clStablecoinUsd: 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6, // USDC/USD
             // No sequencer on this chain — L1 and its testnets order their own blocks.
             clSequencerUptime: address(0),
-            // Pools to whitelist (mainnet WETH/USDC)
-            v2Pool: 0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc, // V2 WETH/USDC pair
-            v3Pool: 0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8, // V3 WETH/USDC 0.3%
+            // Pools to whitelist — WETH against each of the three borrow assets, on both versions,
+            // so the local fork exercises the multi-pool case rather than a single pair. Every one
+            // of these tokens already has a feed wired in _afterOracles; a pool whose legs cannot
+            // both be priced would revert on deposit, not degrade.
+            v2Pools: _pools(
+                0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc, // V2 WETH/USDC
+                0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11, // V2 WETH/DAI
+                0x0d4a11d5EEaaC28EC3F61d100daF4d40471f1852 // V2 WETH/USDT
+            ),
+            v3Pools: _pools(
+                0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8, // V3 WETH/USDC 0.3%
+                0xC2e9F25Be6257c210d7Adf0D4Cd6E3E881ba25f8, // V3 WETH/DAI 0.3%
+                0x4e68Ccd3E89f51C3074ca5072bbAC773960dFa36 // V3 WETH/USDT 0.3%
+            ),
             // Market params (conservative)
             maxLtv: 6500, // 65%
             liquidationThreshold: 7500, // 75%
@@ -121,12 +132,13 @@ contract DeployLocal is DeployBase {
         // Adapters (frontend needs these to approve LP before deposit)
         vm.serializeAddress(obj, "v2Adapter", core.adapters(ILPAdapter.LPType.UniswapV2));
         vm.serializeAddress(obj, "v3Adapter", core.adapters(ILPAdapter.LPType.UniswapV3));
-        // Tokens + collateral pair (for the frontend)
+        // Tokens (for the frontend). No collateral pair is written here: the accepted pools are a
+        // set the protocol curates, and naming one of them in this file would be a second copy of
+        // that set for the frontend to trust. It reads them from the whitelist events instead.
         vm.serializeAddress(obj, "weth", 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
         vm.serializeAddress(obj, "usdc", 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);
         vm.serializeAddress(obj, "usdt", USDT);
         vm.serializeAddress(obj, "dai", DAI);
-        vm.serializeAddress(obj, "v2Pair", 0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc);
         vm.serializeUint(obj, "chainId", block.chainid);
         string memory json = vm.serializeUint(obj, "deployBlock", block.number);
 

@@ -30,8 +30,8 @@ contract DeployBSCTestnet is DeployBase {
             // No sequencer on this chain — L1 and its testnets order their own blocks.
             clSequencerUptime: address(0),
             // Pools — PancakeSwap V2 WBNB/BUSD pair
-            v2Pool: 0xe0e92035077c39594793e61802a350347c320cf2, // WBNB/BUSD testnet
-            v3Pool: address(0),
+            v2Pools: _pools(0xe0e92035077c39594793e61802a350347c320cf2), // WBNB/BUSD testnet
+            v3Pools: new address[](0), // no V3 on BSC testnet
             // Market params
             maxLtv: 6500,
             liquidationThreshold: 7500,

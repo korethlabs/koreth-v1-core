@@ -169,9 +169,14 @@ abstract contract ForkTestBase is Test {
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(v3Oracle));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(v2Oracle));
 
-        // PriceFeedRegistry (for cross-decimal HF/LTV calculations)
+        // PriceFeedRegistry (for cross-decimal HF/LTV calculations). Every token that is a leg of a
+        // whitelisted pool needs a feed here: the V2 oracle prices a pair by asking the registry for
+        // both legs, so a pool whose second leg has no feed reverts on the first deposit rather than
+        // at whitelist time.
         priceFeedRegistry.setPriceFeed(Constants.USDC, Constants.CL_USDC_USD);
         priceFeedRegistry.setPriceFeed(Constants.WETH, Constants.CL_ETH_USD);
+        priceFeedRegistry.setPriceFeed(Constants.DAI, Constants.CL_DAI_USD);
+        priceFeedRegistry.setPriceFeed(Constants.USDT, Constants.CL_USDT_USD);
 
         // 9. Adapters
         v3Adapter = new UniswapV3Adapter(Constants.UNI_V3_NFT_MANAGER, Constants.UNI_V3_FACTORY, address(core));
@@ -181,9 +186,14 @@ abstract contract ForkTestBase is Test {
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(v3Adapter));
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(v2Adapter));
 
-        // 10. Whitelist LP pools
+        // 10. Whitelist LP pools — WETH against each of the three stablecoins, mirroring the local
+        //     deploy profile so tests exercise the same set the fork serves.
         core.whitelistLpPool(Constants.UNI_V3_WETH_USDC_3000);
+        core.whitelistLpPool(Constants.UNI_V3_WETH_DAI_3000);
+        core.whitelistLpPool(Constants.UNI_V3_WETH_USDT_3000);
         core.whitelistLpPool(Constants.UNI_V2_WETH_USDC);
+        core.whitelistLpPool(Constants.UNI_V2_WETH_DAI);
+        core.whitelistLpPool(Constants.UNI_V2_WETH_USDT);
 
         // 11. Wire RiskManager + PriceFeedRegistry (via ProtocolCore) — RiskManager is the source of
         //     truth for collateral risk params in the shared-pool model, so wire it before the pool.
