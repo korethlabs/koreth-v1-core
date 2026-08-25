@@ -135,7 +135,7 @@ contract EdgeCasesTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
-        core.whitelistLpPool(TestPools.asContract(lpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken), ILPAdapter.LPType.UniswapV3);
         priceRegistry = new PriceFeedRegistry(address(core));
         core.setPriceFeedRegistry(address(priceRegistry));
         core.setRiskManager(address(riskManager));

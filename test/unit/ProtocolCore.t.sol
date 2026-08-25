@@ -33,7 +33,7 @@ contract ProtocolCoreTest is Test {
     event AdapterRegistered(ILPAdapter.LPType indexed lpType, address indexed oldAdapter, address indexed adapter);
     event OracleRegistered(ILPAdapter.LPType indexed lpType, address indexed oldOracle, address indexed oracle);
     event LendingPoolRegistered(address indexed borrowAsset, address indexed pool);
-    event LpPoolWhitelisted(address indexed pool);
+    event LpPoolWhitelisted(address indexed pool, ILPAdapter.LPType indexed lpType);
     event LpPoolRemoved(address indexed pool);
     event Paused(address indexed by);
     event Unpaused(address indexed by);
@@ -346,35 +346,49 @@ contract ProtocolCoreTest is Test {
     function test_whitelistLpPool_success() public {
         address pool = _pool("pool");
 
-        vm.expectEmit(true, false, false, false);
-        emit LpPoolWhitelisted(pool);
+        vm.expectEmit(true, true, false, false);
+        emit LpPoolWhitelisted(pool, ILPAdapter.LPType.UniswapV2);
 
         vm.prank(owner);
-        core.whitelistLpPool(pool);
+        core.whitelistLpPool(pool, ILPAdapter.LPType.UniswapV2);
 
         assertTrue(core.isLpPoolSupported(pool));
+        assertEq(uint8(core.getLpPoolType(pool)), uint8(ILPAdapter.LPType.UniswapV2));
+    }
+
+    function test_whitelistLpPool_recordsTypeForEachAmm() public {
+        address v3Pool = _pool("v3Pool");
+        address pcsPool = _pool("pcsPool");
+
+        vm.startPrank(owner);
+        core.whitelistLpPool(v3Pool, ILPAdapter.LPType.UniswapV3);
+        core.whitelistLpPool(pcsPool, ILPAdapter.LPType.PancakeSwapV3);
+        vm.stopPrank();
+
+        assertEq(uint8(core.getLpPoolType(v3Pool)), uint8(ILPAdapter.LPType.UniswapV3));
+        assertEq(uint8(core.getLpPoolType(pcsPool)), uint8(ILPAdapter.LPType.PancakeSwapV3));
     }
 
     function test_whitelistLpPool_revertsAlreadyWhitelisted() public {
         address pool = _pool("pool");
         vm.startPrank(owner);
-        core.whitelistLpPool(pool);
+        core.whitelistLpPool(pool, ILPAdapter.LPType.UniswapV2);
 
         vm.expectRevert("ALREADY_WHITELISTED");
-        core.whitelistLpPool(pool);
+        core.whitelistLpPool(pool, ILPAdapter.LPType.UniswapV2);
         vm.stopPrank();
     }
 
     function test_whitelistLpPool_revertsZeroAddress() public {
         vm.prank(owner);
         vm.expectRevert("ZERO_ADDRESS");
-        core.whitelistLpPool(address(0));
+        core.whitelistLpPool(address(0), ILPAdapter.LPType.UniswapV2);
     }
 
     function test_whitelistLpPool_revertsNotPoolAdmin() public {
         vm.prank(user);
         vm.expectRevert("NOT_POOL_ADMIN");
-        core.whitelistLpPool(_pool("pool"));
+        core.whitelistLpPool(_pool("pool"), ILPAdapter.LPType.UniswapV2);
     }
 
     // ========== removeLpPool ==========
@@ -383,7 +397,7 @@ contract ProtocolCoreTest is Test {
         address pool = _pool("pool");
 
         vm.startPrank(owner);
-        core.whitelistLpPool(pool);
+        core.whitelistLpPool(pool, ILPAdapter.LPType.UniswapV2);
         assertTrue(core.isLpPoolSupported(pool));
 
         vm.expectEmit(true, false, false, false);
@@ -404,7 +418,7 @@ contract ProtocolCoreTest is Test {
     function test_removeLpPool_revertsNotPoolAdmin() public {
         address pool = _pool("pool");
         vm.prank(owner);
-        core.whitelistLpPool(pool);
+        core.whitelistLpPool(pool, ILPAdapter.LPType.UniswapV2);
 
         vm.prank(user);
         vm.expectRevert("NOT_POOL_ADMIN");
@@ -415,7 +429,7 @@ contract ProtocolCoreTest is Test {
         address pool = _pool("pool");
 
         vm.startPrank(owner);
-        core.whitelistLpPool(pool);
+        core.whitelistLpPool(pool, ILPAdapter.LPType.UniswapV2);
         core.removeLpPool(pool);
         assertFalse(core.isLpPoolSupported(pool));
 
@@ -423,9 +437,52 @@ contract ProtocolCoreTest is Test {
         vm.warp(block.timestamp + 1000);
 
         // Re-whitelist should work (pool is no longer in whitelist)
-        core.whitelistLpPool(pool);
+        core.whitelistLpPool(pool, ILPAdapter.LPType.UniswapV2);
         assertTrue(core.isLpPoolSupported(pool));
         vm.stopPrank();
+    }
+
+    // ========== getLpPoolType ==========
+
+    /// @dev The case the offset-by-one storage exists for. LPType.UniswapV2 is the zero member, so
+    ///      a mapping read for an address nobody listed is indistinguishable from a listed V2 pair.
+    ///      Answering "UniswapV2" here would hand a caller a confident wrong answer about an address
+    ///      the protocol has never seen; consumers branch on this, so it has to be a revert.
+    function test_getLpPoolType_revertsForUnregisteredPool() public {
+        vm.expectRevert("LP_TYPE_UNKNOWN");
+        core.getLpPoolType(makeAddr("neverListed"));
+    }
+
+    /// @dev Delisting revokes a permission. What AMM the pool belongs to is not a permission, and
+    ///      positions opened before the delisting are still backed by it, so the type has to outlive
+    ///      the whitelist for anything measuring those pools to keep working.
+    function test_getLpPoolType_survivesRemoval() public {
+        address pool = _pool("pool");
+
+        vm.startPrank(owner);
+        core.whitelistLpPool(pool, ILPAdapter.LPType.UniswapV3);
+        core.removeLpPool(pool);
+        vm.stopPrank();
+
+        assertFalse(core.isLpPoolSupported(pool));
+        assertEq(uint8(core.getLpPoolType(pool)), uint8(ILPAdapter.LPType.UniswapV3));
+    }
+
+    /// @dev A delist/re-list cycle must not be able to re-label a pool. Without the check the second
+    ///      listing would emit an ordinary LpPoolWhitelisted while silently changing how every
+    ///      consumer reads the pool.
+    function test_whitelistLpPool_revertsOnTypeChange() public {
+        address pool = _pool("pool");
+
+        vm.startPrank(owner);
+        core.whitelistLpPool(pool, ILPAdapter.LPType.UniswapV2);
+        core.removeLpPool(pool);
+
+        vm.expectRevert("LP_TYPE_MISMATCH");
+        core.whitelistLpPool(pool, ILPAdapter.LPType.UniswapV3);
+        vm.stopPrank();
+
+        assertEq(uint8(core.getLpPoolType(pool)), uint8(ILPAdapter.LPType.UniswapV2));
     }
 
     // ========== ACLManager Keeper Role ==========
@@ -762,14 +819,14 @@ contract ProtocolCoreTest is Test {
     function test_isLpPoolSupported_trueAfterWhitelist() public {
         address pool = _pool("pool");
         vm.prank(owner);
-        core.whitelistLpPool(pool);
+        core.whitelistLpPool(pool, ILPAdapter.LPType.UniswapV2);
         assertTrue(core.isLpPoolSupported(pool));
     }
 
     function test_isLpPoolSupported_falseAfterRemoval() public {
         address pool = _pool("pool");
         vm.startPrank(owner);
-        core.whitelistLpPool(pool);
+        core.whitelistLpPool(pool, ILPAdapter.LPType.UniswapV2);
         core.removeLpPool(pool);
         vm.stopPrank();
         assertFalse(core.isLpPoolSupported(pool));
@@ -826,7 +883,7 @@ contract ProtocolCoreTest is Test {
         TestPools.asContract(pool);
 
         vm.prank(owner);
-        core.whitelistLpPool(pool);
+        core.whitelistLpPool(pool, ILPAdapter.LPType.UniswapV2);
         assertTrue(core.isLpPoolSupported(pool));
     }
 
@@ -837,7 +894,7 @@ contract ProtocolCoreTest is Test {
 
         vm.prank(owner);
         vm.expectRevert("NOT_CONTRACT");
-        core.whitelistLpPool(pool);
+        core.whitelistLpPool(pool, ILPAdapter.LPType.UniswapV2);
     }
 
     function testFuzz_transferOwnership_anyNonZero(address newOwner) public {

@@ -109,8 +109,8 @@ contract AddCollateralTest is Test {
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(v2Adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistLpPool(TestPools.asContract(lpToken));
-        core.whitelistLpPool(TestPools.asContract(v2LpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken), ILPAdapter.LPType.UniswapV3);
+        core.whitelistLpPool(TestPools.asContract(v2LpToken), ILPAdapter.LPType.UniswapV2);
         TestPricing.wireStable(core, address(usdc));
         core.registerLendingPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));

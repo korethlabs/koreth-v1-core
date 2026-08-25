@@ -82,7 +82,7 @@ contract DepositValidationTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistLpPool(TestPools.asContract(lpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken), ILPAdapter.LPType.UniswapV2);
         TestPricing.wireStable(core, address(usdc));
         core.registerLendingPool(address(usdc), address(market));
         core.setRiskManager(address(riskManager));

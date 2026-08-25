@@ -111,7 +111,7 @@ contract AttackVectorTests is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
-        core.whitelistLpPool(TestPools.asContract(lpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken), ILPAdapter.LPType.UniswapV3);
         // Price token0 (WETH) too: the over-seize clamp re-values the seized underlying at
         // Chainlink, so any nonzero WETH seize needs a WETH feed. These attack tests assert debt
         // reduction / status, not exact balances, so the exact price only needs to be a live feed.

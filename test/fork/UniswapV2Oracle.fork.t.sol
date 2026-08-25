@@ -9,6 +9,7 @@ import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
 import {IUniswapV2Pair} from "../../src/interfaces/external/IUniswapV2.sol";
 import {IERC20} from "../../src/interfaces/IERC20.sol";
 import {ILPOracleHub} from "../../src/interfaces/ILPOracleHub.sol";
+import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 
 /// @title UniswapV2OracleForkTest
 /// @notice Fork tests against REAL Uniswap V2 on Ethereum mainnet
@@ -41,7 +42,7 @@ contract UniswapV2OracleForkTest is Test {
         priceFeedRegistry.setPriceFeed(USDC, CL_USDC_USD);
         // Fork may have stale Chainlink data — increase tolerance for testing
         priceFeedRegistry.setMaxStaleness(86_400); // 24h for fork tests
-        core.whitelistLpPool(UNI_V2_WETH_USDC);
+        core.whitelistLpPool(UNI_V2_WETH_USDC, ILPAdapter.LPType.UniswapV2);
         core.setPriceFeedRegistry(address(priceFeedRegistry));
         vm.stopPrank();
 

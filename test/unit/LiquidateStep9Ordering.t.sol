@@ -164,7 +164,7 @@ contract LiquidateStep9OrderingTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistLpPool(TestPools.asContract(lpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken), ILPAdapter.LPType.UniswapV2);
         priceRegistry = TestPricing.wireStable(core, address(usdc));
         TestPricing.priceAsset(priceRegistry, address(hookWeth), 200e18);
         core.registerLendingPool(address(usdc), address(market));

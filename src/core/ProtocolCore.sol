@@ -58,6 +58,19 @@ contract ProtocolCore {
     ///         markets anyone borrows from.
     mapping(address => bool) public supportedLpPools;
 
+    /// @notice Which AMM a curated collateral pool belongs to, stored as uint8(lpType) + 1.
+    /// @dev Offset by one because LPType.UniswapV2 is 0, so an unoffset mapping would answer
+    ///      "UniswapV2" for an address never registered exactly as it does for a V2 pair that was.
+    ///      The offset makes "never registered" a distinguishable state, which getLpPoolType below
+    ///      rejects rather than guesses at. Private so the raw offset cannot be misread as an LPType.
+    ///
+    ///      Consumers need this because a pool address does not say what it is, and there is no
+    ///      common interface to probe: measuring a V2 pair's liquidity means reading getReserves(),
+    ///      a V3 pool's means reading token balances. Recording the answer when a pool admin lists
+    ///      the pool costs one slot; the alternative is every consumer inferring it from which call
+    ///      happens to revert, which is a guess that gets less reliable with each AMM integrated.
+    mapping(address => uint8) private lpPoolType;
+
     // --- Shared Registry Addresses ---
     address public priceFeedRegistryAddr;
     address public riskManagerAddr;
@@ -71,7 +84,7 @@ contract ProtocolCore {
     event OracleRegistered(ILPAdapter.LPType indexed lpType, address indexed oldOracle, address indexed oracle);
     event LendingPoolRegistered(address indexed borrowAsset, address indexed pool);
     event PoolFactoryUpdated(address indexed oldFactory, address indexed newFactory);
-    event LpPoolWhitelisted(address indexed pool);
+    event LpPoolWhitelisted(address indexed pool, ILPAdapter.LPType indexed lpType);
     event LpPoolRemoved(address indexed pool);
     event Paused(address indexed by);
     event Unpaused(address indexed by);
@@ -221,16 +234,34 @@ contract ProtocolCore {
 
     // --- Pool Management ---
 
-    /// @notice Curate an AMM pool as acceptable collateral backing.
+    /// @notice Curate an AMM pool as acceptable collateral backing, and record which AMM it is.
     /// @dev Distinct from registerLendingPool, which lists a *lending* market. This is the curation layer
     ///      over the adapters' authenticity check: they already refuse an LP token whose pool does
     ///      not come from the configured factory, so this decides which authentic pools we want.
-    function whitelistLpPool(address pool) external onlyPoolAdmin {
+    ///
+    ///      lpType is declared by the pool admin, not derived, and is not cross-checked against the
+    ///      pool: there is no call every AMM answers that would confirm it. Declaring the wrong one
+    ///      is a listing error with the same reach as listing the wrong address, which this role can
+    ///      already do. Consumers that branch on the type should fail closed when the pool does not
+    ///      behave as the declared type — see PoolLiquidityMonitor, where a V3 pool listed as V2
+    ///      makes the liquidity read revert rather than fall back to a weaker measure.
+    /// @param pool The AMM pool address
+    /// @param lpType The AMM the pool belongs to — permanent for this address once set
+    function whitelistLpPool(address pool, ILPAdapter.LPType lpType) external onlyPoolAdmin {
         require(pool != address(0), "ZERO_ADDRESS");
         require(pool.code.length > 0, "NOT_CONTRACT");
         require(!supportedLpPools[pool], "ALREADY_WHITELISTED");
+
+        // What AMM an address belongs to is a fact about the address, so a re-listing may not
+        // contradict the first one. Without this a delist/re-list cycle could silently re-label a
+        // pool, and every consumer branching on the type would change behaviour with no event
+        // saying the type moved — the LpPoolWhitelisted below would look like an ordinary re-listing.
+        uint8 stored = lpPoolType[pool];
+        require(stored == 0 || stored == uint8(lpType) + 1, "LP_TYPE_MISMATCH");
+
         supportedLpPools[pool] = true;
-        emit LpPoolWhitelisted(pool);
+        lpPoolType[pool] = uint8(lpType) + 1;
+        emit LpPoolWhitelisted(pool, lpType);
     }
 
     /// @notice Delist an AMM pool as collateral backing — blocks new deposits only.
@@ -239,6 +270,11 @@ contract ProtocolCore {
     ///      Oracles intentionally do NOT check whitelist so pricing continues for delisted pools.
     ///      Admin should verify no active borrowed positions remain before removing,
     ///      or accept that existing positions will run until closed/liquidated naturally.
+    ///
+    ///      lpPoolType is deliberately NOT cleared. The whitelist is a permission and this revokes
+    ///      it; the type is what the pool *is*, which delisting does not change. Keeping it is also
+    ///      what lets the liquidity monitor keep measuring a delisted pool, which still backs every
+    ///      position opened before the delisting — the same reason the oracles ignore the whitelist.
     function removeLpPool(address pool) external onlyPoolAdmin {
         require(supportedLpPools[pool], "NOT_WHITELISTED");
         supportedLpPools[pool] = false;
@@ -344,5 +380,16 @@ contract ProtocolCore {
 
     function isLpPoolSupported(address pool) external view returns (bool) {
         return supportedLpPools[pool];
+    }
+
+    /// @notice The AMM a curated collateral pool belongs to.
+    /// @dev Reverts for an address never passed to whitelistLpPool, rather than returning the zero
+    ///      enum member. A caller asking this is about to branch on the answer, and the branch for
+    ///      an unknown pool is not "treat it as UniswapV2" — it is "do not act". Answers for
+    ///      delisted pools too: see removeLpPool for why the type outlives the permission.
+    function getLpPoolType(address pool) external view returns (ILPAdapter.LPType) {
+        uint8 stored = lpPoolType[pool];
+        require(stored != 0, "LP_TYPE_UNKNOWN");
+        return ILPAdapter.LPType(stored - 1);
     }
 }

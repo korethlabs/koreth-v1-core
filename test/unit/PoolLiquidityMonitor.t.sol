@@ -7,11 +7,13 @@ import {ACLManager} from "../../src/core/ACLManager.sol";
 import {CircuitBreaker} from "../../src/security/CircuitBreaker.sol";
 import {PoolLiquidityMonitor} from "../../src/oracle/PoolLiquidityMonitor.sol";
 import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
+import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
+import {IERC20} from "../../src/interfaces/IERC20.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {TestPricing} from "../helpers/TestPricing.sol";
 
-/// @notice Minimal stand-in for a Uniswap pair or pool: the monitor only needs the token pair, and
-///         reads the liquidity from the tokens themselves.
+/// @notice Minimal stand-in for a Uniswap V3 pool: it holds its liquidity as plain token balances
+///         spread across ticks, with no reserve figure, so the monitor only needs the token pair.
 contract MockPool {
     address public token0;
     address public token1;
@@ -19,6 +21,39 @@ contract MockPool {
     constructor(address _token0, address _token1) {
         token0 = _token0;
         token1 = _token1;
+    }
+}
+
+/// @notice A Uniswap V2 pair, reduced to the part that matters here: reserves tracked separately
+///         from balances, and the two functions that move between them.
+/// @dev Faithful to the real pair on the point the tests turn on. sync() and skim() are both
+///      permissionless there and are here; skim() sends away balance - reserve, which UniswapV2Pair
+///      computes with SafeMath and this computes in checked 0.8 arithmetic, so both revert on a pair
+///      holding less than it claims. Reserves move only when this contract is told to move them,
+///      which is what makes them the harder number to write.
+contract MockV2Pair {
+    address public token0;
+    address public token1;
+    uint112 private reserve0;
+    uint112 private reserve1;
+
+    constructor(address _token0, address _token1) {
+        token0 = _token0;
+        token1 = _token1;
+    }
+
+    function getReserves() external view returns (uint112, uint112, uint32) {
+        return (reserve0, reserve1, uint32(block.timestamp));
+    }
+
+    function sync() external {
+        reserve0 = uint112(IERC20(token0).balanceOf(address(this)));
+        reserve1 = uint112(IERC20(token1).balanceOf(address(this)));
+    }
+
+    function skim(address to) external {
+        IERC20(token0).transfer(to, IERC20(token0).balanceOf(address(this)) - reserve0);
+        IERC20(token1).transfer(to, IERC20(token1).balanceOf(address(this)) - reserve1);
     }
 }
 
@@ -37,10 +72,12 @@ contract PoolLiquidityMonitorTest is Test {
     MockERC20 public weth;
     MockERC20 public usdc;
     MockPool public pool;
+    MockV2Pair public pair;
 
     address public owner = makeAddr("owner");
     address public keeper = makeAddr("keeper");
     address public stranger = makeAddr("stranger");
+    address public attacker = makeAddr("attacker");
 
     function setUp() public {
         aclManager = new ACLManager(owner);
@@ -50,6 +87,7 @@ contract PoolLiquidityMonitorTest is Test {
         weth = new MockERC20("WETH", "WETH", 18);
         usdc = new MockERC20("USDC", "USDC", 6);
         pool = new MockPool(address(weth), address(usdc));
+        pair = new MockV2Pair(address(weth), address(usdc));
 
         vm.startPrank(owner);
         priceRegistry = TestPricing.wire(core, address(weth), 2000e18); // $2,000
@@ -57,11 +95,20 @@ contract PoolLiquidityMonitorTest is Test {
         monitor = new PoolLiquidityMonitor(address(core), address(circuitBreaker));
         aclManager.addKeeper(address(monitor));
         aclManager.addKeeper(keeper);
+        // The monitor measures a pool by what its AMM makes measurable, so it needs the pool listed
+        // with the AMM it belongs to before it can judge one.
+        core.whitelistLpPool(address(pool), ILPAdapter.LPType.UniswapV3);
+        core.whitelistLpPool(address(pair), ILPAdapter.LPType.UniswapV2);
         vm.stopPrank();
 
         // $2M: 500 WETH at $2,000 plus 1,000,000 USDC at $1.
         weth.mint(address(pool), 500e18);
         usdc.mint(address(pool), 1_000_000e6);
+
+        // The same $2M in the V2 pair, with reserves recorded to match — an untampered pair.
+        weth.mint(address(pair), 500e18);
+        usdc.mint(address(pair), 1_000_000e6);
+        pair.sync();
     }
 
     // ========== Reading, not being told ==========
@@ -89,6 +136,8 @@ contract PoolLiquidityMonitorTest is Test {
     function test_poolTvlUsd_revertsWhenATokenHasNoPrice() public {
         MockERC20 unpriced = new MockERC20("XYZ", "XYZ", 18);
         MockPool odd = new MockPool(address(weth), address(unpriced));
+        vm.prank(owner);
+        core.whitelistLpPool(address(odd), ILPAdapter.LPType.UniswapV3);
 
         vm.expectRevert("NO_PRICE_FEED");
         monitor.poolTvlUsd(address(odd));
@@ -149,6 +198,114 @@ contract PoolLiquidityMonitorTest is Test {
 
         vm.prank(keeper);
         assertTrue(monitor.checkPool(address(pool)), "liquidity is untouched, so the check passes");
+    }
+
+    // ========== What a V2 pair holds, vs what it says it holds ==========
+
+    /// @dev A donation to a V2 pair raises its balances without raising its reserves, and the pair
+    ///      hands the difference back to whoever asks for it. Counting it would let anyone move this
+    ///      number for the price of a transfer they get refunded.
+    function test_poolTvlUsd_ignoresADonationToAV2Pair() public {
+        uint256 before = monitor.poolTvlUsd(address(pair));
+
+        usdc.mint(attacker, 5_000_000e6);
+        vm.prank(attacker);
+        usdc.transfer(address(pair), 5_000_000e6);
+
+        assertEq(monitor.poolTvlUsd(address(pair)), before, "a donation is not liquidity the pair owes anyone");
+    }
+
+    /// @dev The reason the cap is there. The floor is checked in the keeper's transaction, and an
+    ///      attacker can put a transaction on either side of it: donate first, let checkPool read the
+    ///      inflated balance, skim the donation back after. Two transactions, no capital at risk, and
+    ///      a pair holding a fifth of the floor keeps taking deposits. Capping at reserves makes the
+    ///      first transaction do nothing, so the sandwich has nothing to sandwich.
+    function test_checkPool_cannotBeCarriedOverTheFloorByADonation() public {
+        // The pair drains to $200k and its reserves are honest about it.
+        vm.startPrank(address(pair));
+        usdc.transfer(stranger, 900_000e6);
+        weth.transfer(stranger, 450e18);
+        vm.stopPrank();
+        pair.sync();
+        assertEq(monitor.poolTvlUsd(address(pair)), 200_000e18);
+
+        // Front-run: donate enough to clear the $1M floor twice over.
+        usdc.mint(attacker, 2_000_000e6);
+        vm.prank(attacker);
+        usdc.transfer(address(pair), 2_000_000e6);
+
+        vm.prank(keeper);
+        assertFalse(monitor.checkPool(address(pair)), "the donation is not the pair's liquidity");
+        assertTrue(circuitBreaker.poolPaused(address(pair)));
+
+        // Back-run: and the attacker takes it all back, which is why it was never a cost.
+        vm.prank(attacker);
+        pair.skim(attacker);
+        assertEq(usdc.balanceOf(attacker), 2_000_000e6);
+    }
+
+    /// @dev The other direction, and the reason the cap is a minimum rather than a switch to
+    ///      getReserves(). A pair that lost its tokens without anyone calling sync() still reports
+    ///      the reserves it had before. Reading reserves alone would leave an empty pair clearing the
+    ///      floor; the minimum takes the pessimistic side of each divergence, so the drain shows.
+    function test_poolTvlUsd_seesADrainThatStaleReservesStillHide() public {
+        vm.startPrank(address(pair));
+        usdc.transfer(stranger, 900_000e6);
+        weth.transfer(stranger, 450e18);
+        vm.stopPrank();
+        // No sync(): reserves still claim the full $2M.
+        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
+        assertEq(uint256(reserve0), 500e18);
+        assertEq(uint256(reserve1), 1_000_000e6);
+
+        assertEq(monitor.poolTvlUsd(address(pair)), 200_000e18, "the pair is judged on what it holds");
+
+        vm.prank(keeper);
+        assertFalse(monitor.checkPool(address(pair)));
+    }
+
+    /// @dev Syncing away the stale reserves does not restore the pair's ability to hide the drain —
+    ///      it only makes both numbers agree on the emptied figure.
+    function test_poolTvlUsd_unchangedByASyncAfterADrain() public {
+        vm.startPrank(address(pair));
+        usdc.transfer(stranger, 900_000e6);
+        weth.transfer(stranger, 450e18);
+        vm.stopPrank();
+
+        uint256 beforeSync = monitor.poolTvlUsd(address(pair));
+        pair.sync();
+
+        assertEq(monitor.poolTvlUsd(address(pair)), beforeSync);
+    }
+
+    // ========== Measuring the right thing per AMM ==========
+
+    /// @dev V3 has no reserves to cap against — liquidity sits as balances across ticks — so balances
+    ///      remain the measure there, and a V3 pool is not skimmable the way a pair is.
+    function test_poolTvlUsd_measuresV3PoolsByBalance() public {
+        usdc.mint(address(pool), 500_000e6);
+        assertEq(monitor.poolTvlUsd(address(pool)), 2_500_000e18);
+    }
+
+    /// @dev A pool listed under an AMM this contract has no measure for is not judged at all. The
+    ///      alternative is falling back to balances, which is the reading this change exists to stop
+    ///      relying on — an AMM nobody has looked at is the last place to assume it is safe.
+    function test_poolTvlUsd_revertsForAnAmmWithNoDefinedMeasure() public {
+        MockPool curvePool = new MockPool(address(weth), address(usdc));
+        vm.prank(owner);
+        core.whitelistLpPool(address(curvePool), ILPAdapter.LPType.Curve);
+
+        vm.expectRevert("LP_TYPE_NOT_MEASURABLE");
+        monitor.poolTvlUsd(address(curvePool));
+    }
+
+    /// @dev And a pool nobody listed is not judged either, rather than being read as the zero enum
+    ///      member and measured as a V2 pair.
+    function test_poolTvlUsd_revertsForAnUnlistedPool() public {
+        MockPool unlisted = new MockPool(address(weth), address(usdc));
+
+        vm.expectRevert("LP_TYPE_UNKNOWN");
+        monitor.poolTvlUsd(address(unlisted));
     }
 
     // ========== Access ==========

@@ -85,7 +85,7 @@ contract RiskManagerIntegrationTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
-        core.whitelistLpPool(TestPools.asContract(lpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken), ILPAdapter.LPType.UniswapV3);
         TestPricing.wireStable(core, address(usdc));
         core.registerLendingPool(address(usdc), address(market));
         TestSecurity.wireBreaker(core, pm);

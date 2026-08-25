@@ -145,7 +145,7 @@ contract FullLifecycleTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistLpPool(TestPools.asContract(lpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken), ILPAdapter.LPType.UniswapV2);
         PriceFeedRegistry priceRegistry = TestPricing.wireStable(core, address(usdc));
         // WETH is the pool's other underlying. The over-seize clamp values the
         // realized token0/token1 through the registry, and in production getPositionValue already

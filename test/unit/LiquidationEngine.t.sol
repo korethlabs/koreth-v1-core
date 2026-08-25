@@ -117,7 +117,7 @@ contract LiquidationEngineTest is Test {
         aclManager.addRiskAdmin(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistLpPool(TestPools.asContract(lpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken), ILPAdapter.LPType.UniswapV2);
         priceRegistry = TestPricing.wireStable(core, address(usdc));
         // WETH is the pool's other underlying. At liquidation time the default position holds
         // 25 WETH + 25,000 USDC and the oracle values it at $30k, so WETH is worth $200 here: the
