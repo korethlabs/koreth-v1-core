@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import "forge-std/Test.sol";
 import {ACLManager} from "../../src/core/ACLManager.sol";
 import {ProtocolCore} from "../../src/core/ProtocolCore.sol";
+import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {Handover} from "../../script/HandoverToDAO.s.sol";
 
 /// @notice Stands in for the deploying team's key. The handover runs as a sequence of calls from
@@ -321,11 +322,14 @@ contract HandoverTest is Test {
         // Authorised only on the new manager: newAdmin (POOL_ADMIN there) can now whitelist. The pool
         // must be a contract (whitelistLpPool checks code length), so reuse an existing one.
         vm.prank(newAdmin);
-        core.whitelistLpPool(address(aclManager));
+        core.whitelistLpPool(address(aclManager), ILPAdapter.LPType.UniswapV2);
 
         // The deployer is POOL_ADMIN only on the old manager, so it no longer passes onlyPoolAdmin.
         assertFalse(replacement.isPoolAdmin(deployer), "deployer is not admin on the new manager");
         vm.expectRevert("NOT_POOL_ADMIN");
-        deployerAccount.exec(address(core), abi.encodeCall(ProtocolCore.whitelistLpPool, (makeAddr("pool2"))));
+        deployerAccount.exec(
+            address(core),
+            abi.encodeCall(ProtocolCore.whitelistLpPool, (makeAddr("pool2"), ILPAdapter.LPType.UniswapV2))
+        );
     }
 }

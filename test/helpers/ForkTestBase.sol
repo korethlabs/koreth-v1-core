@@ -188,12 +188,12 @@ abstract contract ForkTestBase is Test {
 
         // 10. Whitelist LP pools — WETH against each of the three stablecoins, mirroring the local
         //     deploy profile so tests exercise the same set the fork serves.
-        core.whitelistLpPool(Constants.UNI_V3_WETH_USDC_3000);
-        core.whitelistLpPool(Constants.UNI_V3_WETH_DAI_3000);
-        core.whitelistLpPool(Constants.UNI_V3_WETH_USDT_3000);
-        core.whitelistLpPool(Constants.UNI_V2_WETH_USDC);
-        core.whitelistLpPool(Constants.UNI_V2_WETH_DAI);
-        core.whitelistLpPool(Constants.UNI_V2_WETH_USDT);
+        core.whitelistLpPool(Constants.UNI_V3_WETH_USDC_3000, ILPAdapter.LPType.UniswapV3);
+        core.whitelistLpPool(Constants.UNI_V3_WETH_DAI_3000, ILPAdapter.LPType.UniswapV3);
+        core.whitelistLpPool(Constants.UNI_V3_WETH_USDT_3000, ILPAdapter.LPType.UniswapV3);
+        core.whitelistLpPool(Constants.UNI_V2_WETH_USDC, ILPAdapter.LPType.UniswapV2);
+        core.whitelistLpPool(Constants.UNI_V2_WETH_DAI, ILPAdapter.LPType.UniswapV2);
+        core.whitelistLpPool(Constants.UNI_V2_WETH_USDT, ILPAdapter.LPType.UniswapV2);
 
         // 11. Wire RiskManager + PriceFeedRegistry (via ProtocolCore) — RiskManager is the source of
         //     truth for collateral risk params in the shared-pool model, so wire it before the pool.

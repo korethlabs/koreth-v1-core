@@ -248,4 +248,38 @@ contract UniswapV2Adapter is ILPAdapter {
     function supportsFeeCollection() external pure returns (bool) {
         return false;
     }
+
+    /// @inheritdoc ILPAdapter
+    /// @dev The lesser of what the pair holds and what it counts as reserves, per token.
+    ///
+    ///      A V2 pair tracks reserves separately from its ERC-20 balances, and skim() pays out the
+    ///      excess to whoever asks. So a balance above reserves is someone else's tokens sitting in
+    ///      the pair until they take them back, and counting it would let a donation made just
+    ///      before a measurement be reclaimed just after it — no capital committed, only ordering.
+    ///
+    ///      Reserves alone are not the answer either: they are only refreshed by mint, burn, swap
+    ///      and sync, so a pair drained by a direct transfer still reports the old figures until
+    ///      someone pokes it, and would measure as full while holding nothing. The two agree on an
+    ///      untouched pair and diverge only in these cases, and the minimum takes the pessimistic
+    ///      side of each — which is the safe side for a floor meant to catch a pool running dry.
+    ///
+    ///      Applied per token rather than to a total, so an inflated side cannot make up for a side
+    ///      that has actually drained.
+    function poolHoldings(address pool)
+        external
+        view
+        returns (address token0, address token1, uint256 amount0, uint256 amount1)
+    {
+        IUniswapV2Pair pair = IUniswapV2Pair(pool);
+        token0 = pair.token0();
+        token1 = pair.token1();
+
+        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
+        amount0 = _min(OZIERC20(token0).balanceOf(pool), reserve0);
+        amount1 = _min(OZIERC20(token1).balanceOf(pool), reserve1);
+    }
+
+    function _min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
+    }
 }

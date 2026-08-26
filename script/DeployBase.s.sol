@@ -289,10 +289,10 @@ abstract contract DeployBase is Script {
     function _createPools(ChainConfig memory cfg) internal {
         // Whitelist collateral pools (the underlying LP pools, not the lending pool)
         for (uint256 i = 0; i < cfg.v3Pools.length; i++) {
-            core.whitelistLpPool(cfg.v3Pools[i]);
+            core.whitelistLpPool(cfg.v3Pools[i], ILPAdapter.LPType.UniswapV3);
         }
         for (uint256 i = 0; i < cfg.v2Pools.length; i++) {
-            core.whitelistLpPool(cfg.v2Pools[i]);
+            core.whitelistLpPool(cfg.v2Pools[i], ILPAdapter.LPType.UniswapV2);
         }
 
         // Shared-pool model: create ONE lending pool for the primary stablecoin, then whitelist

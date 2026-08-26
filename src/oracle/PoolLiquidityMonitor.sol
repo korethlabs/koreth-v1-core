@@ -5,14 +5,8 @@ import {ProtocolCore} from "../core/ProtocolCore.sol";
 import {ACLManager} from "../core/ACLManager.sol";
 import {CircuitBreaker} from "../security/CircuitBreaker.sol";
 import {PriceFeedRegistry} from "./PriceFeedRegistry.sol";
-import {IERC20} from "../interfaces/IERC20.sol";
+import {ILPAdapter} from "../interfaces/ILPAdapter.sol";
 import {TokenUtils} from "../libraries/TokenUtils.sol";
-
-/// @notice Both Uniswap V2 pairs and V3 pools expose their token pair this way.
-interface IPoolTokens {
-    function token0() external view returns (address);
-    function token1() external view returns (address);
-}
 
 /// @title PoolLiquidityMonitor
 /// @notice Watches whether a whitelisted collateral pool still holds enough liquidity to be worth
@@ -33,8 +27,9 @@ interface IPoolTokens {
 ///      a pool-reported price, so there is nothing left to cross-validate.
 ///
 ///      What remains is the part nothing else covers, and it is now derived rather than reported:
-///      the pool's own token balances, priced through the registry. A keeper can decide when to
-///      look, which needs no trust, since the worst it can do is not look.
+///      how much of each token the pool actually holds, priced through the registry. A keeper can
+///      decide when to look, which needs no trust, since the worst it can do is not look — and it
+///      cannot choose what the look returns, which is the whole difference from what came before.
 contract PoolLiquidityMonitor {
     ProtocolCore public immutable core;
     CircuitBreaker public immutable circuitBreaker;
@@ -83,25 +78,39 @@ contract PoolLiquidityMonitor {
     // --- Views ---
 
     /// @notice The pool's liquidity in 18-dec USD, read from the chain.
-    /// @dev Token balances rather than V2 reserves or V3 liquidity, because that is the one measure
-    ///      both pool types answer identically: a V3 pool holds its liquidity as balances across
-    ///      ticks, and a V2 pair's balances match its reserves except for donations, which only
-    ///      overstate — and overstating cannot trip a floor that is meant to catch a pool draining.
+    /// @dev How much a pool holds is asked of the adapter for its AMM rather than measured here,
+    ///      because the answer differs per AMM and this contract would otherwise have to carry a
+    ///      branch per integration. On a V3 pool the measure is plain balances; on a V2 pair it is
+    ///      not, because a pair tracks reserves separately from balances and skim() returns the
+    ///      difference to whoever asks — so a pool below the floor can be carried over it by
+    ///      sandwiching a keeper's checkPool (donate, let the check read the inflated balance, skim
+    ///      afterwards) for two transactions and no capital. UniswapV2Adapter answers with
+    ///      min(balance, reserve) for that reason, and states the reasoning where the measure lives.
+    ///
+    ///      Routing through the adapter is the same dispatch the protocol already uses to decide
+    ///      whether a position's fees must be swept before an unwind (ILPAdapter.supportsFeeCollection):
+    ///      the AMM-specific answer belongs to the AMM-specific contract, so integrating the next
+    ///      one means writing its adapter rather than revisiting every consumer that branches on a
+    ///      type. Adapters are registered by a pool admin and are already trusted to unwind
+    ///      collateral, so this is not the caller-supplied figure that sank PriceValidator; a keeper
+    ///      still cannot influence what comes back.
     ///
     ///      Reverts rather than degrading whenever it cannot arrive at a number it trusts: no price
     ///      feed (NO_PRICE_FEED), a stale or out-of-bounds answer, a token whose decimals() cannot
-    ///      be read, or an unset registry. That is deliberate and applies to all of them equally —
-    ///      a pool the protocol cannot value is not one it can judge, and every one of these cases
-    ///      would otherwise have to be answered with a guess. checkPool propagates the revert, so a
-    ///      pool in this state is neither paused nor pronounced healthy; it goes unjudged until the
+    ///      be read, an unset registry, a pool that was never listed (LP_TYPE_UNKNOWN), or an AMM
+    ///      whose adapter has no measure for it yet (NOT_IMPLEMENTED — Curve and Aerodrome today,
+    ///      neither deployed). That is deliberate and applies to all of them equally: a pool the
+    ///      protocol cannot value is not one it can judge, and every one of these cases would
+    ///      otherwise have to be answered with a guess. checkPool propagates the revert, so a pool
+    ///      in this state is neither paused nor pronounced healthy; it goes unjudged until the
     ///      missing piece is fixed.
     function poolTvlUsd(address pool) public view returns (uint256) {
-        address token0 = IPoolTokens(pool).token0();
-        address token1 = IPoolTokens(pool).token1();
+        ILPAdapter adapter = ILPAdapter(core.getAdapter(core.getLpPoolType(pool)));
+        (address token0, address token1, uint256 held0, uint256 held1) = adapter.poolHoldings(pool);
         PriceFeedRegistry registry = PriceFeedRegistry(core.getPriceFeedRegistry());
 
-        uint256 value0 = registry.getUsdValue(token0, IERC20(token0).balanceOf(pool), TokenUtils.safeDecimals(token0));
-        uint256 value1 = registry.getUsdValue(token1, IERC20(token1).balanceOf(pool), TokenUtils.safeDecimals(token1));
+        uint256 value0 = registry.getUsdValue(token0, held0, TokenUtils.safeDecimals(token0));
+        uint256 value1 = registry.getUsdValue(token1, held1, TokenUtils.safeDecimals(token1));
 
         return value0 + value1;
     }

@@ -2,7 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {ILPAdapter} from "../interfaces/ILPAdapter.sol";
-import {INonfungiblePositionManager, IUniswapV3Factory} from "../interfaces/external/IUniswapV3.sol";
+import {INonfungiblePositionManager, IUniswapV3Factory, IUniswapV3Pool} from "../interfaces/external/IUniswapV3.sol";
 import {IERC20 as OZIERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ProtocolCore} from "../core/ProtocolCore.sol";
@@ -324,6 +324,22 @@ contract UniswapV3Adapter is ILPAdapter {
     /// @dev V3 positions hold uncollected fees in the NFT, separate from principal liquidity.
     function supportsFeeCollection() external pure returns (bool) {
         return true;
+    }
+
+    /// @inheritdoc ILPAdapter
+    /// @dev Plain token balances. A V3 pool keeps no reserve accounting to cap them against: its
+    ///      liquidity lives in the balances themselves, spread across ticks, and there is no skim()
+    ///      to hand back an excess. A donation therefore stays in the pool and counts as depth,
+    ///      which is what it is.
+    function poolHoldings(address pool)
+        external
+        view
+        returns (address token0, address token1, uint256 amount0, uint256 amount1)
+    {
+        token0 = IUniswapV3Pool(pool).token0();
+        token1 = IUniswapV3Pool(pool).token1();
+        amount0 = OZIERC20(token0).balanceOf(pool);
+        amount1 = OZIERC20(token1).balanceOf(pool);
     }
 
     /// @notice ERC721 receiver hook — restricts safeTransferFrom to prevent stuck NFTs

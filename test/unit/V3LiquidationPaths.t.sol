@@ -121,8 +121,8 @@ contract V3LiquidationPaths is Test {
         core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(v2Adapter));
         core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
         core.registerOracle(ILPAdapter.LPType.UniswapV2, address(oracle));
-        core.whitelistLpPool(TestPools.asContract(lpToken));
-        core.whitelistLpPool(TestPools.asContract(v2LpToken));
+        core.whitelistLpPool(TestPools.asContract(lpToken), ILPAdapter.LPType.UniswapV3);
+        core.whitelistLpPool(TestPools.asContract(v2LpToken), ILPAdapter.LPType.UniswapV2);
         // Price both underlyings in the registry: the over-seize clamp re-values the
         // seized token0/token1 at Chainlink, so a nonzero WETH seize needs a WETH feed. $200 keeps the
         // pool composition (25 WETH + 25_000 USDC = $30k) below the oracle position value at liquidation
@@ -322,7 +322,7 @@ contract V3LiquidationPaths is Test {
         vm.startPrank(owner);
         core.registerAdapter(ILPAdapter.LPType.PancakeSwapV3, address(pcsAdapter));
         core.registerOracle(ILPAdapter.LPType.PancakeSwapV3, address(oracle));
-        core.whitelistLpPool(TestPools.asContract(pcsLpToken));
+        core.whitelistLpPool(TestPools.asContract(pcsLpToken), ILPAdapter.LPType.PancakeSwapV3);
         riskManager.setCollateralConfig(ILPAdapter.LPType.PancakeSwapV3, RiskConfig.defaultConfig());
         vm.stopPrank();
 
