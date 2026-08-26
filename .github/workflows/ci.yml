@@ -111,14 +111,39 @@ jobs:
           test -n "$block" || { echo "FORK_BLOCK not found in ForkTestBase.sol"; exit 1; }
           echo "block=$block" >> "$GITHUB_OUTPUT"
 
-      - name: Cache fork RPC responses
-        uses: actions/cache@v4
+      # Restore the newest snapshot for this block, then save a fresh one under a key no earlier run
+      # can already hold. actions/cache skips its save step on an exact key hit, so a key derived
+      # only from the block — a constant — is written once and never again: the entry keeps whatever
+      # the suite happened to touch that day, and every slot reached by a test added afterwards is
+      # fetched live on every run from then on. That is how a cache meant to prevent live reads ends
+      # up guaranteeing them, and it is why the reads that time out are the ones belonging to the
+      # most recently added pools. Suffixing the run id makes each save a miss, so the snapshot
+      # accumulates rather than freezing.
+      #
+      # Split into restore and save so the save can be skipped when the suite did not run. A job
+      # without ETH_RPC_URL exits before a single read, and saving there would publish whatever was
+      # restored under a newer key — harmless in isolation, but two jobs that start together both
+      # restore the same entry, and if the one that skipped saves last, its copy becomes the newest
+      # prefix match and hides the one that actually ran. The snapshot would then shrink back
+      # towards the frozen state this is undoing.
+      - name: Restore fork RPC responses
+        uses: actions/cache/restore@v4
         with:
           path: ~/.foundry/cache/rpc
-          key: rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}
-          restore-keys: rpc-${{ runner.os }}-
+          key: rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}-${{ github.run_id }}
+          # First prefix takes the newest rolling entry. Second is the key this scheme replaces,
+          # which the first cannot match for want of its trailing separator — without it the run
+          # that adopts the scheme starts cold and fetches the whole suite live, the failure being
+          # fixed here. Its contents are still sound: the responses are reads of a pinned block, so
+          # they cannot go out of date, only fall behind what the suite now touches. Kept separate
+          # rather than dropping the separator from the first, which would also match a longer block
+          # number that happens to start with this one.
+          restore-keys: |
+            rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}-
+            rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}
 
       - name: Fork tests
+        id: forktests
         env:
           ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
         run: |
@@ -126,6 +151,11 @@ jobs:
             echo "ETH_RPC_URL secret not set — skipping fork tests."
             exit 0
           fi
+          # Records that reads actually happened, so the save step below knows whether this job has
+          # a snapshot worth publishing. Set before the suite runs, not after: a failing run has
+          # still fetched everything it reached, and that is exactly what the next run should not
+          # have to fetch again.
+          echo "ran=true" >> "$GITHUB_OUTPUT"
           # Thousands of live state reads per run, so ride out a provider hiccup rather than
           # failing the suite on one dropped response.
           # Throttled below Foundry's 330 default: on a cold cache the suite opens enough parallel
@@ -137,3 +167,12 @@ jobs:
             --fork-retries 5 --fork-retry-backoff 3 \
             --compute-units-per-second 150 \
             -vvv
+
+      # always(), so a failed suite still publishes what it fetched. Its reads are of a pinned
+      # block and stand on their own regardless of what the assertions concluded.
+      - name: Save fork RPC responses
+        if: always() && steps.forktests.outputs.ran == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.foundry/cache/rpc
+          key: rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}-${{ github.run_id }}
