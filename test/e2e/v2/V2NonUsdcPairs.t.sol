@@ -2,7 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "../E2EBase.t.sol";
-import {IUniswapV2Factory} from "../../../src/interfaces/external/IUniswapV2.sol";
+import {IUniswapV2Factory, IUniswapV2Pair, IUniswapV2Router} from "../../../src/interfaces/external/IUniswapV2.sol";
 import {IERC20 as OZIERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
