@@ -49,9 +49,17 @@ contract MockV2Pair {
         return (reserve0, reserve1, uint32(block.timestamp));
     }
 
+    /// @dev Rejects a balance that does not fit in uint112 rather than casting it down, as
+    ///      UniswapV2Pair does with 'UniswapV2: OVERFLOW'. A silent truncation here would turn an
+    ///      oversized balance into a small reserve, and the monitor caps at reserves — so a test
+    ///      could read a plausible figure out of a pair that could not exist, and pass for a reason
+    ///      the real pair would never produce.
     function sync() external {
-        reserve0 = uint112(IERC20(token0).balanceOf(address(this)));
-        reserve1 = uint112(IERC20(token1).balanceOf(address(this)));
+        uint256 balance0 = IERC20(token0).balanceOf(address(this));
+        uint256 balance1 = IERC20(token1).balanceOf(address(this));
+        require(balance0 <= type(uint112).max && balance1 <= type(uint112).max, "UniswapV2: OVERFLOW");
+        reserve0 = uint112(balance0);
+        reserve1 = uint112(balance1);
     }
 
     function skim(address to) external {
