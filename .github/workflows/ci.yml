@@ -111,12 +111,20 @@ jobs:
           test -n "$block" || { echo "FORK_BLOCK not found in ForkTestBase.sol"; exit 1; }
           echo "block=$block" >> "$GITHUB_OUTPUT"
 
+      # Restore the newest snapshot for this block, then save a fresh one under a key no earlier run
+      # can already hold. actions/cache skips its save step on an exact key hit, so a key derived
+      # only from the block — a constant — is written once and never again: the entry keeps whatever
+      # the suite happened to touch that day, and every slot reached by a test added afterwards is
+      # fetched live on every run from then on. That is how a cache meant to prevent live reads ends
+      # up guaranteeing them, and it is why the reads that time out are the ones belonging to the
+      # most recently added pools. Suffixing the run id makes each save a miss, so the snapshot
+      # accumulates rather than freezing.
       - name: Cache fork RPC responses
         uses: actions/cache@v4
         with:
           path: ~/.foundry/cache/rpc
-          key: rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}
-          restore-keys: rpc-${{ runner.os }}-
+          key: rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}-${{ github.run_id }}
+          restore-keys: rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}-
 
       - name: Fork tests
         env:
