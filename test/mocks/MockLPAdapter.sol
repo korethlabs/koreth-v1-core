@@ -197,4 +197,19 @@ contract MockLPAdapter is ILPAdapter {
     function supportsFeeCollection() external view override returns (bool) {
         return _feeCollectionSet ? _overrideFeeCollection : _lpType == LPType.UniswapV3;
     }
+
+    // Holdings measure. Reports the pool's plain token balances against the configured pair, which
+    // is what a real V3 adapter does; the V2 cap at reserves is a property of UniswapV2Adapter and
+    // is tested there against a pair that actually keeps reserves, not against this mock.
+    function poolHoldings(address pool)
+        external
+        view
+        override
+        returns (address token0, address token1, uint256 amount0, uint256 amount1)
+    {
+        token0 = token0Return;
+        token1 = token1Return;
+        amount0 = IERC20(token0Return).balanceOf(pool);
+        amount1 = IERC20(token1Return).balanceOf(pool);
+    }
 }

@@ -105,4 +105,12 @@ contract CurveAdapter is ILPAdapter {
     function supportsFeeCollection() external pure returns (bool) {
         return false; // Phase 2 — not yet implemented
     }
+
+    /// @inheritdoc ILPAdapter
+    /// @dev A Curve pool holds N tokens, not two, and its balances are tracked per coin index, so
+    ///      the two-token shape here has no answer for it. Reverts rather than returning a pair,
+    ///      which would silently measure a stablepool by two of its legs.
+    function poolHoldings(address) external pure returns (address, address, uint256, uint256) {
+        revert("NOT_IMPLEMENTED");
+    }
 }

@@ -9,6 +9,9 @@ import {PoolLiquidityMonitor} from "../../src/oracle/PoolLiquidityMonitor.sol";
 import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {IERC20} from "../../src/interfaces/IERC20.sol";
+import {UniswapV2Adapter} from "../../src/adapters/UniswapV2Adapter.sol";
+import {UniswapV3Adapter} from "../../src/adapters/UniswapV3Adapter.sol";
+import {CurveAdapter} from "../../src/adapters/CurveAdapter.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {TestPricing} from "../helpers/TestPricing.sol";
 
@@ -95,6 +98,19 @@ contract PoolLiquidityMonitorTest is Test {
         monitor = new PoolLiquidityMonitor(address(core), address(circuitBreaker));
         aclManager.addKeeper(address(monitor));
         aclManager.addKeeper(keeper);
+
+        // The real adapters, not mocks: the measure under test lives in them, and a mock would only
+        // re-state the expected answer. Their factory and router addresses are never reached — the
+        // holdings measure reads the pool itself — so any non-zero address satisfies the constructors.
+        core.registerAdapter(
+            ILPAdapter.LPType.UniswapV2,
+            address(new UniswapV2Adapter(makeAddr("v2Factory"), makeAddr("v2Router"), address(core)))
+        );
+        core.registerAdapter(
+            ILPAdapter.LPType.UniswapV3,
+            address(new UniswapV3Adapter(makeAddr("nftManager"), makeAddr("v3Factory"), address(core)))
+        );
+
         // The monitor measures a pool by what its AMM makes measurable, so it needs the pool listed
         // with the AMM it belongs to before it can judge one.
         core.whitelistLpPool(address(pool), ILPAdapter.LPType.UniswapV3);
@@ -287,16 +303,47 @@ contract PoolLiquidityMonitorTest is Test {
         assertEq(monitor.poolTvlUsd(address(pool)), 2_500_000e18);
     }
 
-    /// @dev A pool listed under an AMM this contract has no measure for is not judged at all. The
+    /// @dev A pool whose adapter has not defined a measure for its AMM is not judged at all. The
     ///      alternative is falling back to balances, which is the reading this change exists to stop
-    ///      relying on — an AMM nobody has looked at is the last place to assume it is safe.
-    function test_poolTvlUsd_revertsForAnAmmWithNoDefinedMeasure() public {
+    ///      relying on — an AMM nobody has looked at is the last place to assume it is safe. Curve's
+    ///      adapter is a stub whose every method reverts, and the measure reverts with it rather than
+    ///      being the one method a stub answers.
+    function test_poolTvlUsd_revertsForAnAmmWhoseAdapterHasNoMeasure() public {
         MockPool curvePool = new MockPool(address(weth), address(usdc));
-        vm.prank(owner);
+        vm.startPrank(owner);
+        core.registerAdapter(
+            ILPAdapter.LPType.Curve, address(new CurveAdapter(makeAddr("curveRegistry"), address(core)))
+        );
         core.whitelistLpPool(address(curvePool), ILPAdapter.LPType.Curve);
+        vm.stopPrank();
 
-        vm.expectRevert("LP_TYPE_NOT_MEASURABLE");
+        vm.expectRevert("NOT_IMPLEMENTED");
         monitor.poolTvlUsd(address(curvePool));
+    }
+
+    /// @dev The AMM is declared by a pool admin at listing and nothing cross-checks it, so a
+    ///      mislabelled pool has to fail closed rather than be measured by the wrong rules. A V3 pool
+    ///      listed as V2 reaches UniswapV2Adapter, which asks it for reserves it does not keep, and
+    ///      the read reverts instead of quietly measuring a pool by a figure that is not there.
+    function test_poolTvlUsd_revertsForAPoolListedUnderTheWrongAmm() public {
+        MockPool mislabelled = new MockPool(address(weth), address(usdc));
+        weth.mint(address(mislabelled), 500e18);
+        vm.prank(owner);
+        core.whitelistLpPool(address(mislabelled), ILPAdapter.LPType.UniswapV2);
+
+        vm.expectRevert();
+        monitor.poolTvlUsd(address(mislabelled));
+    }
+
+    /// @dev And an AMM with no adapter at all fails at the lookup, before any pool is touched. Both
+    ///      routes end the same way: nothing is measured, so nothing is pronounced healthy.
+    function test_poolTvlUsd_revertsForAnAmmWithNoAdapterRegistered() public {
+        MockPool aeroPool = new MockPool(address(weth), address(usdc));
+        vm.prank(owner);
+        core.whitelistLpPool(address(aeroPool), ILPAdapter.LPType.Aerodrome);
+
+        vm.expectRevert("ADAPTER_NOT_FOUND");
+        monitor.poolTvlUsd(address(aeroPool));
     }
 
     /// @dev And a pool nobody listed is not judged either, rather than being read as the zero enum

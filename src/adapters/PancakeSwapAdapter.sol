@@ -112,4 +112,13 @@ contract PancakeSwapAdapter is ILPAdapter {
     function supportsFeeCollection() external pure returns (bool) {
         return false; // Phase 2 — not yet implemented
     }
+
+    /// @inheritdoc ILPAdapter
+    /// @dev PancakeSwap's V2 and V3 pools are forks of the Uniswap ones and would be measured the
+    ///      same way, branching on isV3 as lpType() above does. Left reverting with the rest of this
+    ///      stub rather than implemented ahead of the paths that would deposit into it: a measure
+    ///      that answers for pools no other method here can accept is untestable end to end.
+    function poolHoldings(address) external pure returns (address, address, uint256, uint256) {
+        revert("NOT_IMPLEMENTED");
+    }
 }

@@ -127,4 +127,25 @@ interface ILPAdapter {
     ///      reserves and are never held separately. The liquidation path consults this so a partial
     ///      seize sweeps a fee-bearing adapter automatically, instead of matching a hardcoded type.
     function supportsFeeCollection() external view returns (bool);
+
+    /// @notice How much of each token a pool of this AMM actually holds, in token units.
+    /// @dev The liquidity floor asks this instead of reading balances itself, because "how much does
+    ///      this pool hold" has a different answer per AMM and only the adapter for that AMM knows
+    ///      it. A V2 pair's balance can be inflated by a donation the pair does not own and hands
+    ///      back via skim(); a V3 pool holds its liquidity as plain balances across ticks. An AMM
+    ///      whose measure is not yet defined reverts, so a pool the protocol cannot measure is never
+    ///      answered with a number that merely looks like one.
+    ///
+    ///      Returns which tokens as well as how much, so the pairing is made once, by the contract
+    ///      that knows the AMM, rather than by each caller re-deriving it and risking an amount
+    ///      attributed to the wrong token.
+    /// @param pool The AMM pool or pair to measure
+    /// @return token0 First token of the pair
+    /// @return token1 Second token of the pair
+    /// @return amount0 Amount of token0 the pool holds
+    /// @return amount1 Amount of token1 the pool holds
+    function poolHoldings(address pool)
+        external
+        view
+        returns (address token0, address token1, uint256 amount0, uint256 amount1);
 }

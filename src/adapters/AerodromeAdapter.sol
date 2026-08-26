@@ -90,4 +90,12 @@ contract AerodromeAdapter is ILPAdapter {
     function supportsFeeCollection() external pure returns (bool) {
         return false; // Phase 2 — not yet implemented
     }
+
+    /// @inheritdoc ILPAdapter
+    /// @dev Aerodrome pools are Solidly forks, whose getReserves() returns uint256 where a Uniswap
+    ///      V2 pair returns uint112 — a different ABI, so the V2 measure cannot simply be reused
+    ///      here. Reverts until this adapter is implemented against it.
+    function poolHoldings(address) external pure returns (address, address, uint256, uint256) {
+        revert("NOT_IMPLEMENTED");
+    }
 }

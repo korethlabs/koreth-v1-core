@@ -69,6 +69,10 @@ contract ProtocolCore {
     ///      a V3 pool's means reading token balances. Recording the answer when a pool admin lists
     ///      the pool costs one slot; the alternative is every consumer inferring it from which call
     ///      happens to revert, which is a guess that gets less reliable with each AMM integrated.
+    ///
+    ///      What a consumer does with the answer is look up adapters[lpType] and ask that adapter,
+    ///      which is where AMM-specific behaviour already lives. So this maps a pool to the contract
+    ///      that knows how to read it, not to a branch every caller has to carry.
     mapping(address => uint8) private lpPoolType;
 
     // --- Shared Registry Addresses ---
@@ -242,9 +246,10 @@ contract ProtocolCore {
     ///      lpType is declared by the pool admin, not derived, and is not cross-checked against the
     ///      pool: there is no call every AMM answers that would confirm it. Declaring the wrong one
     ///      is a listing error with the same reach as listing the wrong address, which this role can
-    ///      already do. Consumers that branch on the type should fail closed when the pool does not
-    ///      behave as the declared type — see PoolLiquidityMonitor, where a V3 pool listed as V2
-    ///      makes the liquidity read revert rather than fall back to a weaker measure.
+    ///      already do. The adapter a consumer reaches through the type should fail closed when the
+    ///      pool does not behave as declared — see PoolLiquidityMonitor, where a V3 pool listed as
+    ///      V2 sends the liquidity read to UniswapV2Adapter, whose getReserves() call the pool has
+    ///      no answer for, so the read reverts rather than falling back to a weaker measure.
     /// @param pool The AMM pool address
     /// @param lpType The AMM the pool belongs to — permanent for this address once set
     function whitelistLpPool(address pool, ILPAdapter.LPType lpType) external onlyPoolAdmin {
