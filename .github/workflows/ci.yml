@@ -124,7 +124,16 @@ jobs:
         with:
           path: ~/.foundry/cache/rpc
           key: rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}-${{ github.run_id }}
-          restore-keys: rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}-
+          # First prefix takes the newest rolling entry. Second is the key this scheme replaces,
+          # which the first cannot match for want of its trailing separator — without it the run
+          # that adopts the scheme starts cold and fetches the whole suite live, the failure being
+          # fixed here. Its contents are still sound: the responses are reads of a pinned block, so
+          # they cannot go out of date, only fall behind what the suite now touches. Kept separate
+          # rather than dropping the separator from the first, which would also match a longer block
+          # number that happens to start with this one.
+          restore-keys: |
+            rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}-
+            rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}
 
       - name: Fork tests
         env:
