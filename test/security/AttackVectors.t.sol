@@ -22,6 +22,51 @@ import {TestPricing} from "../helpers/TestPricing.sol";
 import {PriceFeedRegistry} from "../../src/oracle/PriceFeedRegistry.sol";
 import {TestPools} from "../helpers/TestPools.sol";
 import {TestSecurity} from "../helpers/TestSecurity.sol";
+import {IPositionManager} from "../../src/interfaces/IPositionManager.sol";
+import {FeeCollector} from "../../src/core/FeeCollector.sol";
+import {IERC20} from "../../src/interfaces/IERC20.sol";
+
+/// @notice Stands in for an attacker-deployed contract named as the protocol-fee recipient.
+/// @dev Shares FeeCollector's collectFee signature, because that is what PositionManager calls on
+///      whatever address the parameter names. It pulls the approval it was just granted, which is
+///      the whole point: naming this address turns a compound into an approve plus an external call
+///      made by PositionManager to a target the caller picked.
+contract FeeSiphon {
+    uint256 public callCount;
+
+    function collectFee(address token, uint256 amount, address from, string calldata) external {
+        callCount++;
+        IERC20(token).transferFrom(from, address(this), amount);
+    }
+}
+
+/// @notice Shaped like the periphery CompoundSwapRouter: compounds a position and takes the dust
+///         itself so it can swap it before returning the proceeds to the owner.
+/// @dev Deliberately without CompoundSwapRouter's `msg.sender == positionManager` guard, so the same
+///      contract can also be pointed at a position outside a transform — which is what proves the
+///      transformer branch is scoped to a live transform rather than to the contract's role.
+contract CompoundingTransformer {
+    PositionManager public immutable pm;
+
+    constructor(address _pm) {
+        pm = PositionManager(_pm);
+    }
+
+    function compound(uint256 positionId, address feeCollector, address rewardRecipient) external {
+        pm.compoundFees(
+            IPositionManager.CompoundFeesParams({
+                positionId: positionId,
+                protocolFeeRecipient: feeCollector,
+                protocolFeeBps: 200,
+                callerRewardRecipient: rewardRecipient,
+                callerRewardBps: 50,
+                minFeeThreshold: 0,
+                dustRefundTo: address(this), // dust lands here so it can be swapped
+                maxSlippageBps: 0
+            })
+        );
+    }
+}
 
 /// @title AttackVectorTests
 /// @notice Security tests covering the 10 Tier 2 attack vectors from docs/security/attack-vectors.md
@@ -38,6 +83,7 @@ contract AttackVectorTests is Test {
     MockLPOracle public oracle;
     MockLendingPool public market;
     RiskManager public riskManager;
+    FeeCollector public feeCollector;
     MockERC20 public usdc;
     MockERC20 public weth;
 
@@ -122,7 +168,9 @@ contract AttackVectorTests is Test {
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
         pm.setLendingEngine(address(le));
         pm.setCircuitBreaker(address(circuitBreaker));
-        TestSecurity.wireFeeCollector(core, liq, makeAddr("treasury"));
+        feeCollector = TestSecurity.wireFeeCollector(core, liq, makeAddr("treasury"));
+        // compoundFees pins the protocol-fee leg to this address, mirroring the deploy script.
+        pm.setFeeCollector(address(feeCollector));
         vm.stopPrank();
 
         // Fund market with liquidity
@@ -458,5 +506,233 @@ contract AttackVectorTests is Test {
         assertLt(rateAt50, normalIrm.MAX_RATE_PER_SECOND(), "Normal rate should be below cap");
         assertLt(rateAt100, normalIrm.MAX_RATE_PER_SECOND(), "High util rate should still be below cap");
         assertGt(rateAt100, rateAt50, "Higher util should have higher rate");
+    }
+
+    // ========== compoundFees: value destinations named by the caller ==========
+    //
+    // compoundFees takes its whole parameter struct from the caller. Three fields name a place value
+    // goes, and they are not the same kind of thing:
+    //   - callerRewardRecipient is the caller's own compensation, bounded by MAX_COMPOUND_FEE_BPS —
+    //     the caller is meant to choose it, and these tests check it still can;
+    //   - protocolFeeRecipient is protocol revenue, and PositionManager approves and calls it;
+    //   - dustRefundTo receives whatever of the position's own share could not be redeposited, which
+    //     is bounded by nothing at all when the pool ratio is skewed.
+
+    uint256 internal constant COMPOUND_FEE0 = 10e18; // WETH fees collected
+    uint256 internal constant COMPOUND_FEE1 = 10_000e18; // USDC fees collected
+    uint256 internal constant PROTOCOL_FEE_BPS = 200;
+    uint256 internal constant CALLER_REWARD_BPS = 50;
+    uint256 internal constant ABSORBED_BPS = 1000; // position takes 10% — the rest is dust
+
+    /// @dev Arm the adapter so a compound collects real fees and leaves most of the reinvestment
+    ///      unplaceable, the way an out-of-range V3 position does.
+    function _armCompound() internal {
+        adapter.setMockFees(COMPOUND_FEE0, COMPOUND_FEE1);
+        adapter.setAddLiquidityUsedBps(ABSORBED_BPS);
+    }
+
+    function _reinvested(uint256 fees) internal pure returns (uint256) {
+        return fees - (fees * PROTOCOL_FEE_BPS) / 10_000 - (fees * CALLER_REWARD_BPS) / 10_000;
+    }
+
+    function _expectedDust(uint256 fees) internal pure returns (uint256) {
+        uint256 reinvest = _reinvested(fees);
+        return reinvest - (reinvest * ABSORBED_BPS) / 10_000;
+    }
+
+    function _compoundParams(
+        uint256 positionId,
+        address protocolFeeRecipient,
+        address callerRewardRecipient,
+        address dustRefundTo
+    )
+        internal
+        pure
+        returns (IPositionManager.CompoundFeesParams memory)
+    {
+        return IPositionManager.CompoundFeesParams({
+            positionId: positionId,
+            protocolFeeRecipient: protocolFeeRecipient,
+            protocolFeeBps: PROTOCOL_FEE_BPS,
+            callerRewardRecipient: callerRewardRecipient,
+            callerRewardBps: CALLER_REWARD_BPS,
+            minFeeThreshold: 0,
+            dustRefundTo: dustRefundTo,
+            // Zero disables the reinvestment slippage guard entirely, so nothing downstream limits
+            // how little of the reinvestment has to be placed.
+            maxSlippageBps: 0
+        });
+    }
+
+    function _revertReason(bytes memory ret) internal pure returns (string memory) {
+        if (ret.length < 68) return "";
+        bytes memory trimmed = new bytes(ret.length - 4);
+        for (uint256 i = 0; i < trimmed.length; i++) {
+            trimmed[i] = ret[i + 4];
+        }
+        return abi.decode(trimmed, (string));
+    }
+
+    function _makeKeeper(string memory name) internal returns (address keeper) {
+        keeper = makeAddr(name);
+        vm.prank(owner);
+        aclManager.addKeeper(keeper);
+    }
+
+    /// @notice A keeper cannot name itself as the dust recipient of somebody else's position.
+    /// @dev The fee legs are capped at MAX_COMPOUND_FEE_BPS, but dust is the remainder of the
+    ///      position's own share after those legs are paid. Whenever the pool ratio leaves most of
+    ///      the reinvestment unplaceable, that remainder dwarfs the bounded reward — which is the
+    ///      whole gap this closes.
+    function test_attack_compoundFees_keeperCannotRedirectDustToItself() public {
+        uint256 posId = _deposit(alice);
+        address attacker = _makeKeeper("dustKeeper");
+        _armCompound();
+
+        vm.prank(attacker);
+        (bool ok, bytes memory ret) = address(pm)
+            .call(
+                abi.encodeCall(
+                    PositionManager.compoundFees, (_compoundParams(posId, address(feeCollector), attacker, attacker))
+                )
+            );
+
+        console.log("compound accepted:              ", ok);
+        console.log("attacker WETH taken as dust:    ", weth.balanceOf(attacker));
+        console.log("attacker USDC taken as dust:    ", usdc.balanceOf(attacker));
+        console.log("bounded caller reward, WETH:    ", (COMPOUND_FEE0 * CALLER_REWARD_BPS) / 10_000);
+        console.log("bounded caller reward, USDC:    ", (COMPOUND_FEE1 * CALLER_REWARD_BPS) / 10_000);
+        console.log("dust reachable this way, WETH:  ", _expectedDust(COMPOUND_FEE0));
+        console.log("dust reachable this way, USDC:  ", _expectedDust(COMPOUND_FEE1));
+
+        assertFalse(ok, "dust may not be sent outside the position");
+        assertEq(_revertReason(ret), "INVALID_DUST_RECIPIENT", "wrong revert reason");
+        assertEq(weth.balanceOf(attacker), 0, "attacker must receive no token0");
+        assertEq(usdc.balanceOf(attacker), 0, "attacker must receive no token1");
+    }
+
+    /// @notice A keeper cannot point the protocol-fee leg at a contract of its own.
+    /// @dev That leg is protocol revenue by definition, and paying it means PositionManager approves
+    ///      the named address and then calls it — an approve and an external call to a caller-chosen
+    ///      target. The caller's compensation is the reward leg, not this one.
+    function test_attack_compoundFees_keeperCannotNameArbitraryFeeRecipient() public {
+        uint256 posId = _deposit(alice);
+        address attacker = _makeKeeper("feeKeeper");
+        FeeSiphon siphon = new FeeSiphon();
+        _armCompound();
+
+        vm.prank(attacker);
+        (bool ok, bytes memory ret) = address(pm)
+            .call(
+                abi.encodeCall(PositionManager.compoundFees, (_compoundParams(posId, address(siphon), attacker, alice)))
+            );
+
+        console.log("compound accepted:              ", ok);
+        console.log("calls made into the siphon:     ", siphon.callCount());
+        console.log("siphon WETH balance:            ", weth.balanceOf(address(siphon)));
+        console.log("siphon USDC balance:            ", usdc.balanceOf(address(siphon)));
+
+        assertFalse(ok, "protocol fee may only go to the configured collector");
+        assertEq(_revertReason(ret), "INVALID_FEE_RECIPIENT", "wrong revert reason");
+        assertEq(siphon.callCount(), 0, "PositionManager must not call a caller-chosen contract");
+        assertEq(weth.balanceOf(address(siphon)), 0, "siphon must receive no token0");
+        assertEq(usdc.balanceOf(address(siphon)), 0, "siphon must receive no token1");
+        assertEq(weth.allowance(address(pm), address(siphon)), 0, "no approval to a caller-chosen target");
+    }
+
+    /// @notice The honest keeper path is unaffected: dust to the owner, reward to the keeper's own
+    ///         address, protocol fee to the configured collector.
+    function test_compoundFees_ownerDustPath_stillWorks() public {
+        uint256 posId = _deposit(alice);
+        address keeper = _makeKeeper("honestKeeper");
+        // The reward recipient is still free-form — a bot routinely banks it somewhere else.
+        address rewardSink = makeAddr("keeperRewardSink");
+        _armCompound();
+
+        vm.prank(keeper);
+        pm.compoundFees(_compoundParams(posId, address(feeCollector), rewardSink, alice));
+
+        console.log("owner WETH dust:                ", weth.balanceOf(alice));
+        console.log("owner USDC dust:                ", usdc.balanceOf(alice));
+        console.log("keeper reward WETH:             ", weth.balanceOf(rewardSink));
+        console.log("keeper reward USDC:             ", usdc.balanceOf(rewardSink));
+
+        assertEq(weth.balanceOf(alice), _expectedDust(COMPOUND_FEE0), "owner must receive the token0 dust");
+        assertEq(usdc.balanceOf(alice), _expectedDust(COMPOUND_FEE1), "owner must receive the token1 dust");
+        assertEq(
+            weth.balanceOf(rewardSink),
+            (COMPOUND_FEE0 * CALLER_REWARD_BPS) / 10_000,
+            "caller reward in token0 must be untouched"
+        );
+        assertEq(
+            usdc.balanceOf(rewardSink),
+            (COMPOUND_FEE1 * CALLER_REWARD_BPS) / 10_000,
+            "caller reward in token1 must be untouched"
+        );
+        assertEq(
+            weth.balanceOf(address(feeCollector)),
+            (COMPOUND_FEE0 * PROTOCOL_FEE_BPS) / 10_000,
+            "protocol fee in token0 must reach the collector"
+        );
+        assertEq(
+            usdc.balanceOf(address(feeCollector)),
+            (COMPOUND_FEE1 * PROTOCOL_FEE_BPS) / 10_000,
+            "protocol fee in token1 must reach the collector"
+        );
+    }
+
+    /// @notice The transformer the owner authorized may still take the dust, which is how the
+    ///         periphery swap router reaches out-of-range dust before returning it to the owner.
+    function test_compoundFees_activeTransformerDustPath_stillWorks() public {
+        uint256 posId = _deposit(alice);
+        CompoundingTransformer transformer = new CompoundingTransformer(address(pm));
+        vm.startPrank(owner);
+        aclManager.addTransformer(address(transformer));
+        aclManager.addKeeper(address(transformer));
+        vm.stopPrank();
+        _armCompound();
+
+        address rewardSink = makeAddr("transformerRewardSink");
+        vm.prank(alice);
+        pm.transform(
+            posId,
+            address(transformer),
+            abi.encodeCall(CompoundingTransformer.compound, (posId, address(feeCollector), rewardSink))
+        );
+
+        console.log("transformer WETH dust:          ", weth.balanceOf(address(transformer)));
+        console.log("transformer USDC dust:          ", usdc.balanceOf(address(transformer)));
+
+        assertEq(
+            weth.balanceOf(address(transformer)),
+            _expectedDust(COMPOUND_FEE0),
+            "authorized transformer must receive the token0 dust"
+        );
+        assertEq(
+            usdc.balanceOf(address(transformer)),
+            _expectedDust(COMPOUND_FEE1),
+            "authorized transformer must receive the token1 dust"
+        );
+    }
+
+    /// @notice Holding the transformer role is not enough — the owner's transform must be running.
+    /// @dev Otherwise a whitelisted transformer with KEEPER could drain dust from any position on
+    ///      its own initiative, which is the same hole under a different address.
+    function test_attack_compoundFees_transformerCannotTakeDustOutsideTransform() public {
+        uint256 posId = _deposit(alice);
+        CompoundingTransformer transformer = new CompoundingTransformer(address(pm));
+        vm.startPrank(owner);
+        aclManager.addTransformer(address(transformer));
+        aclManager.addKeeper(address(transformer));
+        vm.stopPrank();
+        _armCompound();
+
+        // Called directly rather than through transform(): transformedPositionId is 0, so the
+        // contract is nobody's active transformer.
+        vm.expectRevert("INVALID_DUST_RECIPIENT");
+        transformer.compound(posId, address(feeCollector), makeAddr("outsideRewardSink"));
+
+        assertEq(weth.balanceOf(address(transformer)), 0, "no token0 dust outside a transform");
+        assertEq(usdc.balanceOf(address(transformer)), 0, "no token1 dust outside a transform");
     }
 }

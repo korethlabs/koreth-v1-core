@@ -270,6 +270,9 @@ abstract contract DeployBase is Script {
         // the protocol's share of each liquidation bonus went entirely to the liquidator, and a
         // bad-debt writeoff paid the swept fees to the defaulting borrower.
         liquidationEngine.setFeeCollector(address(feeCollector));
+        // compoundFees pins the protocol-fee leg to this address, so an unwired PositionManager
+        // cannot compound with a protocol fee at all.
+        positionManager.setFeeCollector(address(feeCollector));
         core.setPriceFeedRegistry(address(priceFeedRegistry));
         core.setRiskManager(address(riskManager));
 
