@@ -1030,6 +1030,205 @@ contract LiquidationEngineTest is Test {
         assertGe(usdc.balanceOf(collector) - colUsdcBefore, expectedRefund1, "over-seize USDC routed to protocol");
     }
 
+    // ========== Routing by post-seize solvency: swept fees + over-seize refund ==========
+
+    /// @dev A V3-typed adapter whose uncollected fees sit outside the principal the oracle values.
+    ///      Declared here rather than in setUp() because only this group of tests needs it.
+    MockLPAdapter public v3Adapter;
+    address public v3LpToken = makeAddr("v3LpToken");
+
+    /// Uncollected fees the position has accrued: WETH (token0) and USDC (token1).
+    uint256 internal constant V3_FEE0 = 3e18;
+    uint256 internal constant V3_FEE1 = 3000e18;
+
+    /// @notice Register a V3 adapter holding uncollected fees and open a borrowing position on it.
+    /// @dev Concentrated-liquidity fees are the only value the engine ever sweeps, so the routing
+    ///      under test is only reachable through such a position. Liquidity and unwind output mirror
+    ///      the V2 harness — 100e18 of liquidity worth 25 WETH + 25,000 USDC — so at a $30k oracle
+    ///      value the unwind realizes exactly the seize target and the over-seize clamp stays out of
+    ///      the way unless a test moves the WETH feed on purpose.
+    function _openV3PositionWithFees(
+        uint256 borrowAmount,
+        uint256 healthyPrice,
+        uint256 crashPrice
+    )
+        internal
+        returns (uint256 posId)
+    {
+        v3Adapter = new MockLPAdapter(ILPAdapter.LPType.UniswapV3);
+        v3Adapter.setSupportedToken(v3LpToken, true);
+        v3Adapter.setTokenReturns(address(weth), address(usdc));
+        v3Adapter.setUnwindAmounts(25e18, 25_000e18);
+        v3Adapter.setTotalLiquidity(100e18);
+        v3Adapter.setMockLiquidity(100e18); // V3 reads liquidity from the NFT, not from pos.amount
+        v3Adapter.setMockFees(V3_FEE0, V3_FEE1);
+        weth.mint(address(v3Adapter), 1_000_000e18);
+        usdc.mint(address(v3Adapter), 1_000_000e18);
+
+        vm.startPrank(owner);
+        core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(v3Adapter));
+        core.registerOracle(ILPAdapter.LPType.UniswapV3, address(oracle));
+        core.whitelistLpPool(TestPools.asContract(v3LpToken), ILPAdapter.LPType.UniswapV3);
+        riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.defaultConfig());
+        vm.stopPrank();
+
+        oracle.setPrice(healthyPrice);
+        vm.prank(alice);
+        posId = pm.deposit(v3LpToken, 42, 0, borrowAsset); // V3: tokenId = 42, amount = 0
+        vm.roll(block.number + 3);
+        vm.prank(alice);
+        le.borrow(posId, borrowAmount);
+        oracle.setPrice(crashPrice);
+    }
+
+    /// @dev The hole this group exists to close. A position whose collateral no longer covers its
+    ///      debt can be liquidated for a token amount first: the repay is too small to exhaust the
+    ///      collateral, so the call ends in the residual branch rather than the writeoff. Routing on
+    ///      "did THIS call write off the debt" therefore reads as a normal liquidation and hands the
+    ///      entire swept fee balance to the borrower — and since liquidation is the only path that
+    ///      ever pays those fees out, the writeoff that follows finds nothing left to claim.
+    ///      Routing on "are the lenders short" instead sends them to the FeeCollector.
+    ///      $30k of collateral against $40k of debt: short by $10k, yet far above the dust threshold.
+    function test_liquidate_residualInsolvency_routesSweptFeesToProtocol() public {
+        uint256 posId = _openV3PositionWithFees(40_000e18, 100_000e18, 30_000e18);
+
+        (bool canLiq, uint256 maxRepay) = liq.isLiquidatable(posId);
+        assertTrue(canLiq, "position must be liquidatable");
+        uint256 dustRepay = 1e18; // $1 against a $40k debt — deliberately too small to close anything
+        assertLe(dustRepay, maxRepay, "dust repay must be within maxRepay");
+
+        address collector = address(liq.feeCollector());
+        uint256 aliceWethBefore = weth.balanceOf(alice);
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+        uint256 colWethBefore = weth.balanceOf(collector);
+        uint256 colUsdcBefore = usdc.balanceOf(collector);
+
+        usdc.mint(liquidator, dustRepay);
+        vm.startPrank(liquidator);
+        usdc.approve(address(liq), dustRepay);
+        liq.liquidate(posId, dustRepay, block.timestamp + 1 hours, 0, 0);
+        vm.stopPrank();
+
+        // The call really did land in the residual branch: debt survives, the collateral is still
+        // above dust and the position was never closed, so no writeoff ran on this call.
+        assertGt(le.getDebt(posId), 0, "debt still outstanding");
+        assertGt(pm.getPositionValue(posId), liq.DUST_THRESHOLD_USD(), "collateral above dust: not a writeoff");
+        IPositionManager.Position memory posAfter = pm.getPosition(posId);
+        assertTrue(
+            posAfter.status != IPositionManager.PositionStatus.Liquidated, "position still open: residual branch"
+        );
+
+        // The lenders are short, so the swept fees offset that instead of paying the borrower.
+        assertEq(weth.balanceOf(alice), aliceWethBefore, "borrower keeps none of the swept WETH fees");
+        assertEq(usdc.balanceOf(alice), aliceUsdcBefore, "borrower keeps none of the swept USDC fees");
+        // >= because the Step 8 protocol fee on the seized principal also lands in the collector.
+        assertGe(weth.balanceOf(collector) - colWethBefore, V3_FEE0, "swept WETH fees routed to the protocol");
+        assertGe(usdc.balanceOf(collector) - colUsdcBefore, V3_FEE1, "swept USDC fees routed to the protocol");
+    }
+
+    /// @dev The other side of the predicate: liquidatable is not the same as underwater. At a 75%
+    ///      liquidation threshold a position with $30k of collateral against $25k of debt has HF 0.9
+    ///      — liquidatable — while the collateral still covers the debt in full. Nothing is being
+    ///      taken from the lenders, so both the swept fees and the over-seize refund stay the
+    ///      borrower's. WETH is marked to $400 so the unwind over-realizes and the clamp fires,
+    ///      putting a refund on the same routing decision as the fees.
+    function test_liquidate_solventPartial_routesSweptFeesAndRefundToBorrower() public {
+        uint256 posId = _openV3PositionWithFees(25_000e18, 100_000e18, 30_000e18);
+
+        vm.prank(owner);
+        TestPricing.feedFor(priceRegistry, address(weth)).setAnswer(400e18);
+
+        (bool canLiq, uint256 maxRepay) = liq.isLiquidatable(posId);
+        assertTrue(canLiq, "position must be liquidatable");
+        uint256 repayAmount = 1e18;
+        assertLe(repayAmount, maxRepay, "repay must be within maxRepay");
+
+        // target = 1.05e18. liquidityToRemove = 100e18 * 1.05e18 / 30_000e18 = 3.5e15
+        // → unwind 8.75e14 WETH + 8.75e17 USDC; realized @ Chainlink = 3.5e17 + 8.75e17 = 1.225e18.
+        // keep = amount * 1.05e18 / 1.225e18 → refund0 = 1.25e14 WETH, refund1 = 1.25e17 USDC.
+        uint256 expectedRefund0 = 8.75e14 - (8.75e14 * 1.05e18) / 1.225e18;
+        uint256 expectedRefund1 = 8.75e17 - (8.75e17 * 1.05e18) / 1.225e18;
+        assertGt(expectedRefund0, 0, "clamp must engage for this test to mean anything");
+
+        uint256 aliceWethBefore = weth.balanceOf(alice);
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+
+        usdc.mint(liquidator, repayAmount);
+        vm.startPrank(liquidator);
+        usdc.approve(address(liq), repayAmount);
+        vm.expectEmit(true, false, false, true, address(liq));
+        emit LiquidationOverSeizeRefunded(posId, expectedRefund0, expectedRefund1);
+        liq.liquidate(posId, repayAmount, block.timestamp + 1 hours, 0, 0);
+        vm.stopPrank();
+
+        // Residual branch again — but this time the collateral still covers the debt.
+        assertGt(le.getDebt(posId), 0, "debt still outstanding");
+        assertGt(pm.getPositionValue(posId), le.getDebt(posId), "collateral still covers the debt");
+
+        assertEq(weth.balanceOf(alice) - aliceWethBefore, V3_FEE0 + expectedRefund0, "borrower keeps WETH fees+refund");
+        assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, V3_FEE1 + expectedRefund1, "borrower keeps USDC fees+refund");
+    }
+
+    /// @dev Unchanged path: the debt is repaid in full, so there is no shortfall to offset and the
+    ///      swept fees go back to the borrower along with the position. WETH stays at its consistent
+    ///      $200 here, so the unwind realizes exactly the seize target and no refund is produced —
+    ///      isolating the fee leg.
+    function test_liquidate_fullRepay_routesSweptFeesToBorrower() public {
+        uint256 posId = _openV3PositionWithFees(25_000e18, 100_000e18, 30_000e18);
+
+        (bool canLiq, uint256 maxRepay) = liq.isLiquidatable(posId);
+        assertTrue(canLiq, "position must be liquidatable");
+        uint256 totalDebt = le.getDebt(posId);
+        assertEq(maxRepay, totalDebt, "HF below the critical threshold allows a full repay");
+
+        uint256 aliceWethBefore = weth.balanceOf(alice);
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+
+        usdc.mint(liquidator, totalDebt);
+        vm.startPrank(liquidator);
+        usdc.approve(address(liq), totalDebt);
+        liq.liquidate(posId, totalDebt, block.timestamp + 1 hours, 0, 0);
+        vm.stopPrank();
+
+        assertEq(le.getDebt(posId), 0, "debt fully cleared");
+        assertEq(weth.balanceOf(alice) - aliceWethBefore, V3_FEE0, "borrower receives the swept WETH fees");
+        assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, V3_FEE1, "borrower receives the swept USDC fees");
+    }
+
+    /// @dev Unchanged path: the collateral collapses below the dust threshold, so the remaining debt
+    ///      is written off and the lenders eat it. Both the swept fees and the over-seize refund go
+    ///      to the FeeCollector, exactly as before — the new predicate must not soften the writeoff.
+    function test_liquidate_fullWriteoff_routesSweptFeesToProtocol() public {
+        uint256 posId = _openV3PositionWithFees(40_000e18, 100_000e18, 0.5e18);
+
+        (bool canLiq, uint256 maxRepay) = liq.isLiquidatable(posId);
+        assertTrue(canLiq, "position must be liquidatable");
+        uint256 repayAmount = 5000e18; // partial: debt survives the repay and is written off
+        assertLe(repayAmount, maxRepay, "repay must be within maxRepay");
+
+        address collector = address(liq.feeCollector());
+        uint256 aliceWethBefore = weth.balanceOf(alice);
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+        uint256 colWethBefore = weth.balanceOf(collector);
+        uint256 colUsdcBefore = usdc.balanceOf(collector);
+
+        usdc.mint(liquidator, repayAmount);
+        vm.startPrank(liquidator);
+        usdc.approve(address(liq), repayAmount);
+        liq.liquidate(posId, repayAmount, block.timestamp + 1 hours, 0, 0);
+        vm.stopPrank();
+
+        // The writeoff really ran: the debt is gone without having been repaid, position closed.
+        assertEq(le.getDebt(posId), 0, "remaining debt written off");
+        IPositionManager.Position memory posAfter = pm.getPosition(posId);
+        assertTrue(posAfter.status == IPositionManager.PositionStatus.Liquidated, "position closed by the writeoff");
+
+        assertEq(weth.balanceOf(alice), aliceWethBefore, "defaulting borrower keeps no WETH");
+        assertEq(usdc.balanceOf(alice), aliceUsdcBefore, "defaulting borrower keeps no USDC");
+        assertGe(weth.balanceOf(collector) - colWethBefore, V3_FEE0, "swept WETH fees routed to the protocol");
+        assertGe(usdc.balanceOf(collector) - colUsdcBefore, V3_FEE1, "swept USDC fees routed to the protocol");
+    }
+
     /// @dev The clamp values the seized underlying through the same registry as the debt leg, so a
     ///      collateral feed that stops updating must stop the liquidation, not be waved through with a
     ///      stale price. In the mock harness getPositionValue is oracle-driven and never touches the
