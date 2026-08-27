@@ -20,7 +20,13 @@ contract MockFeeOnTransferERC20 {
     uint256 public feeBps;
     uint256 public bonusBps;
 
+    /// @dev Both knobs are basis points and are bounded on the way in. Above 10_000 the fee would
+    ///      exceed the amount and `_move` would fail with an arithmetic panic, which reads as a bug
+    ///      in the code under test rather than as misuse of the mock.
+    uint256 private constant MAX_BPS = 10_000;
+
     constructor(string memory _name, string memory _symbol, uint8 _decimals, uint256 _feeBps) {
+        require(_feeBps <= MAX_BPS, "FEE_BPS_TOO_HIGH");
         name = _name;
         symbol = _symbol;
         decimals = _decimals;
@@ -28,10 +34,12 @@ contract MockFeeOnTransferERC20 {
     }
 
     function setFeeBps(uint256 _feeBps) external {
+        require(_feeBps <= MAX_BPS, "FEE_BPS_TOO_HIGH");
         feeBps = _feeBps;
     }
 
     function setBonusBps(uint256 _bonusBps) external {
+        require(_bonusBps <= MAX_BPS, "BONUS_BPS_TOO_HIGH");
         bonusBps = _bonusBps;
     }
 
