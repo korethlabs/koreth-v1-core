@@ -74,6 +74,7 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     event PositionAmountReduced(uint256 indexed positionId, uint256 amountRemoved, uint256 newAmount);
     event LendingEngineUpdated(address indexed oldEngine, address indexed newEngine);
     event CircuitBreakerUpdated(address indexed oldBreaker, address indexed newBreaker);
+    event FeeCollectorUpdated(address oldCollector, address newCollector);
     event PositionTransformed(uint256 indexed positionId, address indexed transformer);
 
     // --- ACL Helpers ---
@@ -167,6 +168,28 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         CircuitBreaker breaker = circuitBreaker;
         require(address(breaker) != address(0), "CIRCUIT_BREAKER_UNSET");
         return breaker;
+    }
+
+    /// @notice Set the FeeCollector that receives the protocol's share of compounded fees.
+    /// @dev compoundFees takes its whole parameter struct from the caller, including the address the
+    ///      protocol fee is paid to. That leg is protocol revenue, so its destination is a protocol
+    ///      setting, not a caller choice: pinning it here is what stops a compound call from routing
+    ///      the fee — and the approve plus external call that carry it — to an address it picked.
+    function setFeeCollector(address _feeCollector) external onlyPoolAdmin {
+        require(_feeCollector != address(0), "ZERO_ADDRESS");
+        require(_feeCollector.code.length > 0, "NOT_CONTRACT");
+        emit FeeCollectorUpdated(address(feeCollector), _feeCollector);
+        feeCollector = FeeCollector(_feeCollector);
+    }
+
+    /// @notice Resolve the fee collector (reverts if it was never configured).
+    /// @dev Mirrors getCircuitBreaker(). Only compoundFees calls with a nonzero protocol fee need it,
+    ///      and an unset collector there must say which wire is missing rather than let the fee fall
+    ///      through to some other destination.
+    function getFeeCollector() public view returns (FeeCollector) {
+        FeeCollector collector = feeCollector;
+        require(address(collector) != address(0), "FEE_COLLECTOR_UNSET");
+        return collector;
     }
 
     // --- Core Logic ---
@@ -713,8 +736,20 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         // redirect from an arbitrary position's collected fees (griefing/theft bound).
         // Legitimate callers (LPCompounder, CompoundSwapRouter) use 2.5% total.
         require(params.protocolFeeBps + params.callerRewardBps <= MAX_COMPOUND_FEE_BPS, "FEES_TOO_HIGH");
-        require(params.protocolFeeBps == 0 || params.protocolFeeRecipient != address(0), "ZERO_FEE_RECIPIENT");
-        require(params.dustRefundTo != address(0), "ZERO_REFUND_ADDRESS");
+        // The protocol fee leg is the protocol's revenue, so it may only go to the configured
+        // collector. Accepting an arbitrary address here handed the caller both the fee itself and
+        // an approve + external call made by this contract to a target of its choosing. The caller's
+        // own compensation is callerRewardRecipient, which stays free-form on purpose.
+        require(
+            params.protocolFeeBps == 0 || params.protocolFeeRecipient == address(getFeeCollector()),
+            "INVALID_FEE_RECIPIENT"
+        );
+        // Dust is what is left of the position's own share after both fees are taken, so it may only
+        // land on the position: its owner, or the transformer the owner authorized for this exact
+        // position (CompoundSwapRouter swaps the dust and returns the proceeds). Without this the
+        // 5% bound above covered only the two fee legs — a caller could name itself here and take
+        // the whole reinvestment leg whenever the pool ratio left most of it unused.
+        require(_isOwnerOrActiveTransformer(params.positionId, params.dustRefundTo), "INVALID_DUST_RECIPIENT");
 
         Position storage pos = _positions[params.positionId];
         require(pos.status == PositionStatus.Active || pos.status == PositionStatus.Borrowed, "POSITION_NOT_ACTIVE");
@@ -773,8 +808,10 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
         uint256 totalDeducted0;
         uint256 totalDeducted1;
 
-        // Protocol fee → FeeCollector (via collectFee so accumulatedFees is tracked)
-        if (cp.protocolFeeBps > 0 && cp.protocolFeeRecipient != address(0)) {
+        // Protocol fee → FeeCollector (via collectFee so accumulatedFees is tracked).
+        // compoundFees is the only caller and it has already pinned the recipient to the configured
+        // collector, which cannot be the zero address — so no zero check is repeated here.
+        if (cp.protocolFeeBps > 0) {
             uint256 pFee0 = Math.mulDiv(cp.fees0, cp.protocolFeeBps, 10_000);
             uint256 pFee1 = Math.mulDiv(cp.fees1, cp.protocolFeeBps, 10_000);
             if (pFee0 > 0) {
@@ -831,12 +868,14 @@ contract PositionManager is IPositionManager, Initializable, UUPSUpgradeable, Re
     address private __deprecated_riskManager;
     mapping(address => uint256) public activePositionCount;
     CircuitBreaker public circuitBreaker;
+    /// @dev Destination of the protocol's share of compounded fees. See setFeeCollector.
+    FeeCollector public feeCollector;
 
     // --- Storage Gap ---
-    // 14 declared slots (0-13, incl. preserved __deprecated_* slots) + 44 gap slots = 58 total.
+    // 15 declared slots (0-14, incl. preserved __deprecated_* slots) + 43 gap slots = 58 total.
     // When appending a state var, decrement __gap by the slots it consumes so the total stays
     // 58 (UUPS storage-collision safety). Verified via `forge inspect ... storage-layout`.
-    uint256[44] private __gap;
+    uint256[43] private __gap;
 
     // --- Internal ---
 
