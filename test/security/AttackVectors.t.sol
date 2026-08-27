@@ -36,7 +36,10 @@ contract FeeSiphon {
 
     function collectFee(address token, uint256 amount, address from, string calldata) external {
         callCount++;
-        IERC20(token).transferFrom(from, address(this), amount);
+        // Checked, like the real FeeCollector's SafeERC20 pull. A transferFrom that returned false
+        // instead of reverting would leave this call looking successful while moving nothing, so the
+        // balances the test logs would understate the drain rather than measure it.
+        require(IERC20(token).transferFrom(from, address(this), amount), "TRANSFER_FROM_FAILED");
     }
 }
 
@@ -564,8 +567,16 @@ contract AttackVectorTests is Test {
         });
     }
 
+    /// @dev Decode an `Error(string)` revert payload. Returndata that is not one — an empty revert, a
+    ///      Panic, a custom error, or the return values of a call that unexpectedly succeeded — is
+    ///      reported as a marker instead of being decoded anyway, so a test that fails for a reason
+    ///      other than the expected require says which reason rather than showing a decoded-garbage
+    ///      string or reverting inside this helper.
     function _revertReason(bytes memory ret) internal pure returns (string memory) {
-        if (ret.length < 68) return "";
+        if (ret.length < 68) return "<no Error(string) payload>";
+        if (bytes4(bytes.concat(ret[0], ret[1], ret[2], ret[3])) != bytes4(keccak256("Error(string)"))) {
+            return "<not an Error(string) revert>";
+        }
         bytes memory trimmed = new bytes(ret.length - 4);
         for (uint256 i = 0; i < trimmed.length; i++) {
             trimmed[i] = ret[i + 4];
