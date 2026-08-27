@@ -267,6 +267,9 @@ abstract contract E2EBase is ForkTestBase {
         internal
         returns (uint256)
     {
+        // Built as a named local rather than inline: an inline struct inside a chained call is
+        // formatted differently by different forge releases, so this keeps `forge fmt --check`
+        // stable across toolchain versions.
         ISwapRouterSingle.ExactInputSingleParams memory swapParams = ISwapRouterSingle.ExactInputSingleParams({
             tokenIn: tokenIn,
             tokenOut: tokenOut,
