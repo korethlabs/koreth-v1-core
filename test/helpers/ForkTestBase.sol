@@ -230,6 +230,9 @@ abstract contract ForkTestBase is Test {
         // protocol share of every liquidation bonus was skipped and a bad-debt writeoff paid the
         // swept fees to the defaulting borrower.
         liquidationEngine.setFeeCollector(address(feeCollector));
+        // compoundFees only accepts this address as the protocol-fee recipient, so an unwired
+        // PositionManager cannot compound with a protocol fee — same as the deploy script.
+        positionManager.setFeeCollector(address(feeCollector));
 
         // 14. Grant KEEPER to PoolLiquidityMonitor (so it can call CircuitBreaker.pausePool)
         aclManager.addKeeper(address(poolLiquidityMonitor));

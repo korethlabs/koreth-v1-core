@@ -270,7 +270,7 @@ abstract contract E2EBase is ForkTestBase {
         // Built as a named local rather than inline: an inline struct inside a chained call is
         // formatted differently by different forge releases, so this keeps `forge fmt --check`
         // stable across toolchain versions.
-        ISwapRouterSingle.ExactInputSingleParams memory params = ISwapRouterSingle.ExactInputSingleParams({
+        ISwapRouterSingle.ExactInputSingleParams memory swapParams = ISwapRouterSingle.ExactInputSingleParams({
             tokenIn: tokenIn,
             tokenOut: tokenOut,
             fee: fee,
@@ -280,7 +280,7 @@ abstract contract E2EBase is ForkTestBase {
             amountOutMinimum: 0,
             sqrtPriceLimitX96: 0
         });
-        return ISwapRouterSingle(Constants.UNI_V3_SWAP_ROUTER).exactInputSingle(params);
+        return ISwapRouterSingle(Constants.UNI_V3_SWAP_ROUTER).exactInputSingle(swapParams);
     }
 
     /// @dev Read current pool sqrtPriceX96 and convert to Chainlink 8-decimal ETH/USD
