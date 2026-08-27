@@ -13,6 +13,8 @@ import {MockERC20} from "../mocks/MockERC20.sol";
 import {MockFeeOnTransferERC20} from "../mocks/MockFeeOnTransferERC20.sol";
 
 contract LendingPoolTest is Test {
+    using stdStorage for StdStorage;
+
     ProtocolCore public core;
     ACLManager public aclManager;
     LendingPool public pool;
@@ -703,12 +705,12 @@ contract LendingPoolTest is Test {
         pool.withdraw(aliceShares);
 
         // Recovery arrives. A fully wiped pool holds no cash and no outstanding debt, so it cannot
-        // rebuild reserves from interest on its own — the pool has no entrypoint for external
-        // recapitalisation either, so credit the reserves directly (protocolReserves is slot 15,
-        // asserted below) and fund the matching cash.
+        // rebuild reserves from interest on its own, and the pool has no entrypoint for external
+        // recapitalisation — so credit the reserves directly (slot resolved via the getter, not
+        // hardcoded) and fund the matching cash.
         uint256 recovered = 30_000e6;
-        vm.store(address(pool), bytes32(uint256(15)), bytes32(recovered));
-        assertEq(pool.protocolReserves(), recovered, "reserves credited at the expected slot");
+        stdstore.target(address(pool)).sig(pool.protocolReserves.selector).checked_write(recovered);
+        assertEq(pool.protocolReserves(), recovered, "reserves credited");
         usdc.mint(address(pool), recovered);
 
         vm.prank(owner);
