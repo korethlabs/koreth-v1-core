@@ -141,21 +141,40 @@ contract MockLPAdapter is ILPAdapter {
         }
     }
 
+    /// @notice Fraction of each supplied amount the position actually absorbs, in basis points.
+    /// @dev 100% by default, so callers that do not opt in keep the previous full-usage behaviour.
+    ///      Lower it to model a concentrated-liquidity position against a skewed pool ratio, where
+    ///      most of a deposit cannot be placed and comes back out as dust.
+    uint256 public addLiquidityUsedBps = 10_000;
+
+    function setAddLiquidityUsedBps(uint256 bps) external {
+        require(bps <= 10_000, "BPS_TOO_HIGH");
+        addLiquidityUsedBps = bps;
+    }
+
     function addLiquidity(
         address,
         uint256,
-        address,
-        address,
+        address token0,
+        address token1,
         uint256 amount0,
         uint256 amount1,
-        address
+        address refundTo
     )
         external
-        pure
         override
         returns (uint256, uint256, uint256)
     {
-        return (amount0 + amount1, amount0, amount1);
+        uint256 used0 = (amount0 * addLiquidityUsedBps) / 10_000;
+        uint256 used1 = (amount1 * addLiquidityUsedBps) / 10_000;
+
+        // Mirrors UniswapV3Adapter: whatever the position could not absorb goes to refundTo.
+        if (refundTo != address(0)) {
+            if (amount0 > used0) require(IERC20(token0).transfer(refundTo, amount0 - used0), "TRANSFER_FAILED");
+            if (amount1 > used1) require(IERC20(token1).transfer(refundTo, amount1 - used1), "TRANSFER_FAILED");
+        }
+
+        return (used0 + used1, used0, used1);
     }
 
     // Override liquidity for V3-style tests (amount=0, liquidity from NFT)

@@ -267,19 +267,17 @@ abstract contract E2EBase is ForkTestBase {
         internal
         returns (uint256)
     {
-        return ISwapRouterSingle(Constants.UNI_V3_SWAP_ROUTER)
-            .exactInputSingle(
-                ISwapRouterSingle.ExactInputSingleParams({
-                tokenIn: tokenIn,
-                tokenOut: tokenOut,
-                fee: fee,
-                recipient: recipient,
-                deadline: block.timestamp + 300,
-                amountIn: amountIn,
-                amountOutMinimum: 0,
-                sqrtPriceLimitX96: 0
-            })
-            );
+        ISwapRouterSingle.ExactInputSingleParams memory swapParams = ISwapRouterSingle.ExactInputSingleParams({
+            tokenIn: tokenIn,
+            tokenOut: tokenOut,
+            fee: fee,
+            recipient: recipient,
+            deadline: block.timestamp + 300,
+            amountIn: amountIn,
+            amountOutMinimum: 0,
+            sqrtPriceLimitX96: 0
+        });
+        return ISwapRouterSingle(Constants.UNI_V3_SWAP_ROUTER).exactInputSingle(swapParams);
     }
 
     /// @dev Read current pool sqrtPriceX96 and convert to Chainlink 8-decimal ETH/USD
