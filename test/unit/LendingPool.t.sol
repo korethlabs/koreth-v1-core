@@ -10,6 +10,7 @@ import {InterestRateModel} from "../../src/markets/InterestRateModel.sol";
 import {ILendingPool} from "../../src/interfaces/ILendingPool.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {MockFeeOnTransferERC20} from "../mocks/MockFeeOnTransferERC20.sol";
 
 contract LendingPoolTest is Test {
     ProtocolCore public core;
@@ -607,9 +608,9 @@ contract LendingPoolTest is Test {
     }
 
     /// @notice A total default (100% utilization, no reserves) can socialize the loss all the way to
-    ///         totalSupply == 0. In that insolvent state deposits are refused (would otherwise revert
-    ///         on divide-by-zero and gift the deposit to worthless legacy shares) while existing
-    ///         holders can still burn their now-zero-value shares.
+    ///         totalSupply == 0. In that insolvent state both sides of the lender interface are
+    ///         refused: deposits (which would divide by zero and gift the deposit to worthless legacy
+    ///         shares) and withdrawals (which would burn the shares for no tokens at all).
     function test_recordDeficit_fullWipe_marketBecomesInsolvent() public {
         _fundAndApprove(alice, 100_000e6);
         vm.prank(alice);
@@ -634,10 +635,243 @@ contract LendingPoolTest is Test {
         vm.expectRevert("MARKET_INSOLVENT");
         pool.supply(10_000e6);
 
-        // Existing holder can still burn worthless shares without reverting; they redeem to zero.
+        // Withdrawals are refused too: the shares redeem to nothing, so burning them would destroy
+        // the holder's claim for no tokens in return.
         uint256 aliceShares = pool.shares(alice);
         vm.prank(alice);
+        vm.expectRevert("ZERO_REDEEM_VALUE");
+        pool.withdraw(aliceShares);
+        assertEq(pool.shares(alice), aliceShares, "shares survive the refused withdrawal");
+    }
+
+    // ========== Insolvent-market withdrawals ==========
+
+    /// @dev Drives the market to totalSupply == 0 while shares stay outstanding, and returns the
+    ///      shares alice is left holding. The solvency identity forces the fully-drained shape:
+    ///      totalSupply == totalBorrow == protocolReserves == 0 and no cash in the pool.
+    function _wipeMarket() internal returns (uint256 aliceShares) {
+        _fundAndApprove(alice, 100_000e6);
+        vm.prank(alice);
+        aliceShares = pool.supply(100_000e6);
+
+        vm.prank(le);
+        pool.transferOut(makeAddr("borrower"), 100_000e6);
+
+        vm.prank(le);
+        pool.recordDeficit(100_000e6);
+
+        assertEq(pool.getPoolState().totalSupply, 0, "market is insolvent");
+        assertGt(pool.totalShares(), 0, "shares still outstanding (dead shares guarantee this)");
+    }
+
+    /// @notice A withdrawal that redeems to zero must revert instead of burning the shares.
+    ///         Pre-fix this call succeeded: it burned every share, transferred nothing and emitted
+    ///         Withdraw(alice, 0, shares) — silently forfeiting the lender's claim on any later
+    ///         eliminateDeficit() recovery. `supply` already refuses this same state; `withdraw` did not.
+    function test_withdraw_insolventMarket_revertsInsteadOfBurningSharesForNothing() public {
+        uint256 aliceShares = _wipeMarket();
+
+        vm.prank(alice);
+        try pool.withdraw(aliceShares) returns (uint256 received) {
+            emit log_string("PRE-FIX BEHAVIOUR: withdraw() succeeded in an insolvent market");
+            emit log_named_uint("  tokens received by alice", received);
+            emit log_named_uint("  shares burned", aliceShares);
+            emit log_named_uint("  shares alice has left", pool.shares(alice));
+            fail("withdraw must revert when the shares redeem to zero");
+        } catch Error(string memory reason) {
+            assertEq(reason, "ZERO_REDEEM_VALUE", "must fail closed with a named reason");
+        }
+
+        assertEq(pool.shares(alice), aliceShares, "alice keeps her shares");
+        assertEq(usdc.balanceOf(alice), 0, "and received nothing, as expected");
+    }
+
+    /// @notice The point of reverting: the blocked lender's claim survives, so when eliminateDeficit()
+    ///         credits recovered reserves back into totalSupply she can withdraw a non-zero amount.
+    ///         Pre-fix her shares would already be gone and the whole recovery would accrue to holders
+    ///         who happened not to call withdraw.
+    function test_withdraw_insolventMarket_claimSurvivesEliminateDeficit() public {
+        vm.prank(owner);
+        aclManager.addRiskAdmin(owner);
+
+        uint256 aliceShares = _wipeMarket();
+        uint256 outstandingDeficit = pool.deficit();
+
+        // The withdrawal is refused while insolvent.
+        vm.prank(alice);
+        vm.expectRevert("ZERO_REDEEM_VALUE");
+        pool.withdraw(aliceShares);
+
+        // Recovery arrives. A fully wiped pool holds no cash and no outstanding debt, so it cannot
+        // rebuild reserves from interest on its own — the pool has no entrypoint for external
+        // recapitalisation either, so credit the reserves directly (protocolReserves is slot 15,
+        // asserted below) and fund the matching cash.
+        uint256 recovered = 30_000e6;
+        vm.store(address(pool), bytes32(uint256(15)), bytes32(recovered));
+        assertEq(pool.protocolReserves(), recovered, "reserves credited at the expected slot");
+        usdc.mint(address(pool), recovered);
+
+        vm.prank(owner);
+        pool.eliminateDeficit();
+        assertEq(pool.getPoolState().totalSupply, recovered, "recovery lands back in totalSupply");
+        assertEq(pool.deficit(), outstandingDeficit - recovered, "deficit reduced by the recovery");
+
+        vm.prank(alice);
         uint256 received = pool.withdraw(aliceShares);
-        assertEq(received, 0, "wiped shares redeem to nothing");
+        assertGt(received, 0, "the preserved claim now redeems for real tokens");
+        assertEq(usdc.balanceOf(alice), received, "tokens actually reached alice");
+    }
+
+    /// @notice The same check also covers dust rounding down to zero in a market that is still
+    ///         solvent — a case a `totalSupply > 0` guard would miss entirely.
+    function test_withdraw_revertsWhenDustRoundsToZero() public {
+        _fundAndApprove(alice, 100_000e6);
+        vm.prank(alice);
+        pool.supply(100_000e6);
+
+        vm.prank(le);
+        pool.transferOut(makeAddr("borrower"), 100_000e6);
+
+        // Socialize everything but one unit: share price is now 1 wei per 1e11 shares.
+        vm.prank(le);
+        pool.recordDeficit(100_000e6 - 1);
+        assertEq(pool.getPoolState().totalSupply, 1, "market is solvent, just tiny");
+
+        vm.prank(alice);
+        vm.expectRevert("ZERO_REDEEM_VALUE");
+        pool.withdraw(1);
+    }
+
+    // ========== transferIn: exact settlement only ==========
+
+    MockFeeOnTransferERC20 public fotToken;
+    LendingPool public fotPool;
+
+    /// @dev A second pool whose borrow asset misbehaves on transfer. `feeBps` short-delivers,
+    ///      `bonusBps` over-delivers; both are zero unless a test opts in.
+    function _setUpFotPool(uint256 feeBps) internal {
+        fotToken = new MockFeeOnTransferERC20("Fee USD", "fUSD", 6, feeBps);
+        ILendingPool.PoolConfig memory cfg = ILendingPool.PoolConfig({borrowAsset: address(fotToken)});
+        LendingPool impl = new LendingPool();
+        fotPool = LendingPool(
+            address(
+                new ERC1967Proxy(
+                    address(impl), abi.encodeCall(LendingPool.initialize, (cfg, address(irm), address(core)))
+                )
+            )
+        );
+
+        address lender = makeAddr("fotLender");
+        fotToken.mint(lender, 100_000e6);
+        vm.startPrank(lender);
+        fotToken.approve(address(fotPool), 100_000e6);
+        fotPool.supply(100_000e6);
+        vm.stopPrank();
+
+        vm.prank(le);
+        fotPool.transferOut(makeAddr("fotBorrower"), 50_000e6);
+    }
+
+    /// @notice LendingEngine._repay writes the borrower's debt down by the *requested* repayAmount
+    ///         before calling transferIn. With a fee-on-transfer borrow asset the pool receives less
+    ///         than that, so the difference is debt forgiven at the lenders' expense — repeatably.
+    ///         transferIn must refuse the asset outright, exactly as LiquidationEngine's repayment
+    ///         path already does.
+    function test_transferIn_feeOnTransferAsset_reverts() public {
+        _setUpFotPool(100); // 1% fee on every transfer
+
+        address repayer = makeAddr("fotRepayer");
+        uint256 repayAmount = 5000e6;
+        fotToken.mint(repayer, repayAmount);
+        vm.prank(repayer);
+        fotToken.approve(address(fotPool), repayAmount);
+
+        uint256 poolBalBefore = fotToken.balanceOf(address(fotPool));
+        uint256 borrowBefore = fotPool.getPoolState().totalBorrow;
+
+        vm.prank(le);
+        try fotPool.transferIn(repayer, repayAmount) {
+            uint256 actuallyReceived = fotToken.balanceOf(address(fotPool)) - poolBalBefore;
+            uint256 borrowAfter = fotPool.getPoolState().totalBorrow;
+            emit log_string("PRE-FIX BEHAVIOUR: transferIn() accepted a short delivery");
+            emit log_named_uint("  repayAmount the caller already credited the borrower", repayAmount);
+            emit log_named_uint("  tokens the pool actually received", actuallyReceived);
+            emit log_named_uint("  debt forgiven for free (repayAmount - received)", repayAmount - actuallyReceived);
+            emit log_named_uint("  pool totalBorrow before", borrowBefore);
+            emit log_named_uint("  pool totalBorrow after", borrowAfter);
+            fail("transferIn must refuse a fee-on-transfer borrow asset");
+        } catch Error(string memory reason) {
+            assertEq(reason, "FEE_ON_TRANSFER_UNSUPPORTED", "same refusal, same name as LiquidationEngine");
+        }
+
+        assertEq(fotPool.getPoolState().totalBorrow, borrowBefore, "no debt written off");
+        assertEq(fotToken.balanceOf(address(fotPool)), poolBalBefore, "no tokens moved");
+    }
+
+    /// @notice The mirror case: an asset that delivers MORE than requested (rebase, or a donation
+    ///         landing mid-call) used to pass the old `received <= amount` bound only when it was
+    ///         short, and silently understated totalBorrow when it was long.
+    function test_transferIn_overDeliveringAsset_reverts() public {
+        _setUpFotPool(0);
+        fotToken.setBonusBps(100); // delivers 1% more than requested
+
+        address repayer = makeAddr("fotRepayer");
+        uint256 repayAmount = 5000e6;
+        fotToken.mint(repayer, repayAmount);
+        vm.prank(repayer);
+        fotToken.approve(address(fotPool), repayAmount);
+
+        vm.prank(le);
+        vm.expectRevert("FEE_ON_TRANSFER_UNSUPPORTED");
+        fotPool.transferIn(repayer, repayAmount);
+    }
+
+    /// @notice Happy path guard: with a well-behaved asset the equality holds, so supply, borrow,
+    ///         repay and withdraw all still settle exactly.
+    function test_transferIn_wellBehavedAsset_fullRoundTripStillWorks() public {
+        _setUpFotPool(0); // no fee, no bonus — an ordinary ERC20
+
+        address repayer = makeAddr("fotRepayer");
+        uint256 repayAmount = 5000e6;
+        fotToken.mint(repayer, repayAmount);
+        vm.prank(repayer);
+        fotToken.approve(address(fotPool), repayAmount);
+
+        uint256 borrowBefore = fotPool.getPoolState().totalBorrow;
+        vm.prank(le);
+        fotPool.transferIn(repayer, repayAmount);
+
+        assertEq(fotPool.getPoolState().totalBorrow, borrowBefore - repayAmount, "debt settles exactly");
+        assertEq(fotToken.balanceOf(repayer), 0, "repayer paid exactly the requested amount");
+
+        // Half the shares: the rest of the lender's capital is still lent out.
+        address lender = makeAddr("fotLender");
+        uint256 lenderShares = fotPool.shares(lender) / 2;
+        vm.prank(lender);
+        uint256 withdrawn = fotPool.withdraw(lenderShares);
+        assertGt(withdrawn, 0, "lender still withdraws normally");
+        assertEq(fotToken.balanceOf(lender), withdrawn, "tokens reached the lender");
+    }
+
+    /// @notice The original well-behaved-token path, now asserting the accounting and not just the
+    ///         token movement.
+    function test_transferIn_reducesTotalBorrowExactly() public {
+        _fundAndApprove(alice, 10_000e6);
+        vm.prank(alice);
+        pool.supply(10_000e6);
+
+        vm.prank(le);
+        pool.transferOut(makeAddr("b"), 5000e6);
+        assertEq(pool.getPoolState().totalBorrow, 5000e6);
+
+        address repayer = makeAddr("repayer");
+        usdc.mint(repayer, 3000e6);
+        vm.prank(repayer);
+        usdc.approve(address(pool), 3000e6);
+
+        vm.prank(le);
+        pool.transferIn(repayer, 3000e6);
+        assertEq(pool.getPoolState().totalBorrow, 2000e6, "totalBorrow drops by exactly the amount");
+        assertEq(usdc.balanceOf(address(pool)), 8000e6, "pool cash matches");
     }
 }
