@@ -521,7 +521,7 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             }
         }
 
-        // Route the swept V3 fees by whether the lenders are left short, not by whether THIS call
+        // Route the swept fees by whether the lenders are left short, not by whether THIS call
         // happened to trigger the writeoff: to the borrower while the position still backs its debt,
         // to the protocol once it does not (a defaulting borrower shouldn't keep fees while lenders
         // take a loss). Keying off the writeoff alone was a hole — a position on its way under could
