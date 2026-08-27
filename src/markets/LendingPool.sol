@@ -296,15 +296,16 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
 
         uint256 balBefore = IERC20(config.borrowAsset).balanceOf(address(this));
         OZIERC20(config.borrowAsset).safeTransferFrom(from, address(this), amount);
-        uint256 received = IERC20(config.borrowAsset).balanceOf(address(this)) - balBefore;
+        uint256 balAfter = IERC20(config.borrowAsset).balanceOf(address(this));
         // Exact equality, not a bound. This is the refusal of fee-on-transfer (and rebasing) borrow
         // assets, not a redundant sanity check: the caller writes the borrower's debt down by the
         // requested `amount` before calling here, so a short delivery forgives the shortfall at the
-        // lenders' expense, and an over-delivery understates totalBorrow. LiquidationEngine's
-        // repayment path refuses the same thing under the same name.
-        require(received == amount, "FEE_ON_TRANSFER_UNSUPPORTED");
+        // lenders' expense, and an over-delivery understates totalBorrow. The `>=` leg keeps a
+        // balance that went *down* across the transfer failing under this name too, instead of as an
+        // arithmetic panic. LiquidationEngine's repayment path refuses the same thing the same way.
+        require(balAfter >= balBefore && balAfter - balBefore == amount, "FEE_ON_TRANSFER_UNSUPPORTED");
 
-        // `received == amount` is now proven, so subtract the value the caller's own accounting used.
+        // The delivery is now proven exact, so subtract the value the caller's own accounting used.
         state.totalBorrow -= amount;
         _updateRates();
     }
