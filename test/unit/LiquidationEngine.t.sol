@@ -1163,7 +1163,11 @@ contract LiquidationEngineTest is Test {
 
         // Residual branch again — but this time the collateral still covers the debt.
         assertGt(le.getDebt(posId), 0, "debt still outstanding");
-        assertGt(pm.getPositionValue(posId), le.getDebt(posId), "collateral still covers the debt");
+        // Through the registry, not raw: getPositionValue is 18-dec USD while getDebt is in
+        // borrow-asset units. They coincide only because this fixture's borrow asset is an 18-dec
+        // $1 token, and this assertion is what decides the test is exercising the solvent branch.
+        uint256 debtUsd = priceRegistry.getUsdValue(address(usdc), le.getDebt(posId), usdc.decimals());
+        assertGt(pm.getPositionValue(posId), debtUsd, "collateral still covers the debt");
 
         assertEq(weth.balanceOf(alice) - aliceWethBefore, V3_FEE0 + expectedRefund0, "borrower keeps WETH fees+refund");
         assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, V3_FEE1 + expectedRefund1, "borrower keeps USDC fees+refund");
