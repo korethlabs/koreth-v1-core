@@ -64,8 +64,8 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     event ResidualInsolvency(uint256 indexed positionId, uint256 remainingDebt, uint256 remainingValue);
     /// @notice Emitted when unwind realized more value (at spot) than the Chainlink-sized seize
     ///         target and the excess underlying was refunded. The excess goes to the
-    ///         borrower on a solvent close, or to the FeeCollector when the seize wrote off bad debt —
-    ///         see the terminal routing block for the recipient split.
+    ///         borrower while the position still backs its debt, or to the FeeCollector once the
+    ///         lenders are taking a loss on it — see the terminal routing block for the split.
     event LiquidationOverSeizeRefunded(uint256 indexed positionId, uint256 refund0, uint256 refund1);
     /// @notice Emitted when a protocol-fee leg could not be pushed to the FeeCollector during a
     ///         liquidation (e.g. the token blocklists the collector, or the push yields zero received)
@@ -250,9 +250,10 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     ///      step-7 routing below is skipped for that path.
     ///   6. If debt is fully cleared: return the residual LP/NFT to the borrower. If underwater
     ///      with no collateral left: write the remaining debt off as bad debt.
-    ///   7. Route any REMAINING swept fees: to the borrower on a normal liquidation, to the
-    ///      FeeCollector on a bad-debt writeoff (a defaulting borrower shouldn't keep fees while
-    ///      lenders lose). Skipped entirely for the degenerate path in step 5 (fees already paid).
+    ///   7. Route any REMAINING swept fees by the position's solvency AFTER the seize: to the
+    ///      borrower while the collateral still covers the debt, to the FeeCollector once it does
+    ///      not (a defaulting borrower shouldn't keep fees while lenders lose). Skipped entirely
+    ///      for the degenerate path in step 5 (fees already paid).
     /// @param positionId The position to liquidate
     /// @param repayAmount Borrow-asset amount the liquidator repays (<= maxRepay)
     /// @param deadline Unix timestamp after which the call reverts (EXPIRED)
@@ -320,8 +321,8 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
         // Step 6a: Sweep uncollected fees out BEFORE seizing principal. Uncollected fees are the
         // borrower's yield, NOT collateral (the oracle values principal only). Sweeping them here
         // means unwind() seizes principal only and cannot over-collect fees on a partial
-        // liquidation. The swept fees are routed at the end: to the borrower on a normal
-        // liquidation, to the protocol on a bad-debt writeoff.
+        // liquidation. The swept fees are routed at the end by the position's post-seize solvency:
+        // to the borrower while the collateral still covers the debt, to the protocol once it does not.
         // The adapter itself declares via supportsFeeCollection() whether it holds fees separately
         // from principal (concentrated-liquidity NFT positions do; ERC-20 LP compounds fees into
         // reserves and does not), so a new fee-bearing adapter is swept automatically instead of
@@ -341,8 +342,8 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
 
         uint256 amount0;
         uint256 amount1;
-        // Over-seize refund, computed at Step 7b, routed at the terminal block once
-        // badDebt is known. Function-scoped so the deferred routing can read it after the seize.
+        // Over-seize refund, computed at Step 7b, routed at the terminal block once the position's
+        // post-seize solvency is known. Function-scoped so the routing can read it after the seize.
         uint256 refund0;
         uint256 refund1;
 
@@ -404,10 +405,11 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
             // The clamp therefore requires no feed beyond what valuing the position already required, and a
             // registry rotation moves both measurements together — no divergence to exploit.
             //
-            // The transfer is DEFERRED to the terminal routing block: the recipient depends on badDebt,
-            // which is only known after the debt is re-read post-seize. The mulDiv stays strictly inside
-            // the realizedUsd > target branch so a worthless full seize (realizedUsd == 0) cannot divide
-            // by zero (target == repay + bonus > 0, so realizedUsd == 0 fails the guard).
+            // The transfer is DEFERRED to the terminal routing block: the recipient depends on whether
+            // the lenders end up at a loss, known only after the debt is re-read post-seize. The mulDiv
+            // stays strictly inside the realizedUsd > target branch so a worthless full seize
+            // (realizedUsd == 0) cannot divide by zero (target == repay + bonus > 0, so realizedUsd == 0
+            // fails the guard).
             uint256 realizedUsd = _valueUsd(pos.token0, amount0) + _valueUsd(pos.token1, amount1);
             if (realizedUsd > collateralToSeizeNormalized) {
                 uint256 keep0 = Math.mulDiv(amount0, collateralToSeizeNormalized, realizedUsd);
@@ -467,7 +469,9 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
         // positionValue (==0). The residual branch is unreachable there (remainingValue==0<=DUST),
         // so the initial collateralToSeizeNormalized is never recorded — no supply-tracking drift.
         uint256 supplyRemovedUsd = collateralToSeizeNormalized;
-        bool badDebt = false;
+        // Decides the terminal routing below. False by default: with no debt left there is nothing
+        // for the lenders to lose, so the position's leftovers stay the borrower's.
+        bool lendersAtLoss = false;
         uint256 remainingDebt = lendingEngine.getDebt(positionId);
         if (remainingDebt == 0) {
             IPositionManager.Position memory freshPos = positionManager.getPosition(positionId);
@@ -497,43 +501,59 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
                 lendingEngine.writeOffDebt(positionId);
                 supplyRemovedUsd = positionValue; // full position value leaves the market
                 positionManager.markLiquidated(positionId, msg.sender, repayAmount);
-                badDebt = true; // route swept fees to the protocol, not the defaulting borrower
+                // The writeoff IS the loss: whatever debt is left is charged to the lenders, so the
+                // leftovers below are theirs regardless of how the two sides compare. Asserted here
+                // rather than derived from the comparison because a writeoff of debt worth less than
+                // the sub-dollar residue would otherwise read as solvent and pay the defaulter.
+                lendersAtLoss = true;
             } else {
                 // Position still has debt AND collateral above dust after a capped partial
                 // liquidation. Surface it so monitoring can catch latent under-collateralization
                 // rather than letting it accrue silently until the next liquidation.
                 emit ResidualInsolvency(positionId, remainingDebt, remainingValue);
+                // Same question the writeoff branch answers by construction, asked explicitly here:
+                // is the debt still outstanding worth more than the collateral still backing it? If
+                // so the shortfall is already the lenders', and the leftovers below must offset it
+                // instead of being paid out. Priced through the same registry as the seize target,
+                // so both sides are 18-dec USD on one ruler — the same one DUST_THRESHOLD_USD uses.
+                uint256 remainingDebtUsd = _getRepayValueUsd(borrowAsset, remainingDebt, borrowDecimals);
+                lendersAtLoss = remainingDebtUsd > remainingValue;
             }
         }
 
-        // Route the swept V3 fees: to the borrower on a normal liquidation, to the protocol on a
-        // bad-debt writeoff (a defaulting borrower shouldn't keep fees while lenders
-        // take a loss). The routing no longer degrades when the FeeCollector is missing: falling
-        // back to the borrower there inverted the policy exactly when it mattered, paying the
-        // defaulter out of a loss the lenders were absorbing.
+        // Route the swept fees by whether the lenders are left short, not by whether THIS call
+        // happened to trigger the writeoff: to the borrower while the position still backs its debt,
+        // to the protocol once it does not (a defaulting borrower shouldn't keep fees while lenders
+        // take a loss). Keying off the writeoff alone was a hole — a position on its way under could
+        // be liquidated for a dust amount first, landing in the residual branch, and the whole swept
+        // balance was paid out to the borrower before the writeoff that followed could claim it.
+        // Liquidation is the only path that ever pays these fees out, so once diverted they are gone.
+        // The routing also does not degrade when the FeeCollector is missing: falling back to the
+        // borrower there inverted the policy exactly when it mattered.
         // Both legs are non-blocking: the protocol leg escrows on a refused push, the borrower leg
         // falls back to pull-payment — neither can revert the writeoff/close.
         if (sweptFee0 > 0 || sweptFee1 > 0) {
-            if (badDebt) {
-                if (sweptFee0 > 0) _settleProtocolFee(pos.token0, sweptFee0, "liquidation_baddebt");
-                if (sweptFee1 > 0) _settleProtocolFee(pos.token1, sweptFee1, "liquidation_baddebt");
+            if (lendersAtLoss) {
+                if (sweptFee0 > 0) _settleProtocolFee(pos.token0, sweptFee0, "liquidation_shortfall");
+                if (sweptFee1 > 0) _settleProtocolFee(pos.token1, sweptFee1, "liquidation_shortfall");
             } else {
                 if (sweptFee0 > 0) _payOrEscrow(pos.owner, pos.token0, sweptFee0);
                 if (sweptFee1 > 0) _payOrEscrow(pos.owner, pos.token1, sweptFee1);
             }
         }
 
-        // Route the over-seize refund, computed at Step 7b. Same solvency policy as
-        // the swept fees: to the borrower on a normal/solvent liquidation, to the protocol on a bad-debt
-        // writeoff — a defaulting borrower has no equity claim while the lenders absorb the loss, so the
-        // AM-GM surplus offsets that loss instead of paying the defaulter (matches Revert Lend / Gearbox:
-        // surplus to the borrower when solvent, socialized to lenders/reserves when underwater).
-        // Deferred to here because the recipient depends on badDebt, unknown at seize time.
+        // Route the over-seize refund, computed at Step 7b, on the same solvency test as the swept
+        // fees: to the borrower while the collateral still covers the debt, to the protocol once it
+        // does not — a borrower whose position no longer backs its debt has no equity claim while the
+        // lenders absorb the shortfall, so the AM-GM surplus offsets that shortfall instead of paying
+        // the defaulter (matches Revert Lend / Gearbox: surplus to the borrower when solvent,
+        // socialized to lenders/reserves when underwater). Deferred to here because the recipient
+        // depends on the post-seize solvency, unknown at seize time.
         if (refund0 > 0 || refund1 > 0) {
             // Non-blocking, same split as the swept fees: protocol leg escrows on a refused push,
             // borrower leg falls back to pull-payment. This is the worst place to block — an
             // over-seize refund on a bad-debt writeoff must never revert.
-            if (badDebt) {
+            if (lendersAtLoss) {
                 if (refund0 > 0) _settleProtocolFee(pos.token0, refund0, "liquidation_overseize");
                 if (refund1 > 0) _settleProtocolFee(pos.token1, refund1, "liquidation_overseize");
             } else {
