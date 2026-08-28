@@ -17,16 +17,11 @@ fs_permissions = [
 runs = 10000
 max_test_rejects = 500000
 
-[profile.default.invariant]
-runs = 1000
-depth = 100
-
-# CI profile: fewer fuzz/invariant runs for speed.
+# CI profile: fewer fuzz runs for speed.
 # Optimizer stays on — required to keep contracts under EIP-170 size limit (24KB).
 [profile.ci]
 optimizer_runs = 50
 fuzz = { runs = 500 }
-invariant = { runs = 100, depth = 50 }
 
 [rpc_endpoints]
 ethereum = "${ETH_RPC_URL}"

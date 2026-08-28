@@ -2,7 +2,6 @@
 pragma solidity ^0.8.26;
 
 import "../E2EBase.t.sol";
-import {IPositionManager} from "../../../src/interfaces/IPositionManager.sol";
 
 /// @title LiquidationInvariantE2E
 /// @notice E2E invariant tests for liquidation against forked mainnet.
@@ -16,6 +15,13 @@ import {IPositionManager} from "../../../src/interfaces/IPositionManager.sol";
 ///        5. Liquidation cannot exceed maxRepay
 ///        6. Post-liquidation debt accounting is consistent
 contract LiquidationInvariantE2E is E2EBase {
+    /// @notice ETH dumped into the real WETH/USDC 0.3% pool to push the borrower underwater.
+    /// @dev The collateral is a concentrated V3 position, so its USD value is not linear in the ETH
+    ///      price and the required depth is empirical. At the pinned fork block this dump takes ETH
+    ///      to ~$1204 and the health factor to ~0.84 (90% of max borrowed) / ~0.89 (85%), comfortably
+    ///      past the liquidation threshold, which first trips at ~4000 ETH dumped.
+    uint256 internal constant LIQUIDATION_CRASH_DUMP = 4200 ether;
+
     function setUp() public override {
         super.setUp();
     }
@@ -64,10 +70,11 @@ contract LiquidationInvariantE2E is E2EBase {
         lendingEngine.borrow(posId, (maxBorrow * 90) / 100);
 
         // Crash price to make liquidatable
-        _crashEthPrice(3000 ether);
+        _crashEthPrice(LIQUIDATION_CRASH_DUMP);
 
         (bool isLiq, uint256 maxRepay) = liquidationEngine.isLiquidatable(posId);
-        if (!isLiq || maxRepay == 0) return;
+        assertTrue(isLiq, "Crashed position must be liquidatable");
+        assertGt(maxRepay, 0, "Liquidatable position must allow a non-zero repay");
 
         uint256 debtBefore = _getDebt(posId);
         uint256 repayAmt = maxRepay / 2; // partial liquidation
@@ -96,12 +103,14 @@ contract LiquidationInvariantE2E is E2EBase {
         vm.prank(alice);
         lendingEngine.borrow(posId, (maxBorrow * 90) / 100);
 
-        _crashEthPrice(3000 ether);
+        _crashEthPrice(LIQUIDATION_CRASH_DUMP);
 
         (bool isLiq, uint256 maxRepay) = liquidationEngine.isLiquidatable(posId);
-        if (!isLiq || maxRepay == 0) return;
+        assertTrue(isLiq, "Crashed position must be liquidatable");
+        assertGt(maxRepay, 0, "Liquidatable position must allow a non-zero repay");
 
-        IPositionManager.Position memory posBefore = positionManager.getPosition(posId);
+        uint256 tokenIdBefore = positionManager.getPosition(posId).tokenId;
+        uint128 liqBefore = _v3Liquidity(tokenIdBefore);
 
         _fundUsdc(liquidator, maxRepay);
         vm.startPrank(liquidator);
@@ -109,20 +118,10 @@ contract LiquidationInvariantE2E is E2EBase {
         liquidationEngine.liquidate(posId, maxRepay, block.timestamp + 300, 0, 0);
         vm.stopPrank();
 
-        IPositionManager.Position memory posAfter = positionManager.getPosition(posId);
-
-        // For V3: liquidity decreases. For V2: amount decreases.
-        if (posBefore.lpType == ILPAdapter.LPType.UniswapV3) {
-            (,,,,,,, uint128 liqBefore,,,,) =
-                INonfungiblePositionManager(Constants.UNI_V3_NFT_MANAGER).positions(posBefore.tokenId);
-            // After liquidation, the position's collateral should be reduced
-            // (either through unwind or fee-only liquidation)
-            assertTrue(
-                posAfter.amount < posBefore.amount
-                    || uint8(posAfter.status) == uint8(IPositionManager.PositionStatus.Liquidated),
-                "Collateral must decrease or position must be Liquidated"
-            );
-        }
+        // The Position struct carries amount == 0 for NFT collateral, so the seized collateral is
+        // measured on the V3 NFT itself: liquidation unwinds liquidity out of the position.
+        uint128 liqAfter = _v3Liquidity(tokenIdBefore);
+        assertLt(liqAfter, liqBefore, "Liquidation must remove liquidity from the V3 collateral");
     }
 
     // ================================================================
@@ -138,10 +137,11 @@ contract LiquidationInvariantE2E is E2EBase {
         vm.prank(alice);
         lendingEngine.borrow(posId, (maxBorrow * 90) / 100);
 
-        _crashEthPrice(3000 ether);
+        _crashEthPrice(LIQUIDATION_CRASH_DUMP);
 
         (bool isLiq, uint256 maxRepay) = liquidationEngine.isLiquidatable(posId);
-        if (!isLiq || maxRepay == 0) return;
+        assertTrue(isLiq, "Crashed position must be liquidatable");
+        assertGt(maxRepay, 0, "Liquidatable position must allow a non-zero repay");
 
         uint256 repayAmt = maxRepay / 2;
         _fundUsdc(liquidator, repayAmt);
@@ -176,10 +176,11 @@ contract LiquidationInvariantE2E is E2EBase {
         vm.prank(alice);
         lendingEngine.borrow(posId, (maxBorrow * 90) / 100);
 
-        _crashEthPrice(3000 ether);
+        _crashEthPrice(LIQUIDATION_CRASH_DUMP);
 
         (bool isLiq, uint256 maxRepay) = liquidationEngine.isLiquidatable(posId);
-        if (!isLiq || maxRepay == 0) return;
+        assertTrue(isLiq, "Crashed position must be liquidatable");
+        assertGt(maxRepay, 0, "Liquidatable position must allow a non-zero repay");
 
         address poolAddr = address(usdcPool);
         ILendingPool.PoolState memory sBefore = ILendingPool(poolAddr).getPoolState();
@@ -207,10 +208,11 @@ contract LiquidationInvariantE2E is E2EBase {
         vm.prank(alice);
         lendingEngine.borrow(posId, (maxBorrow * 85) / 100);
 
-        _crashEthPrice(2000 ether);
+        _crashEthPrice(LIQUIDATION_CRASH_DUMP);
 
         (bool isLiq, uint256 maxRepay) = liquidationEngine.isLiquidatable(posId);
-        if (!isLiq || maxRepay == 0) return;
+        assertTrue(isLiq, "Crashed position must be liquidatable");
+        assertGt(maxRepay, 0, "Liquidatable position must allow a non-zero repay");
 
         // Snapshot HF before the partial liquidation
         uint256 hfBefore = _getHealthFactor(posId);
@@ -224,12 +226,20 @@ contract LiquidationInvariantE2E is E2EBase {
         liquidationEngine.liquidate(posId, repayAmt, block.timestamp + 300, 0, 0);
         vm.stopPrank();
 
-        // If the position survives with debt, HF must have strictly improved:
-        // repaid debt is worth more, proportionally, than the bonus-discounted collateral seized.
-        if (positionManager.getPosition(posId).amount > 0 && _getDebt(posId) > 0) {
-            uint256 hfAfter = _getHealthFactor(posId);
-            console.log("HF before: %s, after: %s", hfBefore / 1e16, hfAfter / 1e16);
-            assertGt(hfAfter, hfBefore, "Partial liquidation must improve the position's health factor");
-        }
+        // A partial repay must leave the position alive: collateral liquidity and debt both remain.
+        uint256 tokenIdAfter = positionManager.getPosition(posId).tokenId;
+        assertGt(_v3Liquidity(tokenIdAfter), 0, "Partial liquidation must leave collateral in the position");
+        assertGt(_getDebt(posId), 0, "Partial liquidation must leave outstanding debt");
+
+        // The surviving position's HF must have strictly improved: repaid debt is worth more,
+        // proportionally, than the bonus-discounted collateral seized.
+        uint256 hfAfter = _getHealthFactor(posId);
+        console.log("HF before: %s, after: %s", hfBefore / 1e16, hfAfter / 1e16);
+        assertGt(hfAfter, hfBefore, "Partial liquidation must improve the position's health factor");
+    }
+
+    /// @dev Current liquidity of a Uniswap V3 position NFT.
+    function _v3Liquidity(uint256 tokenId) internal view returns (uint128 liquidity) {
+        (,,,,,,, liquidity,,,,) = INonfungiblePositionManager(Constants.UNI_V3_NFT_MANAGER).positions(tokenId);
     }
 }

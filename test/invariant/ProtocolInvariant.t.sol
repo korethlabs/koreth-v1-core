@@ -271,7 +271,6 @@ contract ProtocolInvariantTest is Test {
         if (borrowAmt > stateBefore.totalSupply - stateBefore.totalBorrow) {
             borrowAmt = (stateBefore.totalSupply - stateBefore.totalBorrow) / 2;
         }
-        if (borrowAmt == 0) return;
 
         address user = makeAddr("user");
         vm.prank(user);
