@@ -410,8 +410,12 @@ contract AdminOperations is E2EBase {
 
         uint256 positionId = _liquidateIntoBadDebt();
 
-        uint256 deficitRecorded = market.deficit() - deficitBefore;
-        assertGt(deficitRecorded, 0, "Write-off must record a deficit");
+        // Each delta is taken only after its direction has been asserted, so a scenario that stops
+        // reaching the write-off branch fails on the assertion rather than on a subtraction panic.
+        uint256 deficitAfter = market.deficit();
+        assertGt(deficitAfter, deficitBefore, "Write-off must record a deficit");
+        uint256 deficitRecorded = deficitAfter - deficitBefore;
+
         assertEq(_getDebt(positionId), 0, "Write-off must clear the position's debt");
         assertEq(
             uint256(positionManager.getPosition(positionId).status),
@@ -421,11 +425,9 @@ contract AdminOperations is E2EBase {
 
         // recordDeficit socializes whatever reserves could not absorb by cutting totalSupply, and
         // tracks exactly that cut as the deficit — the two move by the same amount.
-        assertEq(
-            supplyBefore - market.getPoolState().totalSupply,
-            deficitRecorded,
-            "Supplier loss must equal the recorded deficit"
-        );
+        uint256 supplyAfter = market.getPoolState().totalSupply;
+        assertLt(supplyAfter, supplyBefore, "Write-off must cut the supplied balance");
+        assertEq(supplyBefore - supplyAfter, deficitRecorded, "Supplier loss must equal the recorded deficit");
 
         console.log("Deficit recorded: %s USDC", deficitRecorded / 1e6);
     }
@@ -466,13 +468,16 @@ contract AdminOperations is E2EBase {
         vm.prank(deployer);
         market.eliminateDeficit();
 
-        uint256 covered = reservesBefore - market.protocolReserves();
-        assertGt(covered, 0, "Elimination must draw reserves down");
-        assertLt(market.deficit(), deficitBefore, "Deficit must shrink");
-        assertEq(market.deficit(), deficitBefore - covered, "Deficit reduced by exactly what reserves covered");
+        uint256 reservesAfter = market.protocolReserves();
+        assertLt(reservesAfter, reservesBefore, "Elimination must draw reserves down");
+        uint256 covered = reservesBefore - reservesAfter;
+
+        uint256 deficitAfter = market.deficit();
+        assertLt(deficitAfter, deficitBefore, "Deficit must shrink");
+        assertEq(deficitAfter, deficitBefore - covered, "Deficit reduced by exactly what reserves covered");
         assertEq(market.getPoolState().totalSupply, supplyBefore + covered, "Suppliers credited back the coverage");
 
-        console.log("Deficit: %s -> %s USDC", deficitBefore / 1e6, market.deficit() / 1e6);
+        console.log("Deficit: %s -> %s USDC", deficitBefore / 1e6, deficitAfter / 1e6);
         console.log("Reserves spent on the refund: %s USDC", covered / 1e6);
     }
 

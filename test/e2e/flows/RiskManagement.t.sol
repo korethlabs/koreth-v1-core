@@ -236,6 +236,6 @@ contract RiskManagement is E2EBase {
         lendingEngine.borrow(positionId, maxBorrow);
 
         console.log("Max borrow: %s USDC", maxBorrow / 1e6);
-        console.log("=== Borrow Cap Enforced ===");
+        console.log("=== Max LTV Enforced ===");
     }
 }

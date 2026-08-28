@@ -152,8 +152,11 @@ contract LenderOperations is E2EBase {
         vm.prank(alice);
         lendingEngine.borrow(positionId, maxBorrow / 2);
 
-        // Accrue interest (within staleness window)
+        // One hour of accrual lands exactly on maxStaleness, leaving the reads that follow no
+        // margin at all. Restamp the feeds the way the other tests here do, so the window is
+        // chosen for the interest it produces rather than for what the oracle still tolerates.
         _advanceTime(1 hours);
+        _refreshChainlinkMocks();
         market.accrueInterest();
 
         // Alice repays so Carol can withdraw
