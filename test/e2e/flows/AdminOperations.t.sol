@@ -6,7 +6,6 @@ import {InterestRateModel} from "../../../src/markets/InterestRateModel.sol";
 import {LendingPool} from "../../../src/markets/LendingPool.sol";
 import {IPositionManager} from "../../../src/interfaces/IPositionManager.sol";
 import {ILPAdapter} from "../../../src/interfaces/ILPAdapter.sol";
-import {FeeCollector} from "../../../src/core/FeeCollector.sol";
 import {RiskManager} from "../../../src/security/RiskManager.sol";
 import {RiskConfig} from "../../helpers/RiskConfig.sol";
 
