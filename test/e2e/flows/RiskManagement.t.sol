@@ -209,4 +209,33 @@ contract RiskManagement is E2EBase {
 
         console.log("=== Freeze Market Allows Liquidation ===");
     }
+
+    // ========================================================================
+    // 6. MAX LTV — borrowing beyond the collateral value limit reverts
+    // ========================================================================
+
+    function test_maxLTV_enforced() public {
+        // Max LTV prevents borrowing beyond collateral value limit.
+        uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
+        vm.startPrank(alice);
+        IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
+        vm.stopPrank();
+        vm.roll(block.number + 2);
+
+        uint256 maxBorrow = lendingEngine.getMaxBorrow(positionId);
+        assertGt(maxBorrow, 0, "Should be able to borrow");
+
+        // Cannot borrow more than max
+        vm.prank(alice);
+        vm.expectRevert("EXCEEDS_MAX_LTV");
+        lendingEngine.borrow(positionId, maxBorrow + 1);
+
+        // Can borrow exactly max
+        vm.prank(alice);
+        lendingEngine.borrow(positionId, maxBorrow);
+
+        console.log("Max borrow: %s USDC", maxBorrow / 1e6);
+        console.log("=== Max LTV Enforced ===");
+    }
 }

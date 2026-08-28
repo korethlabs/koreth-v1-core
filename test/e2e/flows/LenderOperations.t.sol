@@ -124,6 +124,61 @@ contract LenderOperations is E2EBase {
         assertGt(bobReceived, 0);
     }
 
+    /// @notice Lender withdraws more than deposited once borrower interest has accrued
+    function test_lenderEarnsProfit_withdrawsMore() public {
+        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(poolAddr);
+
+        // Carol supplies 10K USDC
+        address carol = makeAddr("carol");
+        _fundUsdc(carol, 10_000e6);
+        vm.startPrank(carol);
+        IERC20(Constants.USDC).approve(poolAddr, 10_000e6);
+        market.supply(10_000e6);
+        vm.stopPrank();
+
+        uint256 carolShares = market.shares(carol);
+        // Carol supplied 10K — her USDC balance is now ~0 after supply
+
+        // Alice borrows to generate interest
+        uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
+        vm.startPrank(alice);
+        IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
+        vm.stopPrank();
+        vm.roll(block.number + 2);
+
+        uint256 maxBorrow = lendingEngine.getMaxBorrow(positionId);
+        vm.prank(alice);
+        lendingEngine.borrow(positionId, maxBorrow / 2);
+
+        // One hour of accrual lands exactly on maxStaleness, leaving the reads that follow no
+        // margin at all. Restamp the feeds the way the other tests here do, so the window is
+        // chosen for the interest it produces rather than for what the oracle still tolerates.
+        _advanceTime(1 hours);
+        _refreshChainlinkMocks();
+        market.accrueInterest();
+
+        // Alice repays so Carol can withdraw
+        uint256 debt = lendingEngine.getDebt(positionId);
+        _fundUsdc(alice, debt);
+        vm.startPrank(alice);
+        IERC20(Constants.USDC).approve(poolAddr, type(uint256).max);
+        lendingEngine.repay(positionId, type(uint256).max);
+        vm.stopPrank();
+
+        // Carol withdraws all shares — should get back >= 10K (interest earned)
+        vm.prank(carol);
+        uint256 withdrawn = market.withdraw(carolShares);
+
+        // Withdrawn amount represents Carol's share of pool + interest
+        assertGt(withdrawn, 0, "Should withdraw something");
+        // With interest earned, withdrawn should be >= original deposit (10K USDC minus dead shares rounding)
+        assertGt(withdrawn, 10_000e6, "Should withdraw more than deposited");
+        console.log("Carol deposited: 10000 USDC, withdrew: %s USDC", withdrawn / 1e6);
+        console.log("=== Lender Earns Profit Passed ===");
+    }
+
     function _refreshChainlinkMocks() internal {
         int256 ethPrice = int256(_getEthPrice() / 1e10);
         vm.mockCall(
