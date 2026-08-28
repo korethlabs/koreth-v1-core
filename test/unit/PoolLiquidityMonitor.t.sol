@@ -14,6 +14,7 @@ import {UniswapV3Adapter} from "../../src/adapters/UniswapV3Adapter.sol";
 import {CurveAdapter} from "../../src/adapters/CurveAdapter.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {TestPricing} from "../helpers/TestPricing.sol";
+import {TestAdapters} from "../helpers/TestAdapters.sol";
 
 /// @notice Minimal stand-in for a Uniswap V3 pool: it holds its liquidity as plain token balances
 ///         spread across ticks, with no reserve figure, so the monitor only needs the token pair.
@@ -112,11 +113,11 @@ contract PoolLiquidityMonitorTest is Test {
         // holdings measure reads the pool itself — so any non-zero address satisfies the constructors.
         core.registerAdapter(
             ILPAdapter.LPType.UniswapV2,
-            address(new UniswapV2Adapter(makeAddr("v2Factory"), makeAddr("v2Router"), address(core)))
+            address(TestAdapters.uniswapV2(makeAddr("v2Factory"), makeAddr("v2Router"), address(core)))
         );
         core.registerAdapter(
             ILPAdapter.LPType.UniswapV3,
-            address(new UniswapV3Adapter(makeAddr("nftManager"), makeAddr("v3Factory"), address(core)))
+            address(TestAdapters.uniswapV3(makeAddr("nftManager"), makeAddr("v3Factory"), address(core)))
         );
 
         // The monitor measures a pool by what its AMM makes measurable, so it needs the pool listed
@@ -320,7 +321,7 @@ contract PoolLiquidityMonitorTest is Test {
         MockPool curvePool = new MockPool(address(weth), address(usdc));
         vm.startPrank(owner);
         core.registerAdapter(
-            ILPAdapter.LPType.Curve, address(new CurveAdapter(makeAddr("curveRegistry"), address(core)))
+            ILPAdapter.LPType.Curve, address(TestAdapters.curve(makeAddr("curveRegistry"), address(core)))
         );
         core.whitelistLpPool(address(curvePool), ILPAdapter.LPType.Curve);
         vm.stopPrank();

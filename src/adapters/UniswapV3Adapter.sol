@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.26;
 
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {ILPAdapter} from "../interfaces/ILPAdapter.sol";
 import {INonfungiblePositionManager, IUniswapV3Factory, IUniswapV3Pool} from "../interfaces/external/IUniswapV3.sol";
 import {IERC20 as OZIERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -13,6 +15,12 @@ import {ACLManager} from "../core/ACLManager.sol";
 /// @dev Real implementation — interacts with Uniswap V3 NonfungiblePositionManager.
 ///      Uses ProtocolCore for ownership. Protocol address updatable if PositionManager migrates.
 ///
+///      UUPS upgradeable, like every other contract the protocol routes through. This one holds the
+///      deposited NFTs, and every operation below is gated on still owning them, so its *address* is
+///      part of the custody relationship: repointing ProtocolCore at a different adapter would leave
+///      each live position resolving to a contract that never received its collateral. Upgrading the
+///      implementation behind a fixed proxy address ships a fix without moving the assets.
+///
 ///      Design notes:
 ///      - unwind() decreases liquidity and collects whatever is owed. In the liquidation flow the
 ///        LiquidationEngine sweeps uncollected fees FIRST (fees are not collateral — they are the
@@ -22,12 +30,16 @@ import {ACLManager} from "../core/ACLManager.sol";
 ///        then collects all owed tokens. The 1 wei of liquidity loss is negligible.
 ///      - amount0Min/amount1Min are 0 in decreaseLiquidity because slippage protection is
 ///        handled at the LiquidationEngine level via oracle-based post-swap validation.
-contract UniswapV3Adapter is ILPAdapter {
+contract UniswapV3Adapter is ILPAdapter, Initializable, UUPSUpgradeable {
     using SafeERC20 for OZIERC20;
 
-    INonfungiblePositionManager public immutable nftManager;
-    IUniswapV3Factory public immutable v3Factory;
-    ProtocolCore public immutable core;
+    // Storage, not immutables. Immutables do work behind a proxy — they live in the implementation
+    // bytecode — but they would make every replacement implementation re-supply these addresses by
+    // hand, and one wrong argument silently repoints the custodian of live collateral at something
+    // else. Set once by initialize(), an upgrade cannot get them wrong because it never restates them.
+    INonfungiblePositionManager public nftManager;
+    IUniswapV3Factory public v3Factory;
+    ProtocolCore public core;
 
     // --- Events ---
     event PositionLocked(uint256 indexed tokenId, address indexed from, address pool, uint128 liquidity);
@@ -46,12 +58,24 @@ contract UniswapV3Adapter is ILPAdapter {
         _;
     }
 
-    constructor(address _nftManager, address _factory, address _core) {
+    modifier onlyPoolAdmin() {
+        require(_acl().isPoolAdmin(msg.sender), "NOT_POOL_ADMIN");
+        _;
+    }
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address _nftManager, address _factory, address _core) external initializer {
         require(_nftManager != address(0) && _factory != address(0) && _core != address(0), "ZERO_ADDRESS");
         nftManager = INonfungiblePositionManager(_nftManager);
         v3Factory = IUniswapV3Factory(_factory);
         core = ProtocolCore(_core);
     }
+
+    function _authorizeUpgrade(address) internal override onlyPoolAdmin {}
 
     // --- ILPAdapter Implementation ---
 
@@ -354,4 +378,10 @@ contract UniswapV3Adapter is ILPAdapter {
         );
         return this.onERC721Received.selector;
     }
+
+    // --- Storage Gap ---
+    // 3 declared slots (0-2) + 47 gap slots = 50 total. When appending a state var, decrement __gap
+    // by the slots it consumes so the total stays 50 (UUPS storage-collision safety). Verified via
+    // `forge inspect ... storage-layout`.
+    uint256[47] private __gap;
 }

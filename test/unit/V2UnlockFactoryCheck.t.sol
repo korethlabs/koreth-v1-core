@@ -6,6 +6,7 @@ import {ACLManager} from "../../src/core/ACLManager.sol";
 import {ProtocolCore} from "../../src/core/ProtocolCore.sol";
 import {UniswapV2Adapter} from "../../src/adapters/UniswapV2Adapter.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {TestAdapters} from "../helpers/TestAdapters.sol";
 
 /// @notice ERC20 that also answers factory() — models a Uniswap V2 pair for the authenticity check.
 contract MockV2Pair is MockERC20 {
@@ -34,7 +35,7 @@ contract V2UnlockFactoryCheckTest is Test {
         core = new ProtocolCore(address(this), address(acl));
         // Let this test contract pass the adapter's onlyProtocol gate as a position manager.
         acl.addPositionManager(address(this));
-        adapter = new UniswapV2Adapter(ourFactory, router, address(core));
+        adapter = TestAdapters.uniswapV2(ourFactory, router, address(core));
     }
 
     /// @dev A pair reporting a factory other than ours must be refused before any transfer.

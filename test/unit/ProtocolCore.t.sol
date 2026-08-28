@@ -30,7 +30,7 @@ contract ProtocolCoreTest is Test {
     address public user = makeAddr("user");
 
     // Events — must redeclare to test with vm.expectEmit
-    event AdapterRegistered(ILPAdapter.LPType indexed lpType, address indexed oldAdapter, address indexed adapter);
+    event AdapterRegistered(ILPAdapter.LPType indexed lpType, address indexed adapter);
     event OracleRegistered(ILPAdapter.LPType indexed lpType, address indexed oldOracle, address indexed oracle);
     event LendingPoolRegistered(address indexed borrowAsset, address indexed pool);
     event LpPoolWhitelisted(address indexed pool, ILPAdapter.LPType indexed lpType);
@@ -99,8 +99,8 @@ contract ProtocolCoreTest is Test {
     function test_registerAdapter_success() public {
         address adapter = _stub();
 
-        vm.expectEmit(true, true, true, false);
-        emit AdapterRegistered(ILPAdapter.LPType.UniswapV3, address(0), adapter);
+        vm.expectEmit(true, true, false, false);
+        emit AdapterRegistered(ILPAdapter.LPType.UniswapV3, adapter);
 
         vm.prank(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, adapter);
@@ -108,22 +108,37 @@ contract ProtocolCoreTest is Test {
         assertEq(core.adapters(ILPAdapter.LPType.UniswapV3), adapter);
     }
 
-    /// @dev Replacing a live adapter has to be distinguishable from configuring one for the first
-    ///      time: the event is the only record that a component handling real collateral was
-    ///      swapped underneath the protocol.
-    function test_registerAdapter_overwriteExisting() public {
+    /// @dev An adapter holds the collateral deposited through it, so its address is part of the
+    ///      custody relationship and a live one may not be replaced: every open position would
+    ///      resolve to a contract that never received its assets. Fixes ship as an implementation
+    ///      upgrade behind the adapter's proxy, which leaves the registered address alone.
+    function test_registerAdapter_revertsWhenTypeAlreadySet() public {
         address adapter1 = _stub();
         address adapter2 = _stub();
 
         vm.startPrank(owner);
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, adapter1);
 
-        vm.expectEmit(true, true, true, false);
-        emit AdapterRegistered(ILPAdapter.LPType.UniswapV3, adapter1, adapter2);
+        vm.expectRevert("ADAPTER_ALREADY_SET");
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, adapter2);
         vm.stopPrank();
 
-        assertEq(core.adapters(ILPAdapter.LPType.UniswapV3), adapter2);
+        assertEq(core.adapters(ILPAdapter.LPType.UniswapV3), adapter1);
+    }
+
+    /// @dev The ban is on replacing a live adapter, not on integrating another AMM: a new AMM
+    ///      arrives as a new LPType, whose slot is still unset.
+    function test_registerAdapter_stillAllowsANewLpType() public {
+        address v3 = _stub();
+        address curve = _stub();
+
+        vm.startPrank(owner);
+        core.registerAdapter(ILPAdapter.LPType.UniswapV3, v3);
+        core.registerAdapter(ILPAdapter.LPType.Curve, curve);
+        vm.stopPrank();
+
+        assertEq(core.adapters(ILPAdapter.LPType.UniswapV3), v3);
+        assertEq(core.adapters(ILPAdapter.LPType.Curve), curve);
     }
 
     function test_registerAdapter_revertsNotPoolAdmin() public {

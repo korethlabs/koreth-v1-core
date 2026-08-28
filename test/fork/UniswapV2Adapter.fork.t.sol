@@ -8,6 +8,7 @@ import {UniswapV2Adapter} from "../../src/adapters/UniswapV2Adapter.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {IUniswapV2Pair} from "../../src/interfaces/external/IUniswapV2.sol";
 import {IERC20} from "../../src/interfaces/IERC20.sol";
+import {TestAdapters} from "../helpers/TestAdapters.sol";
 
 /// @title UniswapV2AdapterForkTest
 /// @notice Fork tests against REAL Uniswap V2 on Ethereum mainnet
@@ -29,7 +30,7 @@ contract UniswapV2AdapterForkTest is Test {
 
         aclManager = new ACLManager(owner);
         core = new ProtocolCore(owner, address(aclManager));
-        adapter = new UniswapV2Adapter(UNI_V2_FACTORY, UNI_V2_ROUTER, address(core));
+        adapter = TestAdapters.uniswapV2(UNI_V2_FACTORY, UNI_V2_ROUTER, address(core));
 
         // Grant protocol address the POSITION_MANAGER role so it can call adapter
         bytes32 pmRole = aclManager.POSITION_MANAGER();

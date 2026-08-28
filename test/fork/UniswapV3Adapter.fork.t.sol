@@ -8,6 +8,7 @@ import {UniswapV3Adapter} from "../../src/adapters/UniswapV3Adapter.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
 import {INonfungiblePositionManager} from "../../src/interfaces/external/IUniswapV3.sol";
 import {IERC20} from "../../src/interfaces/IERC20.sol";
+import {TestAdapters} from "../helpers/TestAdapters.sol";
 
 /// @title UniswapV3AdapterForkTest
 /// @notice Fork tests against REAL Uniswap V3 on Ethereum mainnet
@@ -30,7 +31,7 @@ contract UniswapV3AdapterForkTest is Test {
 
         aclManager = new ACLManager(owner);
         core = new ProtocolCore(owner, address(aclManager));
-        adapter = new UniswapV3Adapter(UNI_V3_NFT_MANAGER, UNI_V3_FACTORY, address(core));
+        adapter = TestAdapters.uniswapV3(UNI_V3_NFT_MANAGER, UNI_V3_FACTORY, address(core));
         nftManager = INonfungiblePositionManager(UNI_V3_NFT_MANAGER);
 
         // Grant protocol address the POSITION_MANAGER role so it can call adapter
