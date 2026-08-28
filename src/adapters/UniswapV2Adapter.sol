@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.26;
 
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {ILPAdapter} from "../interfaces/ILPAdapter.sol";
 import {IUniswapV2Pair, IUniswapV2Factory, IUniswapV2Router} from "../interfaces/external/IUniswapV2.sol";
 import {IERC20 as OZIERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -15,12 +17,22 @@ import {ACLManager} from "../core/ACLManager.sol";
 ///      - Fees auto-compound into reserves (no separate collectFees)
 ///      - LP token amount IS the liquidity
 ///      - removeLiquidity via V2 Router
-contract UniswapV2Adapter is ILPAdapter {
+///
+///      UUPS upgradeable, like every other contract the protocol routes through. This one holds the
+///      deposited LP tokens, so its *address* is part of the custody relationship: repointing
+///      ProtocolCore at a different adapter would leave each live position resolving to a contract
+///      that never received its collateral. Upgrading the implementation behind a fixed proxy
+///      address ships a fix without moving the assets.
+contract UniswapV2Adapter is ILPAdapter, Initializable, UUPSUpgradeable {
     using SafeERC20 for OZIERC20;
 
-    IUniswapV2Factory public immutable v2Factory;
-    IUniswapV2Router public immutable v2Router;
-    ProtocolCore public immutable core;
+    // Storage, not immutables. Immutables do work behind a proxy — they live in the implementation
+    // bytecode — but they would make every replacement implementation re-supply these addresses by
+    // hand, and one wrong argument silently repoints the custodian of live collateral at something
+    // else. Set once by initialize(), an upgrade cannot get them wrong because it never restates them.
+    IUniswapV2Factory public v2Factory;
+    IUniswapV2Router public v2Router;
+    ProtocolCore public core;
 
     // --- Events ---
     event PositionLocked(address indexed pair, address indexed from, uint256 amount);
@@ -37,12 +49,24 @@ contract UniswapV2Adapter is ILPAdapter {
         _;
     }
 
-    constructor(address _factory, address _router, address _core) {
+    modifier onlyPoolAdmin() {
+        require(_acl().isPoolAdmin(msg.sender), "NOT_POOL_ADMIN");
+        _;
+    }
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address _factory, address _router, address _core) external initializer {
         require(_factory != address(0) && _router != address(0) && _core != address(0), "ZERO_ADDRESS");
         v2Factory = IUniswapV2Factory(_factory);
         v2Router = IUniswapV2Router(_router);
         core = ProtocolCore(_core);
     }
+
+    function _authorizeUpgrade(address) internal override onlyPoolAdmin {}
 
     // --- ILPAdapter ---
 
@@ -282,4 +306,10 @@ contract UniswapV2Adapter is ILPAdapter {
     function _min(uint256 a, uint256 b) internal pure returns (uint256) {
         return a < b ? a : b;
     }
+
+    // --- Storage Gap ---
+    // 3 declared slots (0-2) + 47 gap slots = 50 total. When appending a state var, decrement __gap
+    // by the slots it consumes so the total stays 50 (UUPS storage-collision safety). Verified via
+    // `forge inspect ... storage-layout`.
+    uint256[47] private __gap;
 }

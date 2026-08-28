@@ -224,14 +224,34 @@ abstract contract DeployBase is Script {
         _afterOracles(cfg);
     }
 
+    /// @dev Behind proxies like everything above, and for a stronger reason: the adapters custody
+    ///      the deposited collateral, and ProtocolCore.registerAdapter binds an LP type to one
+    ///      address for good. The proxy address is what gets registered, so a later fix ships as an
+    ///      implementation upgrade and the collateral never has to move.
     function _deployAdapters(ChainConfig memory cfg) internal {
         if (cfg.v3NftManager != address(0)) {
-            UniswapV3Adapter v3Adapter = new UniswapV3Adapter(cfg.v3NftManager, cfg.v3Factory, address(core));
+            UniswapV3Adapter v3Impl = new UniswapV3Adapter();
+            UniswapV3Adapter v3Adapter = UniswapV3Adapter(
+                address(
+                    new ERC1967Proxy(
+                        address(v3Impl),
+                        abi.encodeCall(UniswapV3Adapter.initialize, (cfg.v3NftManager, cfg.v3Factory, address(core)))
+                    )
+                )
+            );
             core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(v3Adapter));
         }
 
         if (cfg.v2Factory != address(0)) {
-            UniswapV2Adapter v2Adapter = new UniswapV2Adapter(cfg.v2Factory, cfg.v2Router, address(core));
+            UniswapV2Adapter v2Impl = new UniswapV2Adapter();
+            UniswapV2Adapter v2Adapter = UniswapV2Adapter(
+                address(
+                    new ERC1967Proxy(
+                        address(v2Impl),
+                        abi.encodeCall(UniswapV2Adapter.initialize, (cfg.v2Factory, cfg.v2Router, address(core)))
+                    )
+                )
+            );
             core.registerAdapter(ILPAdapter.LPType.UniswapV2, address(v2Adapter));
         }
     }

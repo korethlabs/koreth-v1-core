@@ -1,15 +1,24 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.26;
 
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {ILPAdapter} from "../interfaces/ILPAdapter.sol";
 import {ProtocolCore} from "../core/ProtocolCore.sol";
 import {ACLManager} from "../core/ACLManager.sol";
 
 /// @title CurveAdapter
 /// @notice Handles Curve LP token deposits, withdrawals, and unwinding
-contract CurveAdapter is ILPAdapter {
-    ProtocolCore public immutable core;
-    address public immutable curveRegistry;
+/// @dev UUPS upgradeable, like the implemented adapters. An adapter is the custodian of the
+///      collateral deposited through it, so it must never be deployable in a form whose only fix
+///      path is registering a different address — the operation that would separate live positions
+///      from their assets. Enforced here even though the methods are still stubs, so this one cannot
+///      be built out into a live custodian that lacks the upgrade path.
+contract CurveAdapter is ILPAdapter, Initializable, UUPSUpgradeable {
+    // Storage, not immutables: see UniswapV2Adapter for why the custodian's wiring is set once by
+    // initialize() rather than re-supplied by every replacement implementation.
+    ProtocolCore public core;
+    address public curveRegistry;
 
     function _acl() internal view returns (ACLManager) {
         return core.aclManager();
@@ -21,11 +30,23 @@ contract CurveAdapter is ILPAdapter {
         _;
     }
 
-    constructor(address _curveRegistry, address _core) {
+    modifier onlyPoolAdmin() {
+        require(_acl().isPoolAdmin(msg.sender), "NOT_POOL_ADMIN");
+        _;
+    }
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address _curveRegistry, address _core) external initializer {
         require(_curveRegistry != address(0) && _core != address(0), "ZERO_ADDRESS");
         curveRegistry = _curveRegistry;
         core = ProtocolCore(_core);
     }
+
+    function _authorizeUpgrade(address) internal override onlyPoolAdmin {}
 
     /// @inheritdoc ILPAdapter
     function validateAndLock(
@@ -113,4 +134,10 @@ contract CurveAdapter is ILPAdapter {
     function poolHoldings(address) external pure returns (address, address, uint256, uint256) {
         revert("NOT_IMPLEMENTED");
     }
+
+    // --- Storage Gap ---
+    // 2 declared slots (0-1) + 48 gap slots = 50 total. When appending a state var, decrement __gap
+    // by the slots it consumes so the total stays 50 (UUPS storage-collision safety). Verified via
+    // `forge inspect ... storage-layout`.
+    uint256[48] private __gap;
 }

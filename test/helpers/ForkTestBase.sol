@@ -28,6 +28,7 @@ import {IERC20} from "../../src/interfaces/IERC20.sol";
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 import {Constants} from "./Constants.sol";
 import {RiskConfig} from "./RiskConfig.sol";
+import {TestAdapters} from "./TestAdapters.sol";
 
 /// @title ForkTestBase
 /// @notice Base contract for all fork tests — deploys the full protocol against forked mainnet
@@ -179,8 +180,8 @@ abstract contract ForkTestBase is Test {
         priceFeedRegistry.setPriceFeed(Constants.USDT, Constants.CL_USDT_USD);
 
         // 9. Adapters
-        v3Adapter = new UniswapV3Adapter(Constants.UNI_V3_NFT_MANAGER, Constants.UNI_V3_FACTORY, address(core));
-        v2Adapter = new UniswapV2Adapter(Constants.UNI_V2_FACTORY, Constants.UNI_V2_ROUTER, address(core));
+        v3Adapter = TestAdapters.uniswapV3(Constants.UNI_V3_NFT_MANAGER, Constants.UNI_V3_FACTORY, address(core));
+        v2Adapter = TestAdapters.uniswapV2(Constants.UNI_V2_FACTORY, Constants.UNI_V2_ROUTER, address(core));
 
         // Register adapters
         core.registerAdapter(ILPAdapter.LPType.UniswapV3, address(v3Adapter));

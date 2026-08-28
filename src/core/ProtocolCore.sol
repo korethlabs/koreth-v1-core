@@ -82,9 +82,11 @@ contract ProtocolCore {
     // --- Events ---
     event PriceFeedRegistryUpdated(address indexed oldRegistry, address indexed newRegistry);
     event RiskManagerUpdated(address indexed oldManager, address indexed newManager);
-    // Carry the previous address: re-registering silently replaces a live adapter/oracle, and an
-    // event that only reports the new one makes a swap indistinguishable from a first-time setup.
-    event AdapterRegistered(ILPAdapter.LPType indexed lpType, address indexed oldAdapter, address indexed adapter);
+    // No previous address here: registerAdapter below accepts a type only while it is unset, so the
+    // outgoing adapter is provably address(0) and an "oldAdapter" argument would report nothing but
+    // a constant. The oracle event keeps its, because re-registering an oracle IS allowed and an
+    // event that only reported the new one would make a swap look like a first-time setup.
+    event AdapterRegistered(ILPAdapter.LPType indexed lpType, address indexed adapter);
     event OracleRegistered(ILPAdapter.LPType indexed lpType, address indexed oldOracle, address indexed oracle);
     event LendingPoolRegistered(address indexed borrowAsset, address indexed pool);
     event PoolFactoryUpdated(address indexed oldFactory, address indexed newFactory);
@@ -174,10 +176,25 @@ contract ProtocolCore {
 
     // --- Registry Management ---
 
+    /// @notice Bind an LP type to the adapter that services it. Permanent for that type.
+    /// @dev Write-once, unlike its registerOracle neighbour below, and the difference is custody.
+    ///      An adapter holds the collateral deposited through it — the V2 one holds the LP tokens,
+    ///      the V3 one holds the position NFTs and gates every operation on still owning them — so
+    ///      its address is part of the custody relationship, not a lookup. Pointing a live type at
+    ///      a second adapter would leave every open position resolving to a contract that never
+    ///      received its collateral: withdraw fails, liquidate fails, and the assets sit in the
+    ///      previous adapter reachable only through entrypoints nothing routes to any more. An
+    ///      oracle holds nothing, so replacing one costs a price feed and no assets.
+    ///
+    ///      This forbids replacing a live adapter, not integrating a new AMM: a new AMM arrives as
+    ///      a new LPType, which is still unset and still registrable (see maxRegisteredLPType).
+    ///      Fixing an adapter is an implementation upgrade behind its proxy, which leaves the
+    ///      registered address — and therefore the custody — untouched.
     function registerAdapter(ILPAdapter.LPType lpType, address adapter) external onlyPoolAdmin {
         require(adapter != address(0), "ZERO_ADDRESS");
         require(adapter.code.length > 0, "NOT_CONTRACT");
-        emit AdapterRegistered(lpType, adapters[lpType], adapter);
+        require(adapters[lpType] == address(0), "ADAPTER_ALREADY_SET");
+        emit AdapterRegistered(lpType, adapter);
         adapters[lpType] = adapter;
         if (uint8(lpType) > maxRegisteredLPType) {
             maxRegisteredLPType = uint8(lpType);

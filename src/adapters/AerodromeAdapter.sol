@@ -1,16 +1,25 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.26;
 
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {ILPAdapter} from "../interfaces/ILPAdapter.sol";
 import {ProtocolCore} from "../core/ProtocolCore.sol";
 import {ACLManager} from "../core/ACLManager.sol";
 
 /// @title AerodromeAdapter
 /// @notice Handles Aerodrome/Velodrome LP deposits, withdrawals, and unwinding
-contract AerodromeAdapter is ILPAdapter {
-    address public immutable aerodromeRouter;
-    address public immutable aerodromeFactory;
-    ProtocolCore public immutable core;
+/// @dev UUPS upgradeable, like the implemented adapters. An adapter is the custodian of the
+///      collateral deposited through it, so it must never be deployable in a form whose only fix
+///      path is registering a different address — the operation that would separate live positions
+///      from their assets. Enforced here even though the methods are still stubs, so this one cannot
+///      be built out into a live custodian that lacks the upgrade path.
+contract AerodromeAdapter is ILPAdapter, Initializable, UUPSUpgradeable {
+    // Storage, not immutables: see UniswapV2Adapter for why the custodian's wiring is set once by
+    // initialize() rather than re-supplied by every replacement implementation.
+    address public aerodromeRouter;
+    address public aerodromeFactory;
+    ProtocolCore public core;
 
     function _acl() internal view returns (ACLManager) {
         return core.aclManager();
@@ -22,12 +31,24 @@ contract AerodromeAdapter is ILPAdapter {
         _;
     }
 
-    constructor(address _router, address _factory, address _core) {
+    modifier onlyPoolAdmin() {
+        require(_acl().isPoolAdmin(msg.sender), "NOT_POOL_ADMIN");
+        _;
+    }
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address _router, address _factory, address _core) external initializer {
         require(_router != address(0) && _factory != address(0) && _core != address(0), "ZERO_ADDRESS");
         aerodromeRouter = _router;
         aerodromeFactory = _factory;
         core = ProtocolCore(_core);
     }
+
+    function _authorizeUpgrade(address) internal override onlyPoolAdmin {}
 
     /// @inheritdoc ILPAdapter
     function validateAndLock(address, uint256, uint256, address) external onlyProtocol returns (LPInfo memory info) {
@@ -98,4 +119,10 @@ contract AerodromeAdapter is ILPAdapter {
     function poolHoldings(address) external pure returns (address, address, uint256, uint256) {
         revert("NOT_IMPLEMENTED");
     }
+
+    // --- Storage Gap ---
+    // 3 declared slots (0-2) + 47 gap slots = 50 total. When appending a state var, decrement __gap
+    // by the slots it consumes so the total stays 50 (UUPS storage-collision safety). Verified via
+    // `forge inspect ... storage-layout`.
+    uint256[47] private __gap;
 }

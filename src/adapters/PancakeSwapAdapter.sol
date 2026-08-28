@@ -1,19 +1,29 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.26;
 
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {ILPAdapter} from "../interfaces/ILPAdapter.sol";
 import {ProtocolCore} from "../core/ProtocolCore.sol";
 import {ACLManager} from "../core/ACLManager.sol";
 
 /// @title PancakeSwapAdapter
 /// @notice Handles PancakeSwap V2 and V3 LP positions on BSC
-contract PancakeSwapAdapter is ILPAdapter {
-    address public immutable v2Factory;
-    address public immutable v2Router;
-    address public immutable v3NftManager;
-    address public immutable v3Factory;
-    ProtocolCore public immutable core;
-    bool public immutable isV3;
+/// @dev UUPS upgradeable, like the implemented adapters. An adapter is the custodian of the
+///      collateral deposited through it, so it must never be deployable in a form whose only fix
+///      path is registering a different address — the operation that would separate live positions
+///      from their assets. Enforced here even though the methods are still stubs, so this one cannot
+///      be built out into a live custodian that lacks the upgrade path.
+contract PancakeSwapAdapter is ILPAdapter, Initializable, UUPSUpgradeable {
+    // Storage, not immutables: see UniswapV2Adapter for why the custodian's wiring is set once by
+    // initialize() rather than re-supplied by every replacement implementation.
+    address public v2Factory;
+    address public v2Router;
+    address public v3NftManager;
+    address public v3Factory;
+    ProtocolCore public core;
+    /// @dev Packs into the `core` slot (20 + 1 bytes), so the two together occupy one slot.
+    bool public isV3;
 
     function _acl() internal view returns (ACLManager) {
         return core.aclManager();
@@ -25,14 +35,27 @@ contract PancakeSwapAdapter is ILPAdapter {
         _;
     }
 
-    constructor(
+    modifier onlyPoolAdmin() {
+        require(_acl().isPoolAdmin(msg.sender), "NOT_POOL_ADMIN");
+        _;
+    }
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(
         address _v2Factory,
         address _v2Router,
         address _v3NftManager,
         address _v3Factory,
         address _core,
         bool _isV3
-    ) {
+    )
+        external
+        initializer
+    {
         require(_core != address(0), "ZERO_ADDRESS");
         if (_isV3) {
             require(_v3NftManager != address(0) && _v3Factory != address(0), "ZERO_V3_DEPS");
@@ -46,6 +69,8 @@ contract PancakeSwapAdapter is ILPAdapter {
         core = ProtocolCore(_core);
         isV3 = _isV3;
     }
+
+    function _authorizeUpgrade(address) internal override onlyPoolAdmin {}
 
     /// @inheritdoc ILPAdapter
     function validateAndLock(address, uint256, uint256, address) external onlyProtocol returns (LPInfo memory info) {
@@ -121,4 +146,10 @@ contract PancakeSwapAdapter is ILPAdapter {
     function poolHoldings(address) external pure returns (address, address, uint256, uint256) {
         revert("NOT_IMPLEMENTED");
     }
+
+    // --- Storage Gap ---
+    // 5 declared slots (0-4, with isV3 packed alongside core in slot 4) + 45 gap slots = 50 total.
+    // When appending a state var, decrement __gap by the slots it consumes so the total stays 50
+    // (UUPS storage-collision safety). Verified via `forge inspect ... storage-layout`.
+    uint256[45] private __gap;
 }

@@ -9,6 +9,7 @@ import {UniswapV2Adapter} from "../../src/adapters/UniswapV2Adapter.sol";
 import {CurveAdapter} from "../../src/adapters/CurveAdapter.sol";
 import {AerodromeAdapter} from "../../src/adapters/AerodromeAdapter.sol";
 import {PancakeSwapAdapter} from "../../src/adapters/PancakeSwapAdapter.sol";
+import {TestAdapters} from "../helpers/TestAdapters.sol";
 
 /// @title AdapterCapabilities
 /// @notice Verifies each adapter's self-declared capability flags: supportsFeeCollection()
@@ -30,27 +31,27 @@ contract AdapterCapabilities is Test {
     // liquidation fee-sweep must key off this flag rather than a hardcoded LP type.
 
     function test_uniswapV3_supportsFeeCollection_true() public {
-        UniswapV3Adapter adapter = new UniswapV3Adapter(A, B, address(core));
+        UniswapV3Adapter adapter = TestAdapters.uniswapV3(A, B, address(core));
         assertTrue(adapter.supportsFeeCollection(), "V3 holds fees in the NFT");
     }
 
     function test_uniswapV2_supportsFeeCollection_false() public {
-        UniswapV2Adapter adapter = new UniswapV2Adapter(A, B, address(core));
+        UniswapV2Adapter adapter = TestAdapters.uniswapV2(A, B, address(core));
         assertFalse(adapter.supportsFeeCollection(), "V2 fees compound into reserves");
     }
 
     function test_curve_supportsFeeCollection_false() public {
-        CurveAdapter adapter = new CurveAdapter(A, address(core));
+        CurveAdapter adapter = TestAdapters.curve(A, address(core));
         assertFalse(adapter.supportsFeeCollection(), "Curve stub declares no separate fees");
     }
 
     function test_aerodrome_supportsFeeCollection_false() public {
-        AerodromeAdapter adapter = new AerodromeAdapter(A, B, address(core));
+        AerodromeAdapter adapter = TestAdapters.aerodrome(A, B, address(core));
         assertFalse(adapter.supportsFeeCollection(), "Aerodrome stub declares no separate fees");
     }
 
     function test_pancakeV3_supportsFeeCollection_false() public {
-        PancakeSwapAdapter adapter = new PancakeSwapAdapter(address(0), address(0), A, B, address(core), true);
+        PancakeSwapAdapter adapter = TestAdapters.pancakeSwapV3(A, B, address(core));
         assertFalse(adapter.supportsFeeCollection(), "Pancake stub declares no separate fees");
     }
 
@@ -59,14 +60,14 @@ contract AdapterCapabilities is Test {
     // otherwise _detectLPType could route collateral into an adapter that cannot service it.
 
     function test_pancakeV3_isSupported_alwaysFalse() public {
-        PancakeSwapAdapter adapter = new PancakeSwapAdapter(address(0), address(0), A, B, address(core), true);
+        PancakeSwapAdapter adapter = TestAdapters.pancakeSwapV3(A, B, address(core));
         assertFalse(adapter.isSupported(A), "V3 NFT manager address must not report supported");
         assertFalse(adapter.isSupported(C), "arbitrary address must not report supported");
         assertFalse(adapter.isSupported(address(0)), "zero address must not report supported");
     }
 
     function test_pancakeV2_isSupported_alwaysFalse() public {
-        PancakeSwapAdapter adapter = new PancakeSwapAdapter(A, B, address(0), address(0), address(core), false);
+        PancakeSwapAdapter adapter = TestAdapters.pancakeSwapV2(A, B, address(core));
         assertFalse(adapter.isSupported(C), "V2 stub must not report supported");
     }
 }
