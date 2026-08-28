@@ -110,9 +110,9 @@ contract V3Liquidation is E2EBase {
         console.log("=== V3 Borrow Max Test Passed ===");
     }
 
+    /// @notice A V3 position whose collateral value drops 60% is reported liquidatable, with a
+    ///         non-zero maxRepay. Covers the isLiquidatable path only — no seizure is performed.
     function test_V3_liquidatableAfterCrash() public {
-        // V3 positions have amount=0 — liquidation uses different code path
-        // Need to verify V3 NFT unwind works end-to-end
         uint256 tokenId = _createV3Position(alice, 1 ether, 2000e6);
         uint256 positionId = _depositV3(alice, tokenId);
         vm.roll(block.number + 2);
@@ -128,11 +128,6 @@ contract V3Liquidation is E2EBase {
 
         (bool canLiq, uint256 maxRepay) = liquidationEngine.isLiquidatable(positionId);
         assertTrue(canLiq, "Must be liquidatable");
-
-        // Note: V3 liquidation requires pos.amount > 0 for the ZERO_LIQUIDITY check.
-        // Since V3 positions have amount=0 (liquidity is in NFT), this test verifies
-        // the isLiquidatable path. Full V3 NFT unwind requires adapter changes
-        // to read liquidity from the NFT instead of pos.amount.
 
         console.log("V3 position value: $%s (mocked to $%s)", originalValue / 1e18, (originalValue * 40) / 100 / 1e18);
         console.log("Max repay: %s USDC", maxRepay / 1e6);
