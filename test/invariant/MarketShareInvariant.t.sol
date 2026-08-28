@@ -196,7 +196,6 @@ contract MarketShareInvariantTest is Test {
 
         // Borrower creates demand for interest — bound to available liquidity
         uint256 maxBorrowable = supplyAmt / 2; // at most 50% of supply
-        if (maxBorrowable < 10_000e18) return; // skip if supply too small for meaningful borrow
         borrowAmt = bound(borrowAmt, 10_000e18, maxBorrowable > 65_000e18 ? 65_000e18 : maxBorrowable);
         address borrower = makeAddr("borrower");
         vm.prank(borrower);
