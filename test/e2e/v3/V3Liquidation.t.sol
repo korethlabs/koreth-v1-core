@@ -110,8 +110,9 @@ contract V3Liquidation is E2EBase {
         console.log("=== V3 Borrow Max Test Passed ===");
     }
 
-    /// @notice A V3 position whose collateral value drops 60% is reported liquidatable, with a
-    ///         non-zero maxRepay. Covers the isLiquidatable path only — no seizure is performed.
+    /// @notice A V3 position whose collateral value drops 60% is reported liquidatable.
+    ///         Covers the isLiquidatable path only — no seizure is performed, and the maxRepay
+    ///         it returns is logged rather than asserted.
     function test_V3_liquidatableAfterCrash() public {
         uint256 tokenId = _createV3Position(alice, 1 ether, 2000e6);
         uint256 positionId = _depositV3(alice, tokenId);
