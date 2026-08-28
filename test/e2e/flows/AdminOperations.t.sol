@@ -350,77 +350,103 @@ contract AdminOperations is E2EBase {
         console.log("=== Borrow Cooldown (5 blocks) Test Passed ===");
     }
 
-    // ========== writeOffDebt bad debt flow ==========
+    // ========== bad debt write-off and deficit elimination ==========
 
-    /// @notice Create underwater position, liquidate partially, write off remaining bad debt.
-    function test_writeOffDebt_badDebtFlow() public {
-        // Alice deposits and borrows aggressively
+    /// @dev Drives a position into genuine bad debt and liquidates it.
+    ///
+    ///      Two conditions have to hold at once, and both are asserted here rather than logged:
+    ///      the liquidator must stop short of the outstanding debt, and the collateral left
+    ///      behind must sit at or under the engine's dust threshold. Only then does liquidate()
+    ///      reach its write-off branch. Repaying the full `maxRepay` — which equals the entire
+    ///      debt once the position is below the critical health factor — settles the loan out of
+    ///      the liquidator's own pocket and leaves nothing to write off.
+    ///
+    ///      A V3 position is used deliberately: its `amount` stays 0, so the mocked collateral
+    ///      price still applies after the seizure and the residual value the engine re-reads is
+    ///      the crashed one.
+    /// @return positionId The position that was liquidated into bad debt
+    function _liquidateIntoBadDebt() private returns (uint256 positionId) {
         uint256 tokenId = _createV3Position(alice, 2 ether, 4000e6);
-        uint256 positionId = _depositV3(alice, tokenId);
+        positionId = _depositV3(alice, tokenId);
         vm.roll(block.number + 2);
 
         uint256 maxBorrow = lendingEngine.getMaxBorrow(positionId);
         vm.prank(alice);
         lendingEngine.borrow(positionId, (maxBorrow * 90) / 100);
 
-        uint256 debtBefore = _getDebt(positionId);
-        assertGt(debtBefore, 0, "Should have debt");
+        uint256 debt = _getDebt(positionId);
+        assertGt(debt, 0, "Position must carry debt");
 
-        // Crash ETH price severely to make position deeply underwater
-        _crashEthPrice(8000 ether);
+        // Price the collateral down to the dust threshold: whatever debt survives the repayment
+        // has no collateral behind it.
+        PositionManager.Position memory pos = positionManager.getPosition(positionId);
+        _mockOraclePrice(pos.lpToken, pos.tokenId, pos.amount, pos.lpType, liquidationEngine.DUST_THRESHOLD_USD());
 
-        // Verify position is liquidatable
         (bool canLiq, uint256 maxRepay) = liquidationEngine.isLiquidatable(positionId);
         assertTrue(canLiq, "Position must be liquidatable");
 
-        // Liquidate what we can
-        if (maxRepay > 0) {
-            address poolAddr = address(usdcPool);
-            vm.startPrank(liquidator);
-            IERC20(Constants.USDC).approve(address(liquidationEngine), maxRepay);
-            IERC20(Constants.USDC).approve(poolAddr, maxRepay);
-            liquidationEngine.liquidate(positionId, maxRepay, block.timestamp + 300, 0, 0);
-            vm.stopPrank();
-        }
+        uint256 repayAmount = debt / 2;
+        assertLt(repayAmount, debt, "Repayment must leave debt outstanding");
+        assertLe(repayAmount, maxRepay, "Repayment must stay within the close factor");
 
-        // Check if there's remaining debt (bad debt)
-        uint256 remainingDebt = _getDebt(positionId);
-
-        // Write off bad debt via LendingEngine (onlyLiquidationEngine)
-        if (remainingDebt > 0) {
-            // Assert DebtWrittenOff fires with the position, market, debt amount, and caller.
-            vm.expectEmit(true, true, false, true, address(lendingEngine));
-            emit DebtWrittenOff(positionId, usdcBorrowAsset, remainingDebt, address(liquidationEngine));
-
-            vm.prank(address(liquidationEngine));
-            lendingEngine.writeOffDebt(positionId);
-
-            uint256 debtAfterWriteOff = _getDebt(positionId);
-            assertEq(debtAfterWriteOff, 0, "Debt should be zero after write-off");
-
-            // Market should have recorded deficit
-            address poolAddr = address(usdcPool);
-            uint256 marketDeficit = LendingPool(poolAddr).deficit();
-            assertGt(marketDeficit, 0, "Market should have deficit after write-off");
-
-            console.log("Remaining debt written off: %s USDC", remainingDebt / 1e6);
-            console.log("Market deficit: %s USDC", marketDeficit / 1e6);
-        }
-
-        console.log("=== Bad Debt Write-Off Test Passed ===");
+        _fundUsdc(liquidator, repayAmount);
+        vm.startPrank(liquidator);
+        IERC20(Constants.USDC).approve(address(liquidationEngine), repayAmount);
+        // Topics only: the written-off amount includes the interest liquidate() accrues on entry,
+        // and its size is asserted through the pool's deficit by the callers.
+        vm.expectEmit(true, true, false, false, address(lendingEngine));
+        emit DebtWrittenOff(positionId, usdcBorrowAsset, 0, address(0));
+        liquidationEngine.liquidate(positionId, repayAmount, block.timestamp + 300, 0, 0);
+        vm.stopPrank();
     }
 
-    // ========== eliminateDeficit ==========
+    /// @notice A liquidation that leaves debt behind on worthless collateral writes that debt off
+    ///         and books it as pool deficit, socialized onto the suppliers.
+    function test_badDebtWriteoff_deficitRecorded() public {
+        LendingPool market = LendingPool(address(usdcPool));
 
-    /// @notice After writeOffDebt creates a deficit, build reserves via interest, then eliminate deficit.
+        uint256 deficitBefore = market.deficit();
+        uint256 supplyBefore = market.getPoolState().totalSupply;
+
+        uint256 positionId = _liquidateIntoBadDebt();
+
+        uint256 deficitRecorded = market.deficit() - deficitBefore;
+        assertGt(deficitRecorded, 0, "Write-off must record a deficit");
+        assertEq(_getDebt(positionId), 0, "Write-off must clear the position's debt");
+        assertEq(
+            uint256(positionManager.getPosition(positionId).status),
+            uint256(IPositionManager.PositionStatus.Liquidated),
+            "Position must end up liquidated"
+        );
+
+        // recordDeficit socializes whatever reserves could not absorb by cutting totalSupply, and
+        // tracks exactly that cut as the deficit — the two move by the same amount.
+        assertEq(
+            supplyBefore - market.getPoolState().totalSupply,
+            deficitRecorded,
+            "Supplier loss must equal the recorded deficit"
+        );
+
+        console.log("Deficit recorded: %s USDC", deficitRecorded / 1e6);
+    }
+
+    /// @notice Reserves accrued after a write-off refund the socialized loss: eliminateDeficit
+    ///         draws the reserves down, shrinks the deficit and credits the suppliers back.
     function test_eliminateDeficit() public {
-        address poolAddr = address(usdcPool);
+        LendingPool market = LendingPool(address(usdcPool));
 
-        // Step 1: Set reserve factor so protocol accumulates reserves from interest
+        _liquidateIntoBadDebt();
+
+        uint256 deficitBefore = market.deficit();
+        assertGt(deficitBefore, 0, "Scenario must leave a deficit to eliminate");
+
+        // Reserves have to be rebuilt after the write-off, not before: recordDeficit spends them
+        // first and only socializes what they could not absorb. The deployed pool runs a 0 reserve
+        // factor, so state the factor here instead of relying on the deployment.
         vm.prank(deployer);
-        LendingPool(poolAddr).setReserveFactor(2000); // 20%
+        market.setReserveFactor(2000); // 20% of interest kept by the protocol
 
-        // Step 2: Create a position with active debt to generate interest
+        // A second borrower pays the interest that refills the reserves.
         uint256 tokenId = _createV3Position(alice, 2 ether, 4000e6);
         uint256 positionId = _depositV3(alice, tokenId);
         vm.roll(block.number + 2);
@@ -429,200 +455,25 @@ contract AdminOperations is E2EBase {
         vm.prank(alice);
         lendingEngine.borrow(positionId, (maxBorrow * 90) / 100);
 
-        // Step 3: Advance time to accumulate interest (and thus reserves)
-        _advanceTime(30 days);
-        lendingEngine.accrueInterest(usdcBorrowAsset);
-
-        uint256 reservesBefore = LendingPool(poolAddr).protocolReserves();
-        console.log("Protocol reserves after 30 days: %s USDC", reservesBefore / 1e6);
-        assertGt(reservesBefore, 0, "Should have accumulated reserves");
-
-        // Step 4: Crash price and create bad debt
-        _crashEthPrice(8000 ether);
-
-        (bool canLiq, uint256 maxRepay) = liquidationEngine.isLiquidatable(positionId);
-        assertTrue(canLiq, "Position must be liquidatable after crash");
-
-        // Liquidate
-        if (maxRepay > 0) {
-            _fundUsdc(liquidator, maxRepay);
-            vm.startPrank(liquidator);
-            IERC20(Constants.USDC).approve(address(liquidationEngine), maxRepay);
-            IERC20(Constants.USDC).approve(poolAddr, maxRepay);
-            liquidationEngine.liquidate(positionId, maxRepay, block.timestamp + 300, 0, 0);
-            vm.stopPrank();
-        }
-
-        // Write off remaining bad debt
-        uint256 remainingDebt = _getDebt(positionId);
-        if (remainingDebt > 0) {
-            vm.prank(address(liquidationEngine));
-            lendingEngine.writeOffDebt(positionId);
-        }
-
-        uint256 deficitBefore = LendingPool(poolAddr).deficit();
-        console.log("Deficit after write-off: %s USDC", deficitBefore / 1e6);
-
-        // Step 5: Eliminate deficit using reserves
-        if (deficitBefore > 0) {
-            uint256 reservesNow = LendingPool(poolAddr).protocolReserves();
-            vm.prank(deployer);
-            LendingPool(poolAddr).eliminateDeficit();
-
-            uint256 deficitAfter = LendingPool(poolAddr).deficit();
-            uint256 reservesAfter = LendingPool(poolAddr).protocolReserves();
-
-            // Deficit should be reduced (fully if reserves >= deficit, partially otherwise)
-            assertLt(deficitAfter, deficitBefore, "Deficit should decrease");
-            assertLt(reservesAfter, reservesNow, "Reserves should decrease");
-
-            console.log("Deficit before: %s, after: %s USDC", deficitBefore / 1e6, deficitAfter / 1e6);
-            console.log("Reserves before: %s, after: %s USDC", reservesNow / 1e6, reservesAfter / 1e6);
-        } else {
-            // If no deficit (liquidation covered everything), verify eliminateDeficit reverts
-            vm.prank(deployer);
-            vm.expectRevert("NO_DEFICIT");
-            LendingPool(poolAddr).eliminateDeficit();
-            console.log("No deficit to eliminate (liquidation covered all debt)");
-        }
-
-        console.log("=== Deficit Elimination Test Passed ===");
-    }
-
-    // ========== bad debt writeoff — underwater liquidation -> deficit recorded ==========
-
-    function test_badDebtWriteoff_deficitRecorded() public {
-        // Create V2 position and borrow aggressively
-        uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
-        vm.startPrank(alice);
-        IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
-        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
-        vm.stopPrank();
-        vm.roll(block.number + 2);
-
-        uint256 maxBorrow = lendingEngine.getMaxBorrow(positionId);
-        uint256 borrowAmount = (maxBorrow * 95) / 100;
-        vm.prank(alice);
-        lendingEngine.borrow(positionId, borrowAmount);
-
-        address poolAddr = address(usdcPool);
-        LendingPool market = LendingPool(poolAddr);
-        uint256 deficitBefore = market.deficit();
-        uint256 totalBorrowBefore = market.getPoolState().totalBorrow;
-
-        // Crash collateral to near zero — position deeply underwater
-        PositionManager.Position memory pos = positionManager.getPosition(positionId);
-        _mockOraclePrice(pos.lpToken, pos.tokenId, pos.amount, pos.lpType, 1e18); // $1 value
-
-        (bool canLiq, uint256 maxRepay) = liquidationEngine.isLiquidatable(positionId);
-        assertTrue(canLiq, "Must be liquidatable");
-
-        // Liquidate — repay what we can, but collateral is nearly worthless
-        // After unwind, remaining debt should be written off as bad debt
-        _fundUsdc(liquidator, maxRepay);
-        vm.startPrank(liquidator);
-        IERC20(Constants.USDC).approve(address(liquidationEngine), maxRepay);
-        liquidationEngine.liquidate(positionId, maxRepay, block.timestamp, 0, 0);
-        vm.stopPrank();
-
-        // Check if bad debt was written off
-        uint256 remainingDebt = lendingEngine.getDebt(positionId);
-        uint256 deficitAfter = market.deficit();
-        // Repaying + writing off the remainder must reduce the market's total borrows.
-        uint256 totalBorrowAfter = market.getPoolState().totalBorrow;
-        assertLt(totalBorrowAfter, totalBorrowBefore, "totalBorrow must decrease after repay + writeoff");
-
-        // Position should be liquidated
-        pos = positionManager.getPosition(positionId);
-        assertEq(uint256(pos.status), uint256(IPositionManager.PositionStatus.Liquidated), "Should be Liquidated");
-
-        // Assert bad debt path actually executed
-        // Either debt is written off (remainingDebt=0, deficit>0) or fully repaid
-        assertTrue(remainingDebt == 0 || deficitAfter > deficitBefore, "Bad debt should be written off or fully repaid");
-
-        console.log(
-            "Remaining debt: %s, Deficit before: %s, after: %s",
-            remainingDebt / 1e6,
-            deficitBefore / 1e6,
-            deficitAfter / 1e6
-        );
-        console.log("=== Bad Debt Writeoff Test Passed ===");
-    }
-
-    // ========== eliminateDeficit — protocol reserves cover bad debt ==========
-
-    function test_eliminateDeficit_reservesCoverBadDebt() public {
-        address poolAddr = address(usdcPool);
-        LendingPool market = LendingPool(poolAddr);
-
-        // First: generate some protocol reserves via interest
-        uint256 lpAmount1 = _createV2Position(alice, 0.5 ether, 1000e6);
-        vm.startPrank(alice);
-        IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount1);
-        uint256 posId1 = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount1, usdcBorrowAsset);
-        vm.stopPrank();
-        vm.roll(block.number + 2);
-
-        uint256 maxBorrow1 = lendingEngine.getMaxBorrow(posId1);
-        vm.prank(alice);
-        lendingEngine.borrow(posId1, maxBorrow1 / 2);
-
-        // Accrue interest to build reserves
-        _advanceTime(1 hours);
+        _advanceTime(180 days);
         market.accrueInterest();
 
         uint256 reservesBefore = market.protocolReserves();
-        console.log("Reserves before deficit: %s", reservesBefore);
+        assertGt(reservesBefore, 0, "Reserves must be funded before elimination");
 
-        // Now create bad debt: second position borrows and crashes
-        _fundWeth(alice, 1 ether);
-        _fundUsdc(alice, 2000e6);
-        uint256 lpAmount2 = _createV2Position(alice, 0.3 ether, 600e6);
-        vm.startPrank(alice);
-        IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount2);
-        uint256 posId2 = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount2, usdcBorrowAsset);
-        vm.stopPrank();
-        vm.roll(block.number + 3);
+        uint256 supplyBefore = market.getPoolState().totalSupply;
 
-        uint256 maxBorrow2 = lendingEngine.getMaxBorrow(posId2);
-        vm.prank(alice);
-        lendingEngine.borrow(posId2, (maxBorrow2 * 95) / 100);
+        vm.prank(deployer);
+        market.eliminateDeficit();
 
-        // Crash position 2
-        PositionManager.Position memory pos2 = positionManager.getPosition(posId2);
-        _mockOraclePrice(pos2.lpToken, pos2.tokenId, pos2.amount, pos2.lpType, 1e18);
+        uint256 covered = reservesBefore - market.protocolReserves();
+        assertGt(covered, 0, "Elimination must draw reserves down");
+        assertLt(market.deficit(), deficitBefore, "Deficit must shrink");
+        assertEq(market.deficit(), deficitBefore - covered, "Deficit reduced by exactly what reserves covered");
+        assertEq(market.getPoolState().totalSupply, supplyBefore + covered, "Suppliers credited back the coverage");
 
-        (, uint256 maxRepay2) = liquidationEngine.isLiquidatable(posId2);
-        _fundUsdc(liquidator, maxRepay2);
-        vm.startPrank(liquidator);
-        IERC20(Constants.USDC).approve(address(liquidationEngine), maxRepay2);
-        liquidationEngine.liquidate(posId2, maxRepay2, block.timestamp, 0, 0);
-        vm.stopPrank();
-
-        uint256 deficitAfterLiq = market.deficit();
-        console.log("Deficit after liquidation: %s", deficitAfterLiq);
-
-        // Deficit may or may not exist depending on liquidation outcome
-        // If deficit exists, verify eliminateDeficit works
-        if (deficitAfterLiq > 0) {
-            uint256 reservesBeforeEliminate = market.protocolReserves();
-
-            vm.prank(deployer);
-            market.eliminateDeficit();
-
-            uint256 deficitAfterEliminate = market.deficit();
-            uint256 reservesAfterEliminate = market.protocolReserves();
-
-            assertLt(deficitAfterEliminate, deficitAfterLiq, "Deficit should decrease");
-            assertLt(reservesAfterEliminate, reservesBeforeEliminate, "Reserves should decrease");
-
-            console.log("Deficit eliminated: %s -> %s", deficitAfterLiq, deficitAfterEliminate);
-        } else {
-            // Liquidation fully covered debt — no bad debt
-            console.log("No deficit - liquidation fully covered debt");
-        }
-
-        console.log("=== eliminateDeficit Passed ===");
+        console.log("Deficit: %s -> %s USDC", deficitBefore / 1e6, market.deficit() / 1e6);
+        console.log("Reserves spent on the refund: %s USDC", covered / 1e6);
     }
 
     // ========== setLPTypeBorrowCap ==========
