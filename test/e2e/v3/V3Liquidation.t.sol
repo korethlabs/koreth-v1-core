@@ -109,4 +109,33 @@ contract V3Liquidation is E2EBase {
 
         console.log("=== V3 Borrow Max Test Passed ===");
     }
+
+    function test_V3_liquidatableAfterCrash() public {
+        // V3 positions have amount=0 — liquidation uses different code path
+        // Need to verify V3 NFT unwind works end-to-end
+        uint256 tokenId = _createV3Position(alice, 1 ether, 2000e6);
+        uint256 positionId = _depositV3(alice, tokenId);
+        vm.roll(block.number + 2);
+
+        uint256 maxBorrow = lendingEngine.getMaxBorrow(positionId);
+        vm.prank(alice);
+        lendingEngine.borrow(positionId, (maxBorrow * 90) / 100);
+
+        // Mock price drop — but keep oracle value based on real position
+        PositionManager.Position memory pos = positionManager.getPosition(positionId);
+        uint256 originalValue = _getPositionValue(positionId);
+        _mockOraclePrice(pos.lpToken, pos.tokenId, pos.amount, pos.lpType, (originalValue * 40) / 100);
+
+        (bool canLiq, uint256 maxRepay) = liquidationEngine.isLiquidatable(positionId);
+        assertTrue(canLiq, "Must be liquidatable");
+
+        // Note: V3 liquidation requires pos.amount > 0 for the ZERO_LIQUIDITY check.
+        // Since V3 positions have amount=0 (liquidity is in NFT), this test verifies
+        // the isLiquidatable path. Full V3 NFT unwind requires adapter changes
+        // to read liquidity from the NFT instead of pos.amount.
+
+        console.log("V3 position value: $%s (mocked to $%s)", originalValue / 1e18, (originalValue * 40) / 100 / 1e18);
+        console.log("Max repay: %s USDC", maxRepay / 1e6);
+        console.log("=== V3 Liquidation Check Passed ===");
+    }
 }

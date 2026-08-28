@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "../E2EBase.t.sol";
+import {IPositionManager} from "../../../src/interfaces/IPositionManager.sol";
 
 /// @title V2Liquidation
 /// @notice Liquidation tests with real V2 LP positions on forked mainnet
@@ -121,5 +122,46 @@ contract V2Liquidation is E2EBase {
         lendingEngine.borrow(positionId, 1);
 
         console.log("=== V2 Borrow Max Test Passed ===");
+    }
+
+    function test_liquidatedPosition_cannotWithdrawOrBorrow() public {
+        uint256 lpAmount = _createV2Position(alice, 0.5 ether, 1000e6);
+        vm.startPrank(alice);
+        IUniswapV2Pair(Constants.UNI_V2_WETH_USDC).approve(address(v2Adapter), lpAmount);
+        uint256 positionId = positionManager.deposit(Constants.UNI_V2_WETH_USDC, 0, lpAmount, usdcBorrowAsset);
+        vm.stopPrank();
+        vm.roll(block.number + 2);
+
+        uint256 maxBorrow = lendingEngine.getMaxBorrow(positionId);
+        vm.prank(alice);
+        lendingEngine.borrow(positionId, (maxBorrow * 90) / 100);
+
+        // Make liquidatable and execute
+        PositionManager.Position memory pos = positionManager.getPosition(positionId);
+        uint256 originalValue = _getPositionValue(positionId);
+        _mockOraclePrice(pos.lpToken, pos.tokenId, pos.amount, pos.lpType, (originalValue * 30) / 100);
+
+        (, uint256 maxRepay) = liquidationEngine.isLiquidatable(positionId);
+        _fundUsdc(liquidator, maxRepay);
+        vm.startPrank(liquidator);
+        IERC20(Constants.USDC).approve(address(liquidationEngine), maxRepay);
+        liquidationEngine.liquidate(positionId, maxRepay, block.timestamp, 0, 0);
+        vm.stopPrank();
+
+        // Verify position is Liquidated
+        pos = positionManager.getPosition(positionId);
+        assertEq(uint256(pos.status), uint256(IPositionManager.PositionStatus.Liquidated));
+
+        // Cannot withdraw liquidated position
+        vm.prank(alice);
+        vm.expectRevert("NOT_ACTIVE");
+        positionManager.withdraw(positionId);
+
+        // Cannot borrow on liquidated position
+        vm.prank(alice);
+        vm.expectRevert("POSITION_NOT_ACTIVE");
+        lendingEngine.borrow(positionId, 100e6);
+
+        console.log("=== Liquidated Position Blocked ===");
     }
 }
