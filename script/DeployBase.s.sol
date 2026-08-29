@@ -69,9 +69,12 @@ abstract contract DeployBase is Script {
     }
 
     /// @notice Share of borrower interest the protocol retains as reserves on every lending pool.
-    /// @dev 2000 bps = 20%, matching the FeeCollector's defaultReserveFactorBps. The reserve slice is
-    ///      orthogonal to FeeCollector fees (which cover liquidation bonuses / per-LP fees), so this
-    ///      must be nonzero here or deployed pools would leak all borrower interest straight to LPs.
+    /// @dev 2000 bps = 20%. This is a fixed deploy-script default, not derived from any contract;
+    ///      keep it in sync with the FeeCollector's defaultReserveFactorBps whenever that default
+    ///      changes, or a deploy would silently drift from the protocol's intended reserve rate.
+    ///      The reserve slice is orthogonal to FeeCollector fees (which cover liquidation bonuses /
+    ///      per-LP fees), so this must be nonzero here or deployed pools would leak all borrower
+    ///      interest straight to LPs.
     uint256 internal constant DEFAULT_RESERVE_FACTOR_BPS = 2000;
 
     // --- Deployed Contracts ---
