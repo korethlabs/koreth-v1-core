@@ -145,8 +145,9 @@ contract UniswapV3Adapter is ILPAdapter, Initializable, UUPSUpgradeable {
     /// @dev Decreases liquidity, then collects all owed tokens. In the liquidation flow the
     ///      LiquidationEngine sweeps uncollected fees beforehand, so this collects only the
     ///      freshly-decreased principal (there are no fees left to collect).
-    ///      Slippage on decreaseLiquidity is 0 because protection is at the LiquidationEngine
-    ///      level via oracle-based post-swap validation (SWAP_SLIPPAGE_EXCEEDED check).
+    ///      This protocol never swaps during liquidation, so decreaseLiquidity passes
+    ///      amount0Min/amount1Min = 0 to Uniswap; slippage is instead enforced by the
+    ///      LiquidationEngine after unwind (amount0 >= minAmount0 / amount1 >= minAmount1).
     function unwind(
         address lpToken,
         uint256 tokenId,
