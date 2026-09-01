@@ -39,10 +39,18 @@ jobs:
           sudo swapon /mnt/swapfile
           swapon --show
 
+      # Pinned rather than `stable`, because `forge fmt` is not stable across releases:
+      # 1.8.0 changed the indentation of named struct arguments nested inside a chained
+      # call, so a tree formatted by one release fails `--check` under the next. With a
+      # moving version that break lands on whichever PR happens to run after the release,
+      # which reads as a failure of that PR. Bump this deliberately, reformatting in the
+      # same commit. Keep every install site in this repo and in koreth-v1-periphery on
+      # the same version — their [fmt] settings are identical, so a mismatch is a red
+      # check in one repo and not the other.
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: stable
+          version: v1.7.1
 
       # Cache the Foundry build so only the first run pays the full via-IR cost.
       - name: Cache forge build
@@ -84,10 +92,13 @@ jobs:
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
 
+      # Same version as build-test above. This job does not format, but it does the
+      # via-IR compile, and a solc or optimiser difference between the two jobs would
+      # mean the artifacts they cache are not interchangeable.
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: stable
+          version: v1.7.1
 
       - name: Cache forge build
         uses: actions/cache@v4
