@@ -21,3 +21,9 @@ docs/
 
 # Agent scratch state — tooling memory, not protocol source
 .claude/agent-memory/
+
+# Local agent harness config — not protocol source
+.axa/
+AXA.md
+.claude/
+CLAUDE.md
