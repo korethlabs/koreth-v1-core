@@ -86,8 +86,21 @@ abstract contract ForkTestBase is Test {
     ///      head never hits it. CI leaned on the provider hard enough to start timing out mid-suite,
     ///      failing tests that had nothing wrong with them.
     ///
-    ///      Pinning also makes a red run reproducible — same block, same state, same answer
-    ///      tomorrow.
+    ///      Pinning is also meant to make a red run reproducible — same block, same state, same
+    ///      answer tomorrow. That guarantee is not free: it holds only while the endpoint behind
+    ///      ETH_RPC_URL still serves this block, which means an archive node. A pruning endpoint
+    ///      keeps roughly the last couple of days of history and refuses the read outright with
+    ///      `old data not available due to pruning`, failing setUp before any assertion runs.
+    ///
+    ///      Against such an endpoint the suite can still appear healthy, because Foundry replays
+    ///      `~/.foundry/cache/rpc` for accounts it already holds and only reaches the provider for
+    ///      ones it does not. The same commit then goes red on one run and green on the next with
+    ///      nothing about the block having changed. So treat a green fork run as evidence about
+    ///      the cache, not about the endpoint; check the pruning error before blaming the code.
+    ///
+    ///      If this block ever does have to move, it is not a local edit: koreth-v1-periphery
+    ///      calibrates the swap amounts in its e2e flows against this exact block, and they have
+    ///      to be re-derived against the liquidity at the new one.
     uint256 internal constant FORK_BLOCK = 25_600_000;
 
     function setUp() public virtual {
