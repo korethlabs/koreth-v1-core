@@ -25,8 +25,9 @@ src/
 Design highlights:
 - **LP-as-collateral**: deposit V2 LP tokens or V3 position NFTs; borrow any asset the protocol
   has a pool for.
-- **Manipulation-resistant pricing**: V2 fair-value (sqrt-k) and V3 30-min TWAP, cross-checked
-  against Chainlink; principal-only valuation (uncollected fees are not collateral).
+- **Manipulation-resistant pricing**: both LP types are valued from Chainlink — V2 by sqrt-k fair
+  value, V3 by deriving the position's token composition from a Chainlink-implied price rather than
+  reading the pool's own tick; principal-only valuation (uncollected fees are not collateral).
 - **UUPS upgradeable** engines behind a timelocked governance handoff.
 - **Shared liquidity, isolated risk**: one `LendingPool` per borrow asset, open to every
   collateral type, with Aave-style risk parameters and a hard borrow cap held per LP type in

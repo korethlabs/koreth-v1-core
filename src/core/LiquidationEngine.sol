@@ -687,8 +687,10 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
     mapping(address => uint256) public escrowedBalance;
 
     // --- Storage Gap (UUPS upgrade safety) ---
-    // Reserves this contract's storage to a fixed 50-slot footprint so future upgrades can append
-    // state without colliding with any child. 4 slots are occupied (feeCollector, pendingProtocolFees,
-    // pendingWithdrawals, escrowedBalance), leaving 46: adding a new variable consumes one gap slot.
+    // Reserves this contract's storage to a fixed 56-slot footprint so future upgrades can append
+    // state without colliding with any child. Slots 0-9 are occupied (core, positionManager,
+    // lendingEngine, the deprecated swapRouter, feeCollector, maxLiquidationPortion, the deprecated
+    // maxSwapSlippageBps, pendingProtocolFees, pendingWithdrawals, escrowedBalance), leaving 46:
+    // adding a new variable consumes one gap slot.
     uint256[46] private __gap;
 }
