@@ -86,8 +86,18 @@ abstract contract ForkTestBase is Test {
     ///      head never hits it. CI leaned on the provider hard enough to start timing out mid-suite,
     ///      failing tests that had nothing wrong with them.
     ///
-    ///      Pinning also makes a red run reproducible — same block, same state, same answer
-    ///      tomorrow.
+    ///      Pinning is meant to also make a red run reproducible, but today that holds only as far
+    ///      as the RPC cache does. The configured endpoint is not an archive node: it has pruned
+    ///      this block and serves roughly the last two days of history, so a read reaches the
+    ///      provider only to be refused. Runs pass because `~/.foundry/cache/rpc` still answers
+    ///      for the accounts they touch, and the first read of an account the cache lacks fails
+    ///      setUp outright — which is why the same commit can be red on one run and green on the
+    ///      next with nothing about the block having changed.
+    ///
+    ///      So the cache is load-bearing here rather than an optimisation, and a green fork run is
+    ///      not evidence this block is still servable. Bumping it buys about two days and forces
+    ///      koreth-v1-periphery to recalibrate the swap amounts its e2e flows pin to this block;
+    ///      an archive endpoint is what actually restores the guarantee.
     uint256 internal constant FORK_BLOCK = 25_600_000;
 
     function setUp() public virtual {
