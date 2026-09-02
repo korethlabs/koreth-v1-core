@@ -72,9 +72,8 @@ jobs:
         run: forge test --match-path "test/{unit,security}/**" -vvv
 
   # Full suite against a mainnet fork. e2e/fork/integration/invariant tests reuse
-  # the active fork from --fork-url, so they need an RPC endpoint. This job runs
-  # only when the ETH_RPC_URL secret is configured and skips gracefully otherwise
-  # (so forks/contributors without the secret don't get a red check).
+  # the active fork from --fork-url, so they need an RPC endpoint. Without the
+  # ETH_RPC_URL secret this job fails rather than skipping; the step below says why.
   fork-test:
     name: fork tests
     runs-on: ubuntu-latest
@@ -158,9 +157,17 @@ jobs:
         env:
           ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
         run: |
+          # Fail rather than skip. A job that exits 0 without an endpoint publishes the same green
+          # tick as one that ran all 314 tests, so a secret that quietly stops resolving — an
+          # expired key, or one moved to an organisation whose plan never injects it into a private
+          # repository — is indistinguishable from a passing build. That is not hypothetical: two
+          # consecutive runs here reported success having executed no fork test at all, and it was
+          # caught only because the job lasted a second. Both repositories are private with no
+          # forks, so there is no outside contributor lacking the secret for a graceful skip to
+          # spare a red check.
           if [ -z "$ETH_RPC_URL" ]; then
-            echo "ETH_RPC_URL secret not set — skipping fork tests."
-            exit 0
+            echo "::error::ETH_RPC_URL is not set, so the fork suite cannot run. Failing rather than reporting a green run that tested nothing."
+            exit 1
           fi
           # Records that reads actually happened, so the save step below knows whether this job has
           # a snapshot worth publishing. Set before the suite runs, not after: a failing run has
