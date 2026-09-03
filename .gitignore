@@ -23,7 +23,9 @@ docs/
 .claude/agent-memory/
 
 # Local agent harness config — not protocol source
-.axa/
+# No trailing slash: inside a repo checkout these are symlinks to the workspace
+# copy, and a "name/" pattern matches only a real directory, never a symlink.
+.axa
 AXA.md
-.claude/
+.claude
 CLAUDE.md
