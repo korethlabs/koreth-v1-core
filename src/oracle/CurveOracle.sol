@@ -19,11 +19,17 @@ import {ProtocolCore} from "../core/ProtocolCore.sol";
 ///      which is the correct state for pricing that does not exist.
 ///
 ///      The whole configuration surface is inert and kept only as the shape the build-out is
-///      expected to take: priceFeeds, maxVirtualPriceDeviationBps and lastVirtualPrice are written
-///      by POOL_ADMIN but read by nothing, and lastUpdateTimestamp is set in the constructor and
-///      never updated. Anyone implementing the pricing must start by populating this state rather
-///      than assuming it is already maintained — a deviation check against a lastVirtualPrice that
-///      is permanently zero would compare against nothing and pass unconditionally.
+///      expected to take. Nothing below is consumed by any code path in this contract:
+///      priceFeeds and maxVirtualPriceDeviationBps are settable by POOL_ADMIN and then unused;
+///      lastUpdateTimestamp is assigned once in the constructor and never again; and
+///      lastVirtualPrice has no setter at all, so it is permanently zero for every pool. They are
+///      public, so callers can read them — what none of them do is influence a result, because
+///      there is no pricing logic to influence.
+///
+///      Anyone implementing the pricing must therefore start by writing this state rather than
+///      assuming it is already maintained. lastVirtualPrice is the trap: a deviation check against
+///      a value that is always zero has nothing to compare against and would pass unconditionally,
+///      silently disabling the guard it looks like it implements.
 ///
 ///      Uses ProtocolCore for ownership — DAO controls all parameters.
 contract CurveOracle is ILPOracle {
