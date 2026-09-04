@@ -119,9 +119,6 @@ abstract contract HandoverBase is Script {
         deployer = vm.addr(vm.envUint("DEPLOYER_PRIVATE_KEY"));
         aclManager = ACLManager(vm.envAddress("ACL_MANAGER_ADDRESS"));
         core = ProtocolCore(vm.envAddress("PROTOCOL_CORE_ADDRESS"));
-        // Passed in rather than read off ProtocolCore, which holds no pointer to it: the engines
-        // are each told about the FeeCollector individually and nothing central records it.
-        feeCollector = FeeCollector(vm.envAddress("FEE_COLLECTOR_ADDRESS"));
         dao = vm.envAddress("DAO_ADDRESS");
 
         require(dao != address(0), "ZERO_DAO");
@@ -134,6 +131,17 @@ abstract contract HandoverBase is Script {
         require(dao != deployer, "DAO_IS_DEPLOYER");
         require(dao.code.length > 0, "DAO_NOT_CONTRACT");
         require(address(core.aclManager()) == address(aclManager), "ACL_CORE_MISMATCH");
+    }
+
+    /// @dev Separate from _load() because only the finalize step reads the fee destinations.
+    ///      Requiring the variable in both would make propose — the reversible half, and the one
+    ///      most likely to be run against a runbook written before this check existed — fail on an
+    ///      address it never touches. An env var should be required by the step that uses it.
+    /// @dev Passed in rather than read off ProtocolCore, which holds no pointer to it: the engines
+    ///      are each told about the FeeCollector individually and nothing central records it. That
+    ///      is why finalize() has to bind it to the core itself.
+    function _loadFeeCollector() internal {
+        feeCollector = FeeCollector(vm.envAddress("FEE_COLLECTOR_ADDRESS"));
     }
 }
 
@@ -163,6 +171,7 @@ contract HandoverPropose is HandoverBase {
 contract HandoverFinalize is HandoverBase {
     function run() external {
         _load();
+        _loadFeeCollector();
 
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
         Handover.finalize(aclManager, core, feeCollector, dao, deployer);
