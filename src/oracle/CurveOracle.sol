@@ -6,8 +6,26 @@ import {ILPOracleHub} from "../interfaces/ILPOracleHub.sol";
 import {ProtocolCore} from "../core/ProtocolCore.sol";
 
 /// @title CurveOracle
-/// @notice Prices Curve LP tokens using virtual price + Chainlink validation
-/// @dev Uses ProtocolCore for ownership — DAO controls all parameters.
+/// @notice Stub. Curve LP pricing is not implemented: every pricing entrypoint reverts and
+///         isHealthy() reports false, so no Curve position can be valued or used as collateral.
+/// @dev The intended design is virtual price cross-checked against Chainlink, which is why the
+///      parameters below exist. None of it is built — get_virtual_price() is never called from
+///      this contract, and no Chainlink round is ever read.
+///
+///      Reverting is the deliberate behaviour, not an oversight. An oracle that returned zero for
+///      an unimplemented type would value the collateral at nothing and mark every position of
+///      that type instantly liquidatable; one that returned a placeholder would let a position be
+///      borrowed against at an invented price. Failing closed leaves the type unusable instead,
+///      which is the correct state for pricing that does not exist.
+///
+///      The whole configuration surface is inert and kept only as the shape the build-out is
+///      expected to take: priceFeeds, maxVirtualPriceDeviationBps and lastVirtualPrice are written
+///      by POOL_ADMIN but read by nothing, and lastUpdateTimestamp is set in the constructor and
+///      never updated. Anyone implementing the pricing must start by populating this state rather
+///      than assuming it is already maintained — a deviation check against a lastVirtualPrice that
+///      is permanently zero would compare against nothing and pass unconditionally.
+///
+///      Uses ProtocolCore for ownership — DAO controls all parameters.
 contract CurveOracle is ILPOracle {
     ProtocolCore public immutable core;
 
