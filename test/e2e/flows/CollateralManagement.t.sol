@@ -64,6 +64,9 @@ contract CollateralManagement is E2EBase {
         // Remove 20% of liquidity
         uint128 toRemove = currentLiquidity / 5;
 
+        uint256 aliceUsdcBefore = IERC20(Constants.USDC).balanceOf(alice);
+        uint256 aliceWethBefore = IERC20(Constants.WETH).balanceOf(alice);
+
         vm.prank(alice);
         (uint256 amount0, uint256 amount1) = positionManager.removeCollateral(positionId, toRemove, 0, 0);
 
@@ -72,14 +75,18 @@ contract CollateralManagement is E2EBase {
         console.log("Received: %s USDC + %s WETH", amount0 / 1e6, amount1 / 1e18);
 
         assertLt(valueAfter, valueBefore, "Value should decrease after removing collateral");
-        assertGt(amount0 + amount1, 0, "Should receive tokens");
+        // Each leg separately. Summing them is not merely weak here, it is close to meaningless:
+        // amount0 is 6-decimal USDC and amount1 is 18-decimal WETH, so the WETH term outweighs the
+        // USDC one by twelve orders of magnitude and a missing USDC leg cannot move the sum off
+        // zero. The position is minted in range (+/-1000 ticks around the current one), so a
+        // partial withdrawal owes both tokens and either being zero is a real defect.
+        assertGt(amount0, 0, "Should receive USDC");
+        assertGt(amount1, 0, "Should receive WETH");
 
-        // Alice should have received the tokens
-        assertGt(
-            IERC20(Constants.USDC).balanceOf(alice) + IERC20(Constants.WETH).balanceOf(alice),
-            0,
-            "Alice should have tokens"
-        );
+        // And the returned amounts must be what actually reached Alice. The balance sum this
+        // replaces held on Alice's opening balance alone, without a single token being paid out.
+        assertEq(IERC20(Constants.USDC).balanceOf(alice) - aliceUsdcBefore, amount0, "Alice must receive the USDC leg");
+        assertEq(IERC20(Constants.WETH).balanceOf(alice) - aliceWethBefore, amount1, "Alice must receive the WETH leg");
     }
 
     /// @notice Owner removes collateral from a V3 position with debt — health factor stays healthy
