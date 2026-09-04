@@ -20,6 +20,14 @@ contract StubProfile is DeployBase {
     address internal immutable NATIVE_FEED;
     address internal immutable DEPLOYER;
 
+    /// @notice Fee destinations this profile hands the script, readable from a test.
+    /// @dev Fixed and distinct from each other and from the deployer, so a test can tell whether
+    ///      FeeCollector was wired from the config or from whatever address the script had nearest
+    ///      to hand. Every profile used to pass the deployer for both, which no assertion could
+    ///      distinguish from reading the config correctly.
+    address public constant TREASURY = address(0x7EA5);
+    address public constant INSURANCE_FUND = address(0x1435);
+
     constructor(address stablecoin, address weth, address stableFeed, address nativeFeed, address deployer) {
         STABLECOIN = stablecoin;
         WETH = weth;
@@ -41,6 +49,8 @@ contract StubProfile is DeployBase {
             deployer: DEPLOYER,
             guardian: DEPLOYER,
             riskAdmin: DEPLOYER,
+            treasury: TREASURY,
+            insuranceFund: INSURANCE_FUND,
             v2Factory: address(0),
             v2Router: address(0),
             v3Factory: address(0),

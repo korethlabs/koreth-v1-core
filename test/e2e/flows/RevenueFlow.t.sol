@@ -60,15 +60,22 @@ contract RevenueFlow is E2EBase {
         uint256 accFees = feeCollector.accumulatedFees(Constants.USDC);
         assertGt(accFees, 0, "Accumulated fees should be tracked");
 
-        uint256 treasuryBefore = IERC20(Constants.USDC).balanceOf(deployer); // treasury = deployer in test
+        // Read the recipients off the contract rather than assuming the deployer. Both used to be
+        // the deployer in this suite, so a single balance stood in for the pair: the assertion
+        // could not tell a working split from all the money going to one side, and the flow this
+        // test is named for was only ever verified as far as "some balance went up".
+        uint256 treasuryBefore = IERC20(Constants.USDC).balanceOf(feeCollector.treasury());
+        uint256 insuranceBefore = IERC20(Constants.USDC).balanceOf(feeCollector.insuranceFund());
 
         vm.prank(deployer);
         feeCollector.distribute(Constants.USDC);
 
-        uint256 treasuryAfter = IERC20(Constants.USDC).balanceOf(deployer);
-        // Since treasury and insurance are both deployer, just check total increased
-        assertGt(treasuryAfter, treasuryBefore, "Treasury should receive fees");
-        console.log("Treasury received: %s USDC", (treasuryAfter - treasuryBefore) / 1e6);
+        uint256 treasuryReceived = IERC20(Constants.USDC).balanceOf(feeCollector.treasury()) - treasuryBefore;
+        uint256 insuranceReceived = IERC20(Constants.USDC).balanceOf(feeCollector.insuranceFund()) - insuranceBefore;
+        assertGt(treasuryReceived, 0, "Treasury should receive fees");
+        assertGt(insuranceReceived, 0, "Insurance fund should receive fees");
+        console.log("Treasury received: %s USDC", treasuryReceived / 1e6);
+        console.log("Insurance received: %s USDC", insuranceReceived / 1e6);
 
         // Accumulated fees should be cleared
         assertEq(feeCollector.accumulatedFees(Constants.USDC), 0, "Fees should be cleared");

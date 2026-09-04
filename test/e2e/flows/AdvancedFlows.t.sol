@@ -363,20 +363,21 @@ contract AdvancedFlows is E2EBase {
         uint256 accFees = feeCollector.accumulatedFees(Constants.USDC);
         assertGt(accFees, 0, "Accumulated fees tracked");
 
-        uint256 treasuryBefore = IERC20(Constants.USDC).balanceOf(deployer); // treasury = deployer
+        // Read the recipients off the contract rather than assuming the deployer: with both set to
+        // the deployer, one balance covered the pair and the assertion could not distinguish a
+        // working split from the whole amount landing on one side.
+        uint256 treasuryBefore = IERC20(Constants.USDC).balanceOf(feeCollector.treasury());
+        uint256 insuranceBefore = IERC20(Constants.USDC).balanceOf(feeCollector.insuranceFund());
         vm.prank(deployer);
         feeCollector.distribute(Constants.USDC);
-        uint256 treasuryAfter = IERC20(Constants.USDC).balanceOf(deployer);
+        uint256 treasuryGain = IERC20(Constants.USDC).balanceOf(feeCollector.treasury()) - treasuryBefore;
+        uint256 insuranceGain = IERC20(Constants.USDC).balanceOf(feeCollector.insuranceFund()) - insuranceBefore;
 
-        assertGt(treasuryAfter, treasuryBefore, "Treasury should receive fees");
+        assertGt(treasuryGain, 0, "Treasury should receive fees");
+        assertGt(insuranceGain, 0, "Insurance fund should receive fees");
         assertEq(feeCollector.accumulatedFees(Constants.USDC), 0, "Fees cleared after distribute");
 
-        console.log(
-            "Reserves: %s, FeeCollector: %s, Treasury gained: %s",
-            reserves,
-            fcAfter - fcBefore,
-            treasuryAfter - treasuryBefore
-        );
+        console.log("Reserves: %s, FeeCollector: %s, Treasury gained: %s", reserves, fcAfter - fcBefore, treasuryGain);
         console.log("=== Protocol Fees Full Flow Passed ===");
     }
 

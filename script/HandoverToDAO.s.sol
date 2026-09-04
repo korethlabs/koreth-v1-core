@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import {Script, console} from "forge-std/Script.sol";
 import {ACLManager} from "../src/core/ACLManager.sol";
 import {ProtocolCore} from "../src/core/ProtocolCore.sol";
+import {FeeCollector} from "../src/core/FeeCollector.sol";
 
 /// @title Handover
 /// @notice The two halves of transferring the protocol from the deploying team to the DAO.
@@ -36,7 +37,15 @@ library Handover {
     /// @notice Verify the DAO owns the protocol, then strip the deployer of every admin role.
     /// @dev Every line here is a one-way door, so the precondition is enforced on-chain instead of
     ///      being left to whoever runs the script to remember.
-    function finalize(ACLManager aclManager, ProtocolCore core, address dao, address deployer) internal {
+    function finalize(
+        ACLManager aclManager,
+        ProtocolCore core,
+        FeeCollector feeCollector,
+        address dao,
+        address deployer
+    )
+        internal
+    {
         // Checked here and not only in the scripts' env loading, because this library is the shared
         // unit: called with the two the same it would strip the DAO of the roles it was just given.
         require(dao != deployer, "DAO_IS_DEPLOYER");
@@ -52,6 +61,21 @@ library Handover {
         require(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), deployer), "DEPLOYER_NOT_ADMIN");
         require(aclManager.isPoolAdmin(deployer), "DEPLOYER_NOT_POOL_ADMIN");
         require(aclManager.isRiskAdmin(deployer), "DEPLOYER_NOT_RISK_ADMIN");
+
+        // Fee destinations, checked here because this is the last moment anyone looks. Before the
+        // handover, revenue accruing to the deploying team is a legitimate operating posture and
+        // the team can retarget it at will. After it, POOL_ADMIN is the only way to move either
+        // address and the deployer no longer holds it — so a deployer still named as the treasury
+        // keeps collecting the protocol's revenue with no one able to redirect it but the DAO,
+        // which is a governance action nobody knows to propose. Refuse instead: the fix is one
+        // setTreasury call the deployer can still make, and re-running this step.
+        //
+        // Distinctness is checked for the same reason it is checked at deploy — the two addresses
+        // can be repointed after deploy, and collapsing them makes FeeCollector's split a no-op.
+        require(address(feeCollector).code.length > 0, "FEE_COLLECTOR_NOT_CONTRACT");
+        require(feeCollector.treasury() != deployer, "TREASURY_IS_DEPLOYER");
+        require(feeCollector.insuranceFund() != deployer, "INSURANCE_FUND_IS_DEPLOYER");
+        require(feeCollector.treasury() != feeCollector.insuranceFund(), "TREASURY_EQUALS_INSURANCE_FUND");
 
         // RISK_ADMIN first: it is the one the previous handover forgot, and the one that can move
         // an LTV to 100%.
@@ -81,6 +105,7 @@ library Handover {
 abstract contract HandoverBase is Script {
     ACLManager internal aclManager;
     ProtocolCore internal core;
+    FeeCollector internal feeCollector;
     address internal dao;
     address internal deployer;
 
@@ -88,6 +113,9 @@ abstract contract HandoverBase is Script {
         deployer = vm.addr(vm.envUint("DEPLOYER_PRIVATE_KEY"));
         aclManager = ACLManager(vm.envAddress("ACL_MANAGER_ADDRESS"));
         core = ProtocolCore(vm.envAddress("PROTOCOL_CORE_ADDRESS"));
+        // Passed in rather than read off ProtocolCore, which holds no pointer to it: the engines
+        // are each told about the FeeCollector individually and nothing central records it.
+        feeCollector = FeeCollector(vm.envAddress("FEE_COLLECTOR_ADDRESS"));
         dao = vm.envAddress("DAO_ADDRESS");
 
         require(dao != address(0), "ZERO_DAO");
@@ -131,12 +159,14 @@ contract HandoverFinalize is HandoverBase {
         _load();
 
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
-        Handover.finalize(aclManager, core, dao, deployer);
+        Handover.finalize(aclManager, core, feeCollector, dao, deployer);
         vm.stopBroadcast();
 
         console.log("=== Handover complete ===");
         console.log("ProtocolCore owner: ", core.owner());
         console.log("Deployer roles:      DEFAULT_ADMIN_ROLE, POOL_ADMIN and RISK_ADMIN revoked");
         console.log("                     EMERGENCY_ADMIN revoked if the deployer held it");
+        console.log("Treasury:           ", feeCollector.treasury());
+        console.log("Insurance fund:     ", feeCollector.insuranceFund());
     }
 }

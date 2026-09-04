@@ -34,6 +34,17 @@ abstract contract DeployBase is Script {
         address deployer;
         address guardian;
         address riskAdmin;
+        // Where protocol revenue lands. Required fields rather than post-deploy setters, because
+        // FeeCollector's constructor only rejects address(0): passing the deployer twice satisfies
+        // it, and every profile did exactly that. The result deployed cleanly, handed over cleanly,
+        // and still routed all revenue to a deployer EOA with no insurance fund segregated — with
+        // nothing in the scripts, the tests or the handover that could notice. Stating an address
+        // is a decision; inheriting the deployer was an accident.
+        //
+        // They must also differ from each other: an insurance fund that is the treasury is not an
+        // insurance fund, and the split FeeCollector performs is a no-op the moment they collapse.
+        address treasury;
+        address insuranceFund;
         // V2 DEX (address(0) = skip)
         address v2Factory;
         address v2Router;
@@ -202,7 +213,10 @@ abstract contract DeployBase is Script {
     }
 
     function _deploySecurity(ChainConfig memory cfg) internal {
-        feeCollector = new FeeCollector(address(core), cfg.deployer, cfg.deployer);
+        // Distinctness is checked here rather than in FeeCollector, which reasonably accepts any
+        // two non-zero addresses; it is the deploy that has to state two separate destinations.
+        require(cfg.treasury != cfg.insuranceFund, "TREASURY_EQUALS_INSURANCE_FUND");
+        feeCollector = new FeeCollector(address(core), cfg.treasury, cfg.insuranceFund);
         circuitBreaker = new CircuitBreaker(address(core));
         riskManager = new RiskManager(address(core));
         priceFeedRegistry = new PriceFeedRegistry(address(core));

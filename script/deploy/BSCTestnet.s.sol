@@ -9,12 +9,20 @@ import {DeployBase} from "../DeployBase.s.sol";
 contract DeployBSCTestnet is DeployBase {
     function _config() internal override returns (ChainConfig memory) {
         address deployer = vm.addr(vm.envUint("DEPLOYER_PRIVATE_KEY"));
+        // Required even on a testnet, where guardian is allowed to fall back to the deployer. A
+        // role can be regranted once someone notices; a fee destination is where the money already
+        // went. Naming them here is also what keeps the testnet exercising the same two-recipient
+        // split production runs on, instead of a degenerate one that always passes.
+        address treasury = vm.envAddress("TREASURY_ADDRESS");
+        address insuranceFund = vm.envAddress("INSURANCE_FUND_ADDRESS");
 
         return ChainConfig({
             // Roles
             deployer: deployer,
             guardian: deployer,
             riskAdmin: deployer,
+            treasury: treasury,
+            insuranceFund: insuranceFund,
             // V2 — PancakeSwap V2 on BSC Testnet
             v2Factory: 0x6725F303b657a9451d8BA641348b6761A6CC7a17,
             v2Router: 0xD99D1c33F9fC3444f8101754aBC46c52416550D1,

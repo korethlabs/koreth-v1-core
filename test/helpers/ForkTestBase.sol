@@ -72,6 +72,14 @@ abstract contract ForkTestBase is Test {
     // --- Test accounts ---
     address public deployer = makeAddr("deployer");
     address public guardian = makeAddr("guardian");
+    /// @notice The two FeeCollector destinations, distinct from each other and from the deployer.
+    /// @dev They used to both be `deployer`, which made every fee assertion in the suite blind to
+    ///      the split: revenue and the insurance reserve landed in one balance, so a change that
+    ///      routed the whole amount to either side alone would still have passed. Distinct
+    ///      addresses also match what a deployment now configures, rather than a shape only the
+    ///      tests use.
+    address public treasury = makeAddr("treasury");
+    address public insuranceFund = makeAddr("insuranceFund");
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
     address public liquidator = makeAddr("liquidator");
@@ -155,7 +163,7 @@ abstract contract ForkTestBase is Test {
         );
 
         // 6. FeeCollector
-        feeCollector = new FeeCollector(address(core), deployer, deployer);
+        feeCollector = new FeeCollector(address(core), treasury, insuranceFund);
 
         // 7. Security
         circuitBreaker = new CircuitBreaker(address(core));
