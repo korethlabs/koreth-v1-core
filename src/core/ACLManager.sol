@@ -43,8 +43,11 @@ contract ACLManager is AccessControlEnumerable {
     ///         Exactly one instance.
     bytes32 public constant POSITION_MANAGER = keccak256("POSITION_MANAGER");
 
-    /// @notice Automation bots — can call compoundFees and PoolLiquidityMonitor.checkPool.
-    ///         Multiple instances (bot fleet).
+    /// @notice Automation bots that run protocol upkeep — fee compounding, fee collection and
+    ///         distribution, pool liquidity checks — and that can trip the circuit breaker.
+    ///         Multiple instances (bot fleet). Treat the note below as the enumeration; a short
+    ///         list here would be read as the whole reach of the role, which is how this comment
+    ///         was wrong before.
     /// @dev Grant this deliberately: CircuitBreaker.onlyGuardianOrKeeper accepts it, so a keeper can
     ///      pause any pool and freeze any collateral type directly, without going through a check.
     ///      It cannot unpause — only POOL_ADMIN can (CircuitBreaker.onlyPoolAdmin) — so a rogue
@@ -64,9 +67,10 @@ contract ACLManager is AccessControlEnumerable {
     ///      cap.
     ///
     ///      FeeCollector.collectFee takes the token, amount, source and label. It can only move
-    ///      value the named source has already approved to FeeCollector, and only into FeeCollector,
-    ///      whose distribute() pays the configured treasury and insurance fund. A keeper can
-    ///      therefore pull an existing allowance early and mislabel it, not redirect it.
+    ///      value the named source has already approved to FeeCollector, and only into FeeCollector.
+    ///      A keeper can therefore pull an existing allowance early and mislabel it, not redirect it.
+    ///      FeeCollector.distribute is keeper-callable on the same modifier and takes only a token;
+    ///      it pays the configured treasury and insurance fund, so timing is its one free variable.
     bytes32 public constant KEEPER = keccak256("KEEPER");
 
     /// @notice Periphery contracts that act on user positions via PositionManager.transform().
