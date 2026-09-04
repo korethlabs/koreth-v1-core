@@ -23,6 +23,24 @@ max_test_rejects = 500000
 optimizer_runs = 50
 fuzz = { runs = 500 }
 
+# Used only by script/tools/gen_enums.py, which needs solc's AST because enum member
+# names exist nowhere else: an ABI encodes an enum parameter as `uint8` and drops the
+# labels, so no regenerate-and-diff check over ABIs can ever see them.
+#
+# `ast` is a source-level output, not a contract-level one, which is why
+# `forge build --extra-output ast` is rejected and this key is the only way in.
+#
+# Deliberately its own profile with its own `out`/`cache_path`. Turning `ast` on in
+# `default` or `ci` would grow every artifact by roughly 2.5x (measured: ILPAdapter.json
+# 27,447 -> 65,849 bytes, IPositionManager.json 30,487 -> 82,026), and `out/` is 61MB
+# already and travels in the CI build cache. The generator builds `src/interfaces` alone
+# — 11 files in ~20ms — so this profile never competes with the real build and never
+# touches its artifacts.
+[profile.ast]
+ast = true
+out = "out-ast"
+cache_path = "cache-ast"
+
 [rpc_endpoints]
 ethereum = "${ETH_RPC_URL}"
 base = "${BASE_RPC_URL}"

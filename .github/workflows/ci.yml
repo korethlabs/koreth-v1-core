@@ -107,6 +107,79 @@ jobs:
       - name: Unit + security tests (no fork)
         run: forge test --match-path "test/{unit,security}/**" -vvv
 
+  # Keeps exports/enums.json equal to what the Solidity AST says, because four
+  # repositories branch on these ordinals and each re-types them by hand. Nothing else in
+  # CI can see this: an ABI encodes an enum parameter as `uint8` and drops the member
+  # names, so the subgraph's abi-drift job and the SDK's regenerate cleanly, diff cleanly
+  # and pass while every label is wrong.
+  #
+  # Its own job rather than a step in build-test, because it shares nothing with that
+  # job: a different Foundry profile, a different out directory, and no dependency on the
+  # build cache the swap and cache steps above exist to protect. It compiles
+  # src/interfaces alone — 11 files in about 20ms — so it reports in well under a minute
+  # and gives a plainly separate red tick when the export goes stale.
+  #
+  # The job also enforces that the export is append-only, which is a separate property and
+  # the one nothing else could ever catch. The check above compares the committed file to
+  # a fresh regenerate — but whoever reorders an enum regenerates too, so afterwards the
+  # two agree and this job, the subgraph's abi-drift and the SDK's type check are all
+  # green, each comparing against the new ordering and each correct to. The reference for
+  # append-only has to come from git, not from the working tree, which is what --baseline
+  # supplies.
+  enum-export:
+    name: enum export is current and append-only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # Enough history to reach the previously published export. The default depth of
+          # 1 would leave --baseline nothing to resolve, and the script exits non-zero
+          # rather than treating that as "nothing published".
+          fetch-depth: 0
+
+      # Same pin as the jobs above. This one does not format or run tests, but a solc
+      # version difference would change the AST this check is asserting against.
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+
+      # Which commit counts as "already published" depends on the event, and getting it
+      # wrong is silent rather than red. On a pull request it is the base branch's tip:
+      # the version consumers are reading today. On a push to main it is where main was
+      # beforehand — naming the branch there would compare the pushed commit against
+      # itself and pass unconditionally, which is exactly the shape of green tick this
+      # check exists to remove. Neither is left to resolve by luck: the base branch is
+      # fetched explicitly, and an empty or unresolvable answer makes the script exit
+      # non-zero instead of reporting that nothing was published.
+      - name: Resolve the published baseline
+        id: baseline
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags origin "${{ github.base_ref }}"
+            ref=FETCH_HEAD
+          else
+            # Empty on workflow_dispatch, which carries no previous-commit field.
+            ref="${{ github.event.before }}"
+            if [ -z "$ref" ] || ! git rev-parse --verify --quiet "$ref^{commit}" >/dev/null; then
+              ref="HEAD^"
+            fi
+          fi
+          echo "Comparing against $(git rev-parse "$ref")"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      # Its own step so a broken rule and a broken export are different red lines. The
+      # rule is enforced against every consumer of this repo, so it gets its own positive
+      # controls rather than being trusted because it is short.
+      - name: Check the append-only rule itself
+        run: python3 script/tools/gen_enums.py --selftest
+
+      - name: Check exports/enums.json
+        run: python3 script/tools/gen_enums.py --check --baseline "${{ steps.baseline.outputs.ref }}"
+
   # Full suite against a mainnet fork. e2e/fork/integration/invariant tests reuse
   # the active fork from --fork-url, so they need an RPC endpoint. Without the
   # ETH_RPC_URL secret this job fails rather than skipping; the step below says why.
