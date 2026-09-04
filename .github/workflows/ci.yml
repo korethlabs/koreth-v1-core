@@ -101,11 +101,19 @@ jobs:
       # with `forge-shared-` listed first. A branch that matches nothing starts cold once and is
       # warm from then on, which is the cheaper failure.
       #
-      # The practical consequence: the entry that keeps every PR warm is the one main writes
-      # after each merge, so reading the cache list and expecting the newest key to win will
-      # mislead you. Ask for the `ref=` that actually decides it:
-      #   gh api repos/korethlabs/koreth-v1-core/actions/caches \
+      # The practical consequence: which entry warms a run depends on whether the branch has
+      # run before. A pull request's first run has nothing under its own ref and inherits the
+      # entry main left behind; every run after that saves under the PR's ref and restores its
+      # own, because scope is decided before key order. So reading the cache list and expecting
+      # the newest key to win will mislead you, and so will assuming main's is the one in play.
+      # Ask for the `ref=` that actually decides it:
+      #   gh api --paginate repos/korethlabs/koreth-v1-core/actions/caches \
       #     --jq '.actions_caches[]|"\(.key) \(.created_at) ref=\(.ref)"'
+      #
+      # --paginate is not optional here. The endpoint returns 30 entries per page against a
+      # `total_count` in the hundreds, and the omission is silent: the listing looks complete
+      # and simply lacks the entry being hunted, which reads as "no such cache" — the wrong
+      # conclusion, reached from a command that appeared to answer the question.
       - name: Cache forge build
         uses: actions/cache@v6
         with:
