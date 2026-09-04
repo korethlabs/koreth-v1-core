@@ -29,7 +29,7 @@ jobs:
     # someone chose says plainly that nothing finished in time.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -131,7 +131,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
           # Enough history to reach the previously published export. The default depth of
@@ -190,7 +190,7 @@ jobs:
     # Higher because this job compiles and then runs the whole fork suite.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
