@@ -213,9 +213,13 @@ contract UniswapV3OracleForkTest is Test {
         emit log_named_uint("amount0 (USDC, 6 dec)", amount0);
         emit log_named_uint("amount1 (WETH, 18 dec)", amount1);
 
-        // Both should be non-zero for an in-range position
-        // Note: token0 = USDC (smaller address), token1 = WETH in ETH/USDC pool
-        assertGt(amount0 + amount1, 0, "At least one amount must be non-zero for in-range position");
+        // The range is built as currentTick ± 2000, so the position is in range by construction and
+        // must hold BOTH tokens. Asserting on the sum only bounds the function against its own floor
+        // of zero, which a single non-zero leg already satisfies — that would still pass if the
+        // whole position collapsed into one token.
+        // token0 = USDC (smaller address), token1 = WETH in the ETH/USDC pool.
+        assertGt(amount0, 0, "in-range position must hold token0");
+        assertGt(amount1, 0, "in-range position must hold token1");
     }
 
     // ========================================================
@@ -272,7 +276,31 @@ contract UniswapV3OracleForkTest is Test {
         // Basic sanity checks
         assertGt(result.totalValue, 0, "Position must have value");
         assertGt(result.principalValue, 0, "Principal must be positive");
-        assertGe(result.confidence, 7000, "Confidence must be >= 70%");
+
+        // Confidence measures how CENTRED the Chainlink-implied price sits inside the position's
+        // range. It is NOT an accuracy figure: a position priced completely wrongly still scores
+        // highly as long as the wrong price lands mid-range, so it must never be read as evidence
+        // that valuation is correct.
+        //
+        // `_computeConfidence` returns 7000 when the implied price is outside [tickLower, tickUpper]
+        // and 8000 + centredness when inside. 7000 is therefore its global minimum, and a bound
+        // against it cannot fail for any input. Bound against the position's own state instead:
+        // recompute the in-range predicate from the position's ticks and require the reported
+        // confidence to agree with it. This suite runs against live mainnet head rather than a
+        // pinned block, so which side of the predicate holds is not fixed — deriving it is what
+        // keeps the assertion both meaningful and stable.
+        uint160 impliedSqrtPrice = _harnessChainlinkSqrtPriceX96(
+            priceFeedRegistry.getPrice(token0), priceFeedRegistry.getPrice(token1), 6, 18
+        );
+        bool inRange = impliedSqrtPrice > TickMathLib.getSqrtRatioAtTick(tickLower)
+            && impliedSqrtPrice < TickMathLib.getSqrtRatioAtTick(tickUpper);
+
+        if (inRange) {
+            assertGe(result.confidence, 8000, "in-range position must report at least the in-range floor");
+            assertLe(result.confidence, 10_000, "confidence is a bps figure and cannot exceed 100%");
+        } else {
+            assertEq(result.confidence, 7000, "out-of-range position must report exactly the out-of-range value");
+        }
 
         // Value should be reasonable -not astronomically high or absurdly low
         // A real V3 position with liquidity should be at least $1 and less than $100M
@@ -404,21 +432,33 @@ contract UniswapV3OracleForkTest is Test {
     // TEST 11: Missing price feed reverts
     // ========================================================
 
+    /// @dev Fail-closed: a position whose legs cannot both be priced must revert, never fall back to
+    ///      an assumed value. `setPriceFeed` rejects address(0), so a registered feed cannot be
+    ///      un-set in place; point core at a fresh registry that knows USDC but not WETH instead.
+    ///      That is the configuration an operator reaches by listing a pool before wiring both feeds.
     function test_oracle_revertsMissingPriceFeed() public {
-        // Create a position with tokens that don't have feeds
-        // Find any position, then remove its feed
         (uint256 tokenId, bool found) = _findPositionWithLiquidity(USDC, WETH, 500);
+        if (!found) {
+            (tokenId, found) = _findPositionWithLiquidity(USDC, WETH, 3000);
+        }
         if (!found) {
             emit log("Skipping -no position found");
             return;
         }
 
-        // Remove WETH feed by setting a fake feed at address(0) -but setPriceFeed rejects 0
-        // Instead, use a token without a registered feed
-        // The position uses USDC and WETH which both have feeds
-        // Let's just verify the test setup works
-        ILPOracleHub.PriceResult memory result = oracle.getPrice(UNI_V3_NFT_MANAGER, tokenId, 0);
-        assertGt(result.totalValue, 0);
+        // Baseline: with both feeds wired, the position prices. Without this the revert below could
+        // pass for an unrelated reason (a bad tokenId, a broken fork) and prove nothing.
+        assertGt(oracle.getPrice(UNI_V3_NFT_MANAGER, tokenId, 0).totalValue, 0, "must price while both feeds exist");
+
+        vm.startPrank(owner);
+        PriceFeedRegistry partialRegistry = new PriceFeedRegistry(address(core));
+        partialRegistry.setPriceFeed(USDC, CL_USDC_USD); // WETH deliberately left unregistered
+        partialRegistry.setMaxStaleness(86_400);
+        core.setPriceFeedRegistry(address(partialRegistry));
+        vm.stopPrank();
+
+        vm.expectRevert("NO_PRICE_FEED");
+        oracle.getPrice(UNI_V3_NFT_MANAGER, tokenId, 0);
     }
 }
 
