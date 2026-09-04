@@ -81,13 +81,28 @@ jobs:
       # and the first prefix that matches wins even when a later one holds a fresher entry.
       # Reusing `forge-` would have matched the frozen entry on the very first run and
       # reproduced the failure this is fixing. A namespace with nothing in it falls straight
-      # through to the fallback below.
+      # through to the entry main leaves behind.
       #
-      # Note also that a branch can only restore entries written by itself or by the default
-      # branch — one PR never sees another's. So the freshness that matters is main's, and the
-      # entry that keeps every PR warm is the one main's fork job writes after each merge. That
-      # is worth knowing before reading the cache list and expecting the newest entry to win:
-      # it will not, if it belongs to somebody else's branch.
+      # Restoring has a second dimension, and it outranks key order. A run searches its own
+      # branch's caches first and consults the default branch only when the branch scope yields
+      # nothing at all. Scope is the outer loop; key order is the inner one. So an entry on the
+      # current branch wins over a main entry that is both strictly fresher and matched by an
+      # earlier restore-key.
+      #
+      # That is why there is no compatibility fallback here. A second `forge-fork-` key looks
+      # harmless once `forge-shared-` exists on main, and is not: a branch still carrying a
+      # `forge-fork-` entry from before this change matches its own stale copy on the second key
+      # instead of main's current one on the first — reinstating, per branch, exactly the freeze
+      # this scheme removes. Observed rather than theorised: a PR restored a `forge-fork-` entry
+      # written by its own earlier run in preference to a newer `forge-shared-` entry on main,
+      # with `forge-shared-` listed first. A branch that matches nothing starts cold once and is
+      # warm from then on, which is the cheaper failure.
+      #
+      # The practical consequence: the entry that keeps every PR warm is the one main writes
+      # after each merge, so reading the cache list and expecting the newest key to win will
+      # mislead you. Ask for the `ref=` that actually decides it:
+      #   gh api repos/korethlabs/koreth-v1-core/actions/caches \
+      #     --jq '.actions_caches[]|"\(.key) \(.created_at) ref=\(.ref)"'
       - name: Cache forge build
         uses: actions/cache@v6
         with:
@@ -95,14 +110,8 @@ jobs:
             out
             cache
           key: forge-shared-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'foundry.toml', 'remappings.txt') }}
-          # Second entry is the fork job's old namespace, which is the freshest artifact set
-          # that exists at the moment this lands. It is a one-time bridge so the first run
-          # after the change starts warm instead of cold; once `forge-shared-` has been
-          # written it always matches first and the fallback is dead weight. Safe to delete
-          # after a green run on main, and harmless to leave.
           restore-keys: |
             forge-shared-${{ runner.os }}-
-            forge-fork-${{ runner.os }}-
 
       - name: Check formatting
         run: forge fmt --check
@@ -218,10 +227,11 @@ jobs:
         with:
           version: v1.7.1
 
-      # One namespace with the build job, not a `forge-fork-` of its own. See the note there
-      # for why, and for what the second restore key is doing: this job survives, so it is the
-      # one that keeps the shared entry current, and the build job stops inheriting whatever
-      # the last kill left frozen.
+      # One namespace with the build job, not a `forge-fork-` of its own. See the note there for
+      # why, and for why there is no second restore key: this job survives, so it is the one that
+      # keeps the shared entry current, and the build job stops inheriting whatever the last kill
+      # left frozen. Keep this identical to the build job's — two jobs that restore differently
+      # do not share a namespace, they take turns overwriting one.
       - name: Cache forge build
         uses: actions/cache@v6
         with:
@@ -231,7 +241,6 @@ jobs:
           key: forge-shared-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'foundry.toml', 'remappings.txt') }}
           restore-keys: |
             forge-shared-${{ runner.os }}-
-            forge-fork-${{ runner.os }}-
 
       # The suite reads mainnet at a pinned block, so the responses are identical every run and can
       # be replayed from disk. Without this each run pulls thousands of state slots live, which is
