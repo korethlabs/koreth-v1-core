@@ -1,0 +1,22 @@
+# Dependabot version updates.
+#
+# Actions only. The Foundry libraries under lib/ are git submodules, and the
+# `gitsubmodule` ecosystem tracks the tip of the submodule's default branch rather
+# than its releases — so enabling it here would open PRs moving OpenZeppelin to an
+# arbitrary unreleased commit, which is not something we want to do to contracts.
+# Those pins are bumped by hand, to a tag.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore(ci)
+    groups:
+      actions:
+        patterns: ["*"]
