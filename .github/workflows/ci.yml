@@ -232,10 +232,38 @@ jobs:
             --compute-units-per-second 150 \
             -vvv
 
-      # always(), so a failed suite still publishes what it fetched. Its reads are of a pinned
-      # block and stand on their own regardless of what the assertions concluded.
+      # Only `main` writes the snapshot, which is the opposite of the usual instinct — normally
+      # every run should contribute. It inverts here because restoring has a dimension besides key
+      # order, and that dimension outranks it: a run searches its own branch's caches first and
+      # consults the default branch only if the branch scope yields nothing at all. So a branch
+      # that has ever saved will prefer its own entry forever, however thin, over main's however
+      # fat. These entries are not interchangeable copies of one thing — they differ in coverage,
+      # and a thin entry that wins on scope is strictly worse than a fat one that loses on it.
+      #
+      # Observed, not inferred. On PR #52 four fork suites failed in `setUp()` with `vm.rollFork:
+      # could not instantiate forked environment … operation timed out`. The branch had restored
+      # its own 09:07 snapshot rather than main's fresher one, so it had to fetch far more live
+      # and tripped the provider. The provider was not flaky in isolation; the cache steered the
+      # branch to the thinner snapshot.
+      #
+      # Letting only main write means a PR branch has nothing of its own to prefer and falls
+      # through to main's, which is the richest that exists because every merge runs the full
+      # suite against it. PR runs still restore — they just stop writing an entry that would
+      # shadow a better one.
+      #
+      # Safe because the snapshot is purely accumulative: the responses are reads of a pinned
+      # block, so an entry can be incomplete but never wrong, and a fatter one is strictly
+      # better with no invalidation case. `FORK_BLOCK` moving does not leak staleness in either,
+      # since the block appears both in the cache key and inside the file's own
+      # `meta.block_env.number` — a bumped block simply stops matching rather than shadowing.
+      #
+      # Branches that already hold an entry from before this change keep preferring it until it
+      # is evicted. That self-corrects and is not worth deleting caches over.
+      #
+      # always(), so a failed run on main still publishes what it fetched. Its reads stand on
+      # their own regardless of what the assertions concluded.
       - name: Save fork RPC responses
-        if: always() && steps.forktests.outputs.ran == 'true'
+        if: always() && steps.forktests.outputs.ran == 'true' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
           path: ~/.foundry/cache/rpc
