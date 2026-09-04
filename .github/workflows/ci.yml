@@ -22,13 +22,22 @@ jobs:
   build-test:
     name: fmt + build + unit tests
     runs-on: ubuntu-latest
+    # Not a fix for anything, and deliberately well above the ~25 minutes a cold via-IR
+    # compile costs here. It exists so a job that stops making progress reports a cause.
+    # A runner reclaimed mid-compile reports only `exit 143`, which reads like a build
+    # failure and sends the next reader looking through the diff; a timeout at a number
+    # someone chose says plainly that nothing finished in time.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # via-IR compilation of this codebase is memory-hungry; the 2-core/7GB
-      # runner OOMs without extra headroom. Add swap so solc doesn't get killed.
+      # via-IR compilation of this codebase is memory-hungry: a cold build peaks near
+      # 12GB, against a 2-core/7GB runner. Swap is what keeps solc alive long enough to
+      # finish. Note that the failure it prevents is a SIGKILL (137) from the OOM killer;
+      # it does not prevent, and has been misread as explaining, the SIGTERM (143) that
+      # arrives when the runner itself is reclaimed. See the cache note below for that one.
       - name: Add swap space
         run: |
           # The runner already has a /swapfile; add a second, larger one on the
@@ -53,14 +62,41 @@ jobs:
           version: v1.7.1
 
       # Cache the Foundry build so only the first run pays the full via-IR cost.
+      #
+      # Shared with the fork job below, deliberately, under one namespace. Both jobs run the
+      # same solc, the same optimiser and the same profile, so their artifacts are
+      # interchangeable — and keeping them in separate namespaces had a failure mode.
+      #
+      # actions/cache writes its entry in a *post* step, which a job killed by a reclaimed
+      # runner never reaches. The stale entry that caused the long compile therefore survives
+      # the kill untouched: the next run restores it again, faces the same or a larger
+      # recompile, and dies the same way. Re-running is not a fix and cannot become one.
+      # That is what happened here — the build namespace stayed frozen for hours across three
+      # kills while the fork job's separate namespace tracked HEAD, because the fork job
+      # survives and so reaches its save. On one commit, on the same runner, the fresher
+      # restore meant 70 files to compile and a job that finished, against 107 files and a job
+      # that did not. One namespace means the job that survives keeps the entry current for both.
+      #
+      # `forge-shared-` rather than reusing `forge-`, because restore-keys are tried in order
+      # and the first prefix that matches wins even when a later one holds a fresher entry.
+      # Reusing `forge-` would have matched the frozen entry on the very first run and
+      # reproduced the failure this is fixing. A namespace with nothing in it falls straight
+      # through to the fallback below.
       - name: Cache forge build
         uses: actions/cache@v4
         with:
           path: |
             out
             cache
-          key: forge-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'foundry.toml', 'remappings.txt') }}
-          restore-keys: forge-${{ runner.os }}-
+          key: forge-shared-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'foundry.toml', 'remappings.txt') }}
+          # Second entry is the fork job's old namespace, which is the freshest artifact set
+          # that exists at the moment this lands. It is a one-time bridge so the first run
+          # after the change starts warm instead of cold; once `forge-shared-` has been
+          # written it always matches first and the fallback is dead weight. Safe to delete
+          # after a green run on main, and harmless to leave.
+          restore-keys: |
+            forge-shared-${{ runner.os }}-
+            forge-fork-${{ runner.os }}-
 
       - name: Check formatting
         run: forge fmt --check
@@ -77,13 +113,17 @@ jobs:
   fork-test:
     name: fork tests
     runs-on: ubuntu-latest
+    # Same reasoning as the build job: a chosen number that reports a cause, not a fix.
+    # Higher because this job compiles and then runs the whole fork suite.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
       # Same via-IR memory problem as the build job: without headroom solc is killed mid-compile
-      # and the job dies with exit 143 before a single test runs, which reads like a test failure.
+      # before a single test runs, which reads like a test failure. That kill is a SIGKILL (137);
+      # the swap prevents it. A SIGTERM (143) here means something else — see the shared cache note.
       - name: Add swap space
         run: |
           sudo fallocate -l 12G /mnt/swapfile
@@ -99,14 +139,20 @@ jobs:
         with:
           version: v1.7.1
 
+      # One namespace with the build job, not a `forge-fork-` of its own. See the note there
+      # for why, and for what the second restore key is doing: this job survives, so it is the
+      # one that keeps the shared entry current, and the build job stops inheriting whatever
+      # the last kill left frozen.
       - name: Cache forge build
         uses: actions/cache@v4
         with:
           path: |
             out
             cache
-          key: forge-fork-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'foundry.toml', 'remappings.txt') }}
-          restore-keys: forge-fork-${{ runner.os }}-
+          key: forge-shared-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'foundry.toml', 'remappings.txt') }}
+          restore-keys: |
+            forge-shared-${{ runner.os }}-
+            forge-fork-${{ runner.os }}-
 
       # The suite reads mainnet at a pinned block, so the responses are identical every run and can
       # be replayed from disk. Without this each run pulls thousands of state slots live, which is
