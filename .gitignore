@@ -10,6 +10,9 @@ broadcast/
 out-ast/
 cache-ast/
 
+# Byte-code left behind by running script/tools/gen_enums.py
+__pycache__/
+
 # Deployments (local dev artifacts)
 deployments/
 

@@ -18,11 +18,33 @@ liquidated one.
 The AST is solc's own record of what it compiled, so unlike a list of names written out
 by hand in Solidity or TypeScript it cannot disagree with the enum it describes.
 
-Usage:
-    python3 script/tools/gen_enums.py            # write exports/enums.json
-    python3 script/tools/gen_enums.py --check    # exit 1 if the committed file is stale
+Publishing them is only half of it. The export also has to be append-only — never reorder
+a member, never remove one, never reuse an ordinal — and that is a property no
+regenerate-and-diff check can see, because the author of a reorder regenerates too. After
+they do, the committed file equals the regenerated one and `--check` is green, the
+subgraph's abi-drift is green, and the SDK type-checks, since every one of those compares
+against the new ordering and every one is right to.
 
-Both modes build first, so neither can pass by reading a stale artifact.
+A reorder is worse than a rename and fails differently. Regenerating fixes a rename: the
+ordinal still denotes the same member. Regenerating is what *breaks* a reorder, because a
+subgraph replays all of history through the single ordinal-to-name ladder compiled into
+its deployment, and one number cannot mean two things at a block boundary. Events from
+before the reorder are then filed, confidently, under the wrong label — into totals that
+accumulate rather than being re-read, so nothing self-corrects on the next query.
+
+The reference for "append-only" therefore cannot be the working tree. It is the last
+published version, read from git: every enum that was published must still exist, and its
+published members must still be a prefix of the current ones. Appending passes; anything
+else is a decision a human has to make deliberately.
+
+Usage:
+    python3 script/tools/gen_enums.py                    # write exports/enums.json
+    python3 script/tools/gen_enums.py --check            # exit 1 if the committed file is stale
+    python3 script/tools/gen_enums.py --check \
+        --baseline origin/main                           # ...and if it is not append-only
+    python3 script/tools/gen_enums.py --selftest         # the append-only rule's own cases
+
+Every mode that reads the enums builds first, so none can pass by reading a stale artifact.
 """
 
 import difflib
@@ -128,11 +150,192 @@ def collect() -> dict:
     }
 
 
+def append_only_violations(baseline: dict, current: dict) -> list[str]:
+    """Every way `current` breaks the ordinals `baseline` already published.
+
+    Pure, so the cases below can be exercised without a git history or a compiler. The
+    rule is one line: for each enum that was published, its member list must still be a
+    prefix of the current one. Appending is the only change that leaves every existing
+    ordinal meaning what it meant.
+
+    A rename trips this too, and that is deliberate rather than a limitation of comparing
+    lists. Consumers here switch on the *name* — the subgraph writes it into an indexed
+    field — so a member renamed under a live ordinal changes what gets stored from that
+    block on, while the rows behind it keep the old string. That is a smaller problem than
+    a reorder but it is still one somebody has to choose, not one to discover later.
+    """
+    violations: list[str] = []
+    published = baseline.get("enums", {})
+    current_enums = current.get("enums", {})
+
+    for name in sorted(published):
+        was = published[name]["members"]
+        if name not in current_enums:
+            violations.append(
+                f"{name} was published with members {was} and no longer exists. Consumers "
+                "compiled against it cannot be told the difference between a removed enum "
+                "and a stale checkout."
+            )
+            continue
+        now = current_enums[name]["members"]
+        if now[: len(was)] == was:
+            continue
+        at = next(
+            (i for i in range(len(was)) if i >= len(now) or now[i] != was[i]),
+            len(was),
+        )
+        held = now[at] if at < len(now) else "(nothing — the member was removed)"
+        violations.append(
+            f"{name} ordinal {at} was published as {was[at]!r} and is now {held!r}.\n"
+            f"    published: {was}\n"
+            f"    now:       {now}\n"
+            "    Ordinals are append-only. Anything already indexed under this number was "
+            "written with the old meaning and cannot be reinterpreted."
+        )
+    return violations
+
+
+def published_baseline(ref: str) -> dict | None:
+    """`exports/enums.json` as of `ref`, or None if nothing was published there yet.
+
+    The two ways this can find nothing are not the same and must not be conflated: a ref
+    that does not resolve is a broken CI step, and treating it as "nothing published"
+    would turn this guard off exactly when it stopped working. Only a resolvable ref that
+    genuinely predates the export returns None.
+    """
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+    )
+    if resolved.returncode != 0:
+        sys.exit(
+            f"Baseline ref {ref!r} does not resolve to a commit. The append-only check has "
+            "nothing to compare against, and passing on that basis would disable it "
+            "silently. Fetch the ref, or pass one that exists."
+        )
+
+    rel = TARGET.relative_to(REPO)
+    shown = subprocess.run(
+        ["git", "show", f"{ref}:{rel}"], cwd=REPO, capture_output=True, text=True
+    )
+    if shown.returncode != 0:
+        return None
+    return json.loads(shown.stdout)
+
+
+def enforce_append_only(ref: str, current: dict) -> None:
+    baseline = published_baseline(ref)
+    if baseline is None:
+        print(
+            f"{TARGET.relative_to(REPO)} does not exist at {ref} — nothing has been "
+            "published yet, so no ordinal can have been broken."
+        )
+        return
+
+    violations = append_only_violations(baseline, current)
+    if violations:
+        print(f"Ordinals published at {ref} are not preserved:\n")
+        for v in violations:
+            print(f"  - {v}")
+        sys.exit(
+            "\nThis is not fixed by regenerating: regenerating is what produced it. Append "
+            "the new member at the end of the enum instead, or — if the change really is "
+            "intended — treat it as a breaking change and migrate every consumer that has "
+            "indexed data under the old ordinals."
+        )
+    print(f"Ordinals published at {ref} are preserved.")
+
+
+def selftest() -> None:
+    """Positive controls for the rule above: appending passes, everything else fails.
+
+    Run in the same CI job as the check itself, because a guard whose own behaviour is
+    never exercised is indistinguishable from one that returns "fine" unconditionally.
+    """
+
+    def export(**enums: list[str]) -> dict:
+        return {
+            "enums": {n: {"sourceFile": "x.sol", "members": m} for n, m in enums.items()}
+        }
+
+    base = export(LPType=["UniswapV2", "UniswapV3", "Curve"])
+
+    cases: list[tuple[str, dict, bool]] = [
+        ("unchanged", base, True),
+        (
+            "appended at the end",
+            export(LPType=["UniswapV2", "UniswapV3", "Curve", "Aerodrome"]),
+            True,
+        ),
+        (
+            "a wholly new enum alongside",
+            {
+                "enums": {
+                    **base["enums"],
+                    "PositionStatus": {"sourceFile": "y.sol", "members": ["Active"]},
+                }
+            },
+            True,
+        ),
+        (
+            "inserted in the middle",
+            export(LPType=["UniswapV2", "Aerodrome", "UniswapV3", "Curve"]),
+            False,
+        ),
+        ("reordered", export(LPType=["UniswapV3", "UniswapV2", "Curve"]), False),
+        ("a member removed", export(LPType=["UniswapV2", "UniswapV3"]), False),
+        (
+            "a published member renamed",
+            export(LPType=["UniswapV2", "UniswapV3", "CurveStable"]),
+            False,
+        ),
+        ("the whole enum removed", export(), False),
+    ]
+
+    failures = []
+    for label, current, should_pass in cases:
+        violations = append_only_violations(base, current)
+        if bool(violations) == should_pass:
+            verdict = "accepted" if not violations else "rejected"
+            wanted = "accept" if should_pass else "reject"
+            failures.append(f"{label}: {verdict}, expected the check to {wanted} it")
+        else:
+            print(f"  ok  {label}: {'accepted' if should_pass else 'rejected'}")
+
+    if failures:
+        print()
+        for f in failures:
+            print(f"  FAIL {f}")
+        sys.exit("The append-only rule does not behave as documented.")
+    print(f"{len(cases)} cases passed.")
+
+
 def main() -> None:
-    check = "--check" in sys.argv[1:]
+    args = sys.argv[1:]
+    if "--selftest" in args:
+        selftest()
+        return
+
+    check = "--check" in args
+    baseline_ref = None
+    if "--baseline" in args:
+        at = args.index("--baseline")
+        if at + 1 >= len(args):
+            sys.exit("--baseline needs a git ref, e.g. --baseline origin/main")
+        baseline_ref = args[at + 1]
+
     assert_scope_still_holds(enum_files())
     build_ast()
-    rendered = json.dumps(collect(), indent=2) + "\n"
+    collected = collect()
+    rendered = json.dumps(collected, indent=2) + "\n"
+
+    # Ahead of the staleness check, and against what was just collected rather than what
+    # is committed. A reorder makes both fail, and "you moved an ordinal" is the message
+    # that helps; "regenerate and commit" is the instruction that would cement it.
+    if baseline_ref is not None:
+        enforce_append_only(baseline_ref, collected)
 
     if not check:
         TARGET.parent.mkdir(parents=True, exist_ok=True)

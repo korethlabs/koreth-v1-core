@@ -72,12 +72,24 @@ what it compiled and so cannot disagree with the source.
 
 ```bash
 python3 script/tools/gen_enums.py           # regenerate after changing an enum
-python3 script/tools/gen_enums.py --check   # what CI runs
+python3 script/tools/gen_enums.py --check --baseline origin/main   # what CI runs
+python3 script/tools/gen_enums.py --selftest                       # the append-only rule's own cases
 ```
 
-Adding, removing or reordering a member changes the file, and CI fails until it is
-regenerated and committed. Reordering is a breaking change for every consumer even when
-the member names are unchanged.
+**The ordinals are append-only.** A new member goes at the end of the enum; nothing is
+reordered, removed, or renamed in place. CI compares against the version published on the
+base branch and fails on anything but an append.
+
+That rule needs enforcing rather than documenting, because a reorder is invisible to every
+other check we have. Whoever reorders an enum regenerates the export too, so afterwards
+`--check` agrees, the subgraph's `abi-drift` agrees, and the SDK type-checks — each of them
+comparing against the new ordering, and each of them correct to. There is no red anywhere.
+
+The damage is also not undoable by regenerating, which is what separates a reorder from a
+rename. A subgraph replays all of history through the one ordinal-to-name ladder compiled
+into its deployment, and a number cannot mean two things either side of a block. Events
+from before the reorder get filed under the wrong label, into totals that accumulate rather
+than being re-read, so nothing self-corrects on the next query.
 
 ## Deployment
 
