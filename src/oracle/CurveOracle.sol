@@ -19,12 +19,12 @@ import {ProtocolCore} from "../core/ProtocolCore.sol";
 ///      which is the correct state for pricing that does not exist.
 ///
 ///      The whole configuration surface is inert and kept only as the shape the build-out is
-///      expected to take. Nothing below is consumed by any code path in this contract:
-///      priceFeeds and maxVirtualPriceDeviationBps are settable by POOL_ADMIN and then unused;
-///      lastUpdateTimestamp is assigned once in the constructor and never again; and
-///      lastVirtualPrice has no setter at all, so it is permanently zero for every pool. They are
-///      public, so callers can read them — what none of them do is influence a result, because
-///      there is no pricing logic to influence.
+///      expected to take. None of it reaches a valuation, because there is no valuation:
+///      priceFeeds and maxVirtualPriceDeviationBps are settable by POOL_ADMIN and then read by
+///      nothing except their own setter's event; lastUpdateTimestamp is assigned once in the
+///      constructor and never again; and lastVirtualPrice has no setter at all, so it is
+///      permanently zero for every pool. All four are public and externally readable — what none
+///      of them do is influence a price.
 ///
 ///      Anyone implementing the pricing must therefore start by writing this state rather than
 ///      assuming it is already maintained. lastVirtualPrice is the trap: a deviation check against
