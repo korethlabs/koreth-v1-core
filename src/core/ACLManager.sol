@@ -43,16 +43,35 @@ contract ACLManager is AccessControlEnumerable {
     ///         Exactly one instance.
     bytes32 public constant POSITION_MANAGER = keccak256("POSITION_MANAGER");
 
-    /// @notice Automation bots — can call compoundFees and PoolLiquidityMonitor.checkPool.
-    ///         Multiple instances (bot fleet).
+    /// @notice Automation bots that run protocol upkeep — fee compounding, fee collection and
+    ///         distribution, pool liquidity checks — and that can trip the circuit breaker.
+    ///         Multiple instances (bot fleet). Treat the note below as the enumeration; a short
+    ///         list here would be read as the whole reach of the role, which is how this comment
+    ///         was wrong before.
     /// @dev Grant this deliberately: CircuitBreaker.onlyGuardianOrKeeper accepts it, so a keeper can
     ///      pause any pool and freeze any collateral type directly, without going through a check.
     ///      It cannot unpause — only POOL_ADMIN can (CircuitBreaker.onlyPoolAdmin) — so a rogue
     ///      keeper's reach is denial of service that a human reverses, not loss.
     ///
-    ///      Nothing a keeper calls takes its numbers from the keeper. PoolLiquidityMonitor.checkPool
-    ///      reads balances and Chainlink prices itself, so the role decides when a check runs, never
-    ///      what it concludes.
+    ///      Most keeper surfaces decide only *when* something runs, never what it concludes:
+    ///      PoolLiquidityMonitor.checkPool takes nothing but a pool address and reads balances and
+    ///      Chainlink prices itself. Two surfaces do take their numbers from the caller, and each is
+    ///      bounded rather than trusted — read them as the limits of the role, not as exceptions to
+    ///      it.
+    ///
+    ///      PositionManager.compoundFees takes protocolFeeBps, callerRewardBps and
+    ///      callerRewardRecipient. The two fee legs together cannot exceed MAX_COMPOUND_FEE_BPS,
+    ///      the protocol leg may only pay the configured FeeCollector, and the dust refund may only
+    ///      reach the position's owner or a transformer that owner has authorized. What a keeper can
+    ///      direct to itself is therefore its own reward leg on an arbitrary position, inside that
+    ///      cap.
+    ///
+    ///      FeeCollector.collectFee takes the token, amount, source and label. It can only move
+    ///      value the named source has already approved to FeeCollector, and only into FeeCollector.
+    ///      A keeper can therefore pull an existing allowance early and mislabel it, not redirect it.
+    ///      FeeCollector.distribute is keeper-callable on the same modifier and takes a token. The
+    ///      recipients and the split are configured rather than passed, so what a keeper chooses is
+    ///      which token is paid out and when — not who receives it or in what proportion.
     bytes32 public constant KEEPER = keccak256("KEEPER");
 
     /// @notice Periphery contracts that act on user positions via PositionManager.transform().
