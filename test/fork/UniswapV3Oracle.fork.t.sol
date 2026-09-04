@@ -282,6 +282,13 @@ contract UniswapV3OracleForkTest is Test {
         // highly as long as the wrong price lands mid-range, so it must never be read as evidence
         // that valuation is correct.
         //
+        // The assertion below tests IN-RANGENESS, not accuracy. `>= 8000` *is* the predicate
+        // "the implied price is strictly inside (tickLower, tickUpper)": 8000 is a constant in
+        // `_computeConfidence`, a property of the function, not of the pool. It is not a measured
+        // tolerance and must not be recalibrated from a fork reading. Contrast with the 0.1%
+        // value-deviation bound in the e2e suite, which *is* empirical (fork block, pool
+        // liquidity, tick width) and was correctly measured.
+        //
         // `_computeConfidence` returns 7000 when the implied price is outside the OPEN interval
         // (tickLower, tickUpper) and 8000 + centredness when strictly inside it. The bounds
         // themselves count as out of range — the guard is `<= lower || >= upper`, so a price
