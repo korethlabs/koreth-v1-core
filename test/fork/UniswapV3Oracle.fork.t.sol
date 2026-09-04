@@ -282,8 +282,11 @@ contract UniswapV3OracleForkTest is Test {
         // highly as long as the wrong price lands mid-range, so it must never be read as evidence
         // that valuation is correct.
         //
-        // `_computeConfidence` returns 7000 when the implied price is outside [tickLower, tickUpper]
-        // and 8000 + centredness when inside. 7000 is therefore its global minimum, and a bound
+        // `_computeConfidence` returns 7000 when the implied price is outside the OPEN interval
+        // (tickLower, tickUpper) and 8000 + centredness when strictly inside it. The bounds
+        // themselves count as out of range — the guard is `<= lower || >= upper`, so a price
+        // sitting exactly on a tick scores 7000, which is why the predicate below uses strict
+        // comparisons. 7000 is the function's global minimum, and a bound
         // against it cannot fail for any input. Bound against the position's own state instead:
         // recompute the in-range predicate from the position's ticks and require the reported
         // confidence to agree with it. This suite runs against live mainnet head rather than a
