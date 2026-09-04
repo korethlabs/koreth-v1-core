@@ -138,6 +138,45 @@ contract UniswapV3OracleCompositionTest is Test {
         assertEq(uint256(s), 1e6 * Q96, "10^12 price ratio must give 10^6 * 2^96");
     }
 
+    /// @dev The mirror of the case above, with the larger-decimal token FIRST: dec0=18, dec1=6.
+    ///      This is the only path through the `dec1 < dec0` branch, which divides instead of
+    ///      multiplying, and until the local profile listed the WETH/USDT 0.3% pool no whitelisted
+    ///      pool reached it — WETH sorts below USDT by address, so it is the first curated pool where
+    ///      WETH is token0. The mainnet profile still lists WETH/USDC only, which takes the branch
+    ///      above.
+    ///
+    ///      Equal USD prices with a reversed 18/6 gap ⇒ P = 10^-12 ⇒ sqrtPriceX96 = 2^96 / 10^6.
+    ///      That ideal is not representable: dividing by 10^12 and taking an integer sqrt both
+    ///      truncate, so the result lands just below it.
+    ///
+    ///      The inequality pins the direction of the error, not its size: this branch must never
+    ///      return an implied price ABOVE the true one, because an over-stated price over-values
+    ///      collateral. It is deliberately not an equality — the exact truncation is an artefact of
+    ///      two integer roundings and pinning it would break on any precision-preserving refactor.
+    ///      Note the bound is coarse at this magnitude: replacing the division with a ceiling
+    ///      division still passes, because the +1 it adds is absorbed by the following integer sqrt.
+    ///      What it does catch is the realistic mistake — multiplying by 10^(dec0-dec1) instead of
+    ///      dividing, the copy of the branch above — which overshoots by 10^24 and trips both the
+    ///      inequality here and the round-trip in the next test.
+    function test_sqrtPrice_decimalGap_token0Larger() public view {
+        uint160 s = oracle.exposed_chainlinkSqrtPriceX96(1e18, 1e18, 18, 6);
+        uint256 ideal = Q96 / 1e6;
+
+        assertLe(uint256(s), ideal, "integer truncation must never round the implied price up");
+        assertApproxEqRel(uint256(s), ideal, 1e10, "10^-12 price ratio must give ~2^96 / 10^6"); // 1e-8 tol
+    }
+
+    /// @dev Squaring the implied sqrtPrice recovers P, on the `dec1 < dec0` branch this time.
+    ///      Real WETH/USDT 0.3% shape: token0=WETH(18d,$4000), token1=USDT(6d,$1), so the pool price
+    ///      P (USDT-native per WETH-native) is (4000e18 * 1e6)/(1e18 * 1e18) = 4e-9.
+    function test_sqrtPrice_squaresBackToRatio_token0Larger() public view {
+        uint160 s = oracle.exposed_chainlinkSqrtPriceX96(4000e18, 1e18, 18, 6);
+
+        // P is far below 1, so recover it scaled by 1e18 to keep integer precision.
+        uint256 pScaled = Math_mulDiv(uint256(s) * 1e9, uint256(s) * 1e9, Q96 * Q96);
+        assertApproxEqRel(pScaled, 4e9, 1e12, "recovered pool price should be ~4e-9"); // 1e-6 tol
+    }
+
     /// @dev Squaring the implied sqrtPrice recovers P = (price0*10^dec1)/(price1*10^dec0).
     function test_sqrtPrice_squaresBackToRatio() public view {
         // token0=USDC(6,$1), token1=WETH(18,$2000): P = (1e18 * 1e18)/(2000e18 * 1e6) = 5e8.
