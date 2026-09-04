@@ -20,9 +20,12 @@ import {ProtocolCore} from "../core/ProtocolCore.sol";
 ///
 ///      The whole configuration surface is inert and kept only as the shape the build-out is
 ///      expected to take. None of it reaches a valuation, because there is no valuation:
-///      priceFeeds and maxVirtualPriceDeviationBps are settable by POOL_ADMIN and then read by
-///      nothing except their own setter's event; lastUpdateTimestamp is assigned once in the
-///      constructor and never again; and lastVirtualPrice has no setter at all, so it is
+///      priceFeeds and maxVirtualPriceDeviationBps are settable by POOL_ADMIN and then consumed by
+///      no logic here at all — setPriceFeed emits from its call arguments and never loads the
+///      mapping, and the single read of stored state anywhere in this contract is
+///      setMaxVirtualPriceDeviation loading the previous deviation for its own event;
+///      lastUpdateTimestamp is assigned once in the constructor and never again; and
+///      lastVirtualPrice has no setter at all, so it is
 ///      permanently zero for every pool. All four are public and externally readable — what none
 ///      of them do is influence a price.
 ///
