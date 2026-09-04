@@ -160,10 +160,13 @@ contract UniswapV3OracleCompositionTest is Test {
     ///      inequality here and the round-trip in the next test.
     function test_sqrtPrice_decimalGap_token0Larger() public view {
         uint160 s = oracle.exposed_chainlinkSqrtPriceX96(1e18, 1e18, 18, 6);
-        uint256 ideal = Q96 / 1e6;
+        // 10^6 = 2^6 * 5^6 and 2^96 carries no factor 5, so this division truncates too: the bound
+        // is the floor of the target, not the target. That only tightens the assertion below — the
+        // true value is not an integer, so `s <= floor` and `s <= exact` say the same thing here.
+        uint256 idealFloor = Q96 / 1e6;
 
-        assertLe(uint256(s), ideal, "integer truncation must never round the implied price up");
-        assertApproxEqRel(uint256(s), ideal, 1e10, "10^-12 price ratio must give ~2^96 / 10^6"); // 1e-8 tol
+        assertLe(uint256(s), idealFloor, "integer truncation must never round the implied price up");
+        assertApproxEqRel(uint256(s), idealFloor, 1e10, "10^-12 price ratio must give ~2^96 / 10^6"); // 1e-8 tol
     }
 
     /// @dev Squaring the implied sqrtPrice recovers P, on the `dec1 < dec0` branch this time.
