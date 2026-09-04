@@ -370,14 +370,19 @@ contract AdvancedFlows is E2EBase {
         uint256 insuranceBefore = IERC20(Constants.USDC).balanceOf(feeCollector.insuranceFund());
         vm.prank(deployer);
         feeCollector.distribute(Constants.USDC);
-        uint256 treasuryGain = IERC20(Constants.USDC).balanceOf(feeCollector.treasury()) - treasuryBefore;
-        uint256 insuranceGain = IERC20(Constants.USDC).balanceOf(feeCollector.insuranceFund()) - insuranceBefore;
+        // Assert the increase before subtracting: a balance that failed to move would otherwise
+        // underflow into an arithmetic panic, which reports nothing about which side went wrong.
+        uint256 treasuryAfter = IERC20(Constants.USDC).balanceOf(feeCollector.treasury());
+        uint256 insuranceAfter = IERC20(Constants.USDC).balanceOf(feeCollector.insuranceFund());
+        assertGt(treasuryAfter, treasuryBefore, "Treasury should receive fees");
+        assertGt(insuranceAfter, insuranceBefore, "Insurance fund should receive fees");
 
-        assertGt(treasuryGain, 0, "Treasury should receive fees");
-        assertGt(insuranceGain, 0, "Insurance fund should receive fees");
+        uint256 treasuryGain = treasuryAfter - treasuryBefore;
+        uint256 insuranceGain = insuranceAfter - insuranceBefore;
         assertEq(feeCollector.accumulatedFees(Constants.USDC), 0, "Fees cleared after distribute");
 
         console.log("Reserves: %s, FeeCollector: %s, Treasury gained: %s", reserves, fcAfter - fcBefore, treasuryGain);
+        console.log("Insurance gained: %s", insuranceGain);
         console.log("=== Protocol Fees Full Flow Passed ===");
     }
 

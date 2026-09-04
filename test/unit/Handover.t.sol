@@ -198,6 +198,23 @@ contract HandoverTest is Test {
         assertTrue(aclManager.isPoolAdmin(deployer), "a refused finalize must revoke nothing");
     }
 
+    /// @dev The FeeCollector address is read from the environment and nothing else ties it to the
+    ///      core being handed over. A second, correctly-configured FeeCollector passes every
+    ///      recipient check while saying nothing about this deployment — and the revocations would
+    ///      run regardless, so the step would report destinations as verified that it never read.
+    function test_finalize_revertsIfFeeCollectorBelongsToAnotherCore() public {
+        ProtocolCore otherCore = new ProtocolCore(deployer, address(aclManager));
+        FeeCollector foreign = new FeeCollector(address(otherCore), treasury, insuranceFund);
+
+        deployerAccount.propose(aclManager, core, address(dao));
+        dao.accept(core);
+
+        vm.expectRevert("FEE_COLLECTOR_WRONG_CORE");
+        deployerAccount.finalize(aclManager, core, foreign, address(dao), deployer);
+
+        assertTrue(aclManager.isPoolAdmin(deployer), "a refused finalize must revoke nothing");
+    }
+
     /// @dev On a deployment where the deploying key was also the guardian, leaving it able to pause
     ///      the protocol is not the "handover complete" the script reports. The DAO holds
     ///      DEFAULT_ADMIN_ROLE by then and can appoint whatever guardian it wants.

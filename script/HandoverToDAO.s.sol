@@ -72,7 +72,13 @@ library Handover {
         //
         // Distinctness is checked for the same reason it is checked at deploy — the two addresses
         // can be repointed after deploy, and collapsing them makes FeeCollector's split a no-op.
+        // The address comes from the environment, and nothing else in this script ties it to the
+        // deployment being handed over. An unrelated but correctly-configured FeeCollector would
+        // satisfy every check below and revoke the deployer anyway, reporting fee destinations as
+        // verified for a protocol whose destinations were never read. Binding it to the same core
+        // is what makes the answer be about this deployment.
         require(address(feeCollector).code.length > 0, "FEE_COLLECTOR_NOT_CONTRACT");
+        require(address(feeCollector.core()) == address(core), "FEE_COLLECTOR_WRONG_CORE");
         require(feeCollector.treasury() != deployer, "TREASURY_IS_DEPLOYER");
         require(feeCollector.insuranceFund() != deployer, "INSURANCE_FUND_IS_DEPLOYER");
         require(feeCollector.treasury() != feeCollector.insuranceFund(), "TREASURY_EQUALS_INSURANCE_FUND");

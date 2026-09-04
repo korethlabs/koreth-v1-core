@@ -70,10 +70,15 @@ contract RevenueFlow is E2EBase {
         vm.prank(deployer);
         feeCollector.distribute(Constants.USDC);
 
-        uint256 treasuryReceived = IERC20(Constants.USDC).balanceOf(feeCollector.treasury()) - treasuryBefore;
-        uint256 insuranceReceived = IERC20(Constants.USDC).balanceOf(feeCollector.insuranceFund()) - insuranceBefore;
-        assertGt(treasuryReceived, 0, "Treasury should receive fees");
-        assertGt(insuranceReceived, 0, "Insurance fund should receive fees");
+        // Assert the increase before subtracting: a balance that failed to move would otherwise
+        // underflow into an arithmetic panic, which reports nothing about which side went wrong.
+        uint256 treasuryAfter = IERC20(Constants.USDC).balanceOf(feeCollector.treasury());
+        uint256 insuranceAfter = IERC20(Constants.USDC).balanceOf(feeCollector.insuranceFund());
+        assertGt(treasuryAfter, treasuryBefore, "Treasury should receive fees");
+        assertGt(insuranceAfter, insuranceBefore, "Insurance fund should receive fees");
+
+        uint256 treasuryReceived = treasuryAfter - treasuryBefore;
+        uint256 insuranceReceived = insuranceAfter - insuranceBefore;
         console.log("Treasury received: %s USDC", treasuryReceived / 1e6);
         console.log("Insurance received: %s USDC", insuranceReceived / 1e6);
 
