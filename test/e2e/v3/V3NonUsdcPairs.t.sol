@@ -10,9 +10,15 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 /// @notice End-to-end pricing of a Uniswap V3 position whose token0 is the 18-decimal leg.
 /// @dev Uniswap orders a pool's tokens by address, and on mainnet
 ///      DAI (0x6B17…) < USDC (0xA0b8…) < WETH (0xC02a…) < USDT (0xdAC1…).
-///      WETH/USDT is therefore the only whitelisted pool where WETH is token0, and so the only one
-///      that reaches the oracle's `dec0 > dec1` path — everywhere else the stablecoin sorts first and
-///      the decimal gap runs the other way.
+///      WETH/USDT is therefore the only pool in the accepted set where WETH is token0, and so the
+///      only one that reaches the oracle's `dec0 > dec1` path. WETH/USDC puts the 6-decimal token
+///      first; WETH/DAI is 18 against 18, so its gap is zero and it takes the same multiply path.
+///
+///      Which set, though, is the part worth being precise about. The three-pool list is the LOCAL
+///      profile (`script/deploy/Local.s.sol`), which is what this fork fixture mirrors and what the
+///      pre-beta stack runs. The mainnet profile (`script/deploy/EthMainnet.s.sol`) whitelists V3
+///      WETH/USDC alone, so nothing in production reaches this branch today. That is the reason to
+///      pin it now rather than later: the cheapest moment is before the pool is listed for real.
 ///
 ///      That asymmetry matters because two independent pieces of arithmetic change shape with it:
 ///      the decimal correction inside the Chainlink-implied sqrtPrice, and `getAmountsForLiquidity`,
