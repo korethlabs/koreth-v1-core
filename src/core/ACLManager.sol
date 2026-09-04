@@ -69,8 +69,9 @@ contract ACLManager is AccessControlEnumerable {
     ///      FeeCollector.collectFee takes the token, amount, source and label. It can only move
     ///      value the named source has already approved to FeeCollector, and only into FeeCollector.
     ///      A keeper can therefore pull an existing allowance early and mislabel it, not redirect it.
-    ///      FeeCollector.distribute is keeper-callable on the same modifier and takes only a token;
-    ///      it pays the configured treasury and insurance fund, so timing is its one free variable.
+    ///      FeeCollector.distribute is keeper-callable on the same modifier and takes a token. The
+    ///      recipients and the split are configured rather than passed, so what a keeper chooses is
+    ///      which token is paid out and when — not who receives it or in what proportion.
     bytes32 public constant KEEPER = keccak256("KEEPER");
 
     /// @notice Periphery contracts that act on user positions via PositionManager.transform().
