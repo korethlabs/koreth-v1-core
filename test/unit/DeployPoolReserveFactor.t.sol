@@ -44,7 +44,9 @@ contract StubProfile is DeployBase {
         return DEFAULT_RESERVE_FACTOR_BPS;
     }
 
-    function _config() internal view override returns (ChainConfig memory) {
+    /// @dev virtual so a test can take this config and change one field. The alternative — a second
+    ///      profile repeating all twenty of them — drifts from this one the moment either is edited.
+    function _config() internal view virtual override returns (ChainConfig memory) {
         return ChainConfig({
             deployer: DEPLOYER,
             guardian: DEPLOYER,

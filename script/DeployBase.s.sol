@@ -213,6 +213,13 @@ abstract contract DeployBase is Script {
     }
 
     function _deploySecurity(ChainConfig memory cfg) internal {
+        // Zero first, even though FeeCollector's constructor rejects it too. Two unset addresses
+        // are equal, so the distinctness check below would claim them first and report that the
+        // treasury and the insurance fund collide — sending the reader to look for a duplicated
+        // address when what actually happened is that neither was set.
+        require(cfg.treasury != address(0), "ZERO_TREASURY");
+        require(cfg.insuranceFund != address(0), "ZERO_INSURANCE_FUND");
+
         // Distinctness is checked here rather than in FeeCollector, which reasonably accepts any
         // two non-zero addresses; it is the deploy that has to state two separate destinations.
         require(cfg.treasury != cfg.insuranceFund, "TREASURY_EQUALS_INSURANCE_FUND");

@@ -6,6 +6,35 @@ import {StubProfile} from "./DeployPoolReserveFactor.t.sol";
 import {MockConstantFeed} from "../mocks/MockConstantFeed.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 
+/// @notice StubProfile with the two fee destinations supplied by the test rather than fixed.
+/// @dev Only the recipients are substituted; everything else stays whatever StubProfile declares,
+///      so this cannot silently diverge from the profile the other tests deploy.
+contract RecipientProfile is StubProfile {
+    address internal immutable OVERRIDE_TREASURY;
+    address internal immutable OVERRIDE_INSURANCE_FUND;
+
+    constructor(
+        address stablecoin,
+        address weth,
+        address stableFeed,
+        address nativeFeed,
+        address deployer,
+        address treasury_,
+        address insuranceFund_
+    )
+        StubProfile(stablecoin, weth, stableFeed, nativeFeed, deployer)
+    {
+        OVERRIDE_TREASURY = treasury_;
+        OVERRIDE_INSURANCE_FUND = insuranceFund_;
+    }
+
+    function _config() internal view override returns (ChainConfig memory cfg) {
+        cfg = super._config();
+        cfg.treasury = OVERRIDE_TREASURY;
+        cfg.insuranceFund = OVERRIDE_INSURANCE_FUND;
+    }
+}
+
 /// @title DeployFeeRecipientsTest
 /// @notice That a deploy sends protocol revenue somewhere the chain profile actually named.
 /// @dev FeeCollector's constructor rejects address(0) and nothing else, so passing the deployer for
@@ -54,6 +83,40 @@ contract DeployFeeRecipientsTest is Test {
         assertTrue(
             profile.feeCollector().treasury() != profile.feeCollector().insuranceFund(),
             "collapsed recipients make FeeCollector's split a no-op"
+        );
+    }
+
+    /// @dev The failure a profile actually hits: an unset environment variable arrives as
+    ///      address(0), and two unset addresses are equal. Without an explicit zero check the
+    ///      distinctness guard claims the revert first and reports a collision, sending the reader
+    ///      to look for a duplicated address when neither was set at all.
+    function test_deploy_revertsWithZeroTreasury_notWithACollision() public {
+        RecipientProfile unset = _profileWith(address(0), address(0));
+        vm.expectRevert("ZERO_TREASURY");
+        unset.run();
+    }
+
+    function test_deploy_revertsWhenOnlyTheInsuranceFundIsUnset() public {
+        RecipientProfile halfSet = _profileWith(profile.TREASURY(), address(0));
+        vm.expectRevert("ZERO_INSURANCE_FUND");
+        halfSet.run();
+    }
+
+    /// @dev The zero checks sit ahead of distinctness, so this pins that they did not displace it.
+    function test_deploy_stillRejectsTwoNonZeroRecipientsThatAreTheSame() public {
+        RecipientProfile collapsed = _profileWith(profile.TREASURY(), profile.TREASURY());
+        vm.expectRevert("TREASURY_EQUALS_INSURANCE_FUND");
+        collapsed.run();
+    }
+
+    function _profileWith(address treasury_, address insuranceFund_) internal returns (RecipientProfile) {
+        MockERC20 usdc = new MockERC20("USD Coin", "USDC", 6);
+        MockERC20 weth = new MockERC20("Wrapped Ether", "WETH", 18);
+        MockConstantFeed stableFeed = new MockConstantFeed(1e18);
+        MockConstantFeed nativeFeed = new MockConstantFeed(3000e18);
+
+        return new RecipientProfile(
+            address(usdc), address(weth), address(stableFeed), address(nativeFeed), deployer, treasury_, insuranceFund_
         );
     }
 }
