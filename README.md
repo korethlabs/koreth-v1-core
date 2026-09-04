@@ -57,6 +57,28 @@ forge test --fork-url "$ETH_RPC_URL" --match-path "test/e2e/**"
 
 Secrets (RPC key, deploy mnemonic) live in a local `.env` (gitignored) — never commit keys.
 
+## Enum ordinals for consumers
+
+`exports/enums.json` publishes the members of core's Solidity enums in declaration order,
+so the index of a member is its on-chain value. The SDK, subgraph and interface all branch
+on `ILPAdapter.LPType` and `IPositionManager.PositionStatus`; read them from here rather
+than re-typing them.
+
+An ABI cannot carry this. Solidity encodes an enum parameter as `uint8` and drops the
+member names entirely, so an ABI regenerate-and-diff check passes while every label is
+wrong. That is not a gap in how those checks are written — it is a property of what an ABI
+contains. The file is generated from solc's AST, which is the compiler's own record of
+what it compiled and so cannot disagree with the source.
+
+```bash
+python3 script/tools/gen_enums.py           # regenerate after changing an enum
+python3 script/tools/gen_enums.py --check   # what CI runs
+```
+
+Adding, removing or reordering a member changes the file, and CI fails until it is
+regenerated and committed. Reordering is a breaking change for every consumer even when
+the member names are unchanged.
+
 ## Deployment
 
 `script/deploy/` — chain-specific deploys (`Sepolia`, `EthMainnet`, `BSCTestnet`) on top of

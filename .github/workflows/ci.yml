@@ -107,6 +107,36 @@ jobs:
       - name: Unit + security tests (no fork)
         run: forge test --match-path "test/{unit,security}/**" -vvv
 
+  # Keeps exports/enums.json equal to what the Solidity AST says, because four
+  # repositories branch on these ordinals and each re-types them by hand. Nothing else in
+  # CI can see this: an ABI encodes an enum parameter as `uint8` and drops the member
+  # names, so the subgraph's abi-drift job and the SDK's regenerate cleanly, diff cleanly
+  # and pass while every label is wrong.
+  #
+  # Its own job rather than a step in build-test, because it shares nothing with that
+  # job: a different Foundry profile, a different out directory, and no dependency on the
+  # build cache the swap and cache steps above exist to protect. It compiles
+  # src/interfaces alone — 11 files in about 20ms — so it reports in well under a minute
+  # and gives a plainly separate red tick when the export goes stale.
+  enum-export:
+    name: enum export is current
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Same pin as the jobs above. This one does not format or run tests, but a solc
+      # version difference would change the AST this check is asserting against.
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+
+      - name: Check exports/enums.json
+        run: python3 script/tools/gen_enums.py --check
+
   # Full suite against a mainnet fork. e2e/fork/integration/invariant tests reuse
   # the active fork from --fork-url, so they need an RPC endpoint. Without the
   # ETH_RPC_URL secret this job fails rather than skipping; the step below says why.

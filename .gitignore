@@ -3,6 +3,13 @@ out/
 cache/
 broadcast/
 
+# Scratch artifacts of the `ast` profile, which exists only to generate
+# exports/enums.json. Kept out of out/ and cache/ so an AST build can never displace the
+# real build's artifacts, which travel in the CI cache. exports/ itself is committed: it
+# is the published output, not a build product.
+out-ast/
+cache-ast/
+
 # Deployments (local dev artifacts)
 deployments/
 
