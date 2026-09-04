@@ -50,9 +50,23 @@ contract ACLManager is AccessControlEnumerable {
     ///      It cannot unpause — only POOL_ADMIN can (CircuitBreaker.onlyPoolAdmin) — so a rogue
     ///      keeper's reach is denial of service that a human reverses, not loss.
     ///
-    ///      Nothing a keeper calls takes its numbers from the keeper. PoolLiquidityMonitor.checkPool
-    ///      reads balances and Chainlink prices itself, so the role decides when a check runs, never
-    ///      what it concludes.
+    ///      Most keeper surfaces decide only *when* something runs, never what it concludes:
+    ///      PoolLiquidityMonitor.checkPool takes nothing but a pool address and reads balances and
+    ///      Chainlink prices itself. Two surfaces do take their numbers from the caller, and each is
+    ///      bounded rather than trusted — read them as the limits of the role, not as exceptions to
+    ///      it.
+    ///
+    ///      PositionManager.compoundFees takes protocolFeeBps, callerRewardBps and
+    ///      callerRewardRecipient. The two fee legs together cannot exceed MAX_COMPOUND_FEE_BPS,
+    ///      the protocol leg may only pay the configured FeeCollector, and the dust refund may only
+    ///      reach the position's owner or a transformer that owner has authorized. What a keeper can
+    ///      direct to itself is therefore its own reward leg on an arbitrary position, inside that
+    ///      cap.
+    ///
+    ///      FeeCollector.collectFee takes the token, amount, source and label. It can only move
+    ///      value the named source has already approved to FeeCollector, and only into FeeCollector,
+    ///      whose distribute() pays the configured treasury and insurance fund. A keeper can
+    ///      therefore pull an existing allowance early and mislabel it, not redirect it.
     bytes32 public constant KEEPER = keccak256("KEEPER");
 
     /// @notice Periphery contracts that act on user positions via PositionManager.transform().
