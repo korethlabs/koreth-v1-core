@@ -208,6 +208,19 @@ contract V3NonUsdcPairs is E2EBase {
     ///      Decimals are passed in rather than read from the token: they are the premise of these
     ///      tests, and USDT declares `decimals` as a uint256, which is exactly the kind of detail a
     ///      helper should not be quietly absorbing on the checking side of a comparison.
+    ///
+    ///      Be precise about what this does and does not check, because the near-zero deviations
+    ///      these tests report are easy to over-read. This arithmetic is not independent of the
+    ///      oracle's: normalising to 18 decimals and then scaling by the feed price is the same
+    ///      sequence the oracle applies to each leg, so a fault in that last mile would move both
+    ///      sides together and still measure as agreement. What the comparison does establish
+    ///      independently is the position's *composition* — how much of each token it is deemed to
+    ///      hold — because the amounts come from what Uniswap actually consumed at mint, never from
+    ///      a second call into the same library. That composition is what the decimal branch and
+    ///      `getAmountsForLiquidity` decide, and it is the part these tests exist to pin.
+    ///
+    ///      Only valid for tokens of 18 decimals or fewer: `18 - tokenDecimals` underflows above
+    ///      that, where the oracle divides instead. True of every token in the accepted set.
     function _usdValue(address token, uint8 tokenDecimals, uint256 amount) internal view returns (uint256) {
         uint256 amount18 = amount * (10 ** (18 - tokenDecimals));
         return Math.mulDiv(amount18, priceFeedRegistry.getPrice(token), 1e18);
