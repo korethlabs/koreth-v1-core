@@ -5,6 +5,10 @@
 # than its releases — so enabling it here would open PRs moving OpenZeppelin to an
 # arbitrary unreleased commit, which is not something we want to do to contracts.
 # Those pins are bumped by hand, to a tag.
+#
+# Minor and patch bumps are grouped into one weekly PR. Majors are left ungrouped so
+# that a bump able to change an action's behaviour arrives on its own and can be
+# reverted on its own.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -18,5 +22,8 @@ updates:
     commit-message:
       prefix: chore(ci)
     groups:
-      actions:
+      actions-minor-patch:
         patterns: ["*"]
+        update-types:
+          - minor
+          - patch
