@@ -82,6 +82,12 @@ jobs:
       # Reusing `forge-` would have matched the frozen entry on the very first run and
       # reproduced the failure this is fixing. A namespace with nothing in it falls straight
       # through to the fallback below.
+      #
+      # Note also that a branch can only restore entries written by itself or by the default
+      # branch — one PR never sees another's. So the freshness that matters is main's, and the
+      # entry that keeps every PR warm is the one main's fork job writes after each merge. That
+      # is worth knowing before reading the cache list and expecting the newest entry to win:
+      # it will not, if it belongs to somebody else's branch.
       - name: Cache forge build
         uses: actions/cache@v6
         with:
