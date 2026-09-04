@@ -2,9 +2,14 @@
 pragma solidity ^0.8.26;
 
 import "../E2EBase.t.sol";
-import {IUniswapV3Factory} from "../../../src/interfaces/external/IUniswapV3.sol";
+import {
+    INonfungiblePositionManager,
+    IUniswapV3Factory,
+    IUniswapV3Pool
+} from "../../../src/interfaces/external/IUniswapV3.sol";
 import {IERC20 as OZIERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title V3NonUsdcPairs
 /// @notice End-to-end pricing of a Uniswap V3 position whose token0 is the 18-decimal leg.
