@@ -76,9 +76,18 @@ contract PoolFactory {
     }
 
     /// @notice Whitelist a collateral (LP) type by forwarding its risk config to RiskManager.
-    /// @dev Requires PoolFactory (or its caller) to have RISK_ADMIN on ACLManager, since it calls
-    ///      RiskManager.setCollateralConfig. The config is the single source of truth for the
-    ///      collateral's LTV/liqThreshold/liqBonus/haircut/borrowCap/enabled.
+    /// @dev Two authorization hops, and they check two different addresses. `onlyPoolAdmin` here
+    ///      checks the caller. RiskManager.setCollateralConfig then checks its own `msg.sender`,
+    ///      which at that hop is this contract — the call is a plain external call, not a
+    ///      delegatecall, so the caller's identity does not survive it. A caller's roles therefore
+    ///      buy nothing on the RiskManager side; this contract must hold a role in its own right.
+    ///
+    ///      That role is RISK_ADMIN *or* POOL_ADMIN — RiskManager's `onlyRiskAdmin` admits both,
+    ///      despite the name. Deployment grants this contract RISK_ADMIN and deliberately withholds
+    ///      POOL_ADMIN, so RISK_ADMIN is the branch that carries the call as deployed.
+    ///
+    ///      The config is the single source of truth for the collateral's
+    ///      LTV/liqThreshold/liqBonus/haircut/borrowCap/enabled.
     function whitelistCollateral(
         ILPAdapter.LPType lpType,
         RiskManager.CollateralConfig calldata cfg
