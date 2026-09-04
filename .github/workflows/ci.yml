@@ -83,7 +83,7 @@ jobs:
       # reproduced the failure this is fixing. A namespace with nothing in it falls straight
       # through to the fallback below.
       - name: Cache forge build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             out
@@ -217,7 +217,7 @@ jobs:
       # one that keeps the shared entry current, and the build job stops inheriting whatever
       # the last kill left frozen.
       - name: Cache forge build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             out
@@ -256,7 +256,7 @@ jobs:
       # prefix match and hides the one that actually ran. The snapshot would then shrink back
       # towards the frozen state this is undoing.
       - name: Restore fork RPC responses
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ~/.foundry/cache/rpc
           key: rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}-${{ github.run_id }}
@@ -337,7 +337,7 @@ jobs:
       # their own regardless of what the assertions concluded.
       - name: Save fork RPC responses
         if: always() && steps.forktests.outputs.ran == 'true' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ~/.foundry/cache/rpc
           key: rpc-${{ runner.os }}-${{ steps.forkblock.outputs.block }}-${{ github.run_id }}
