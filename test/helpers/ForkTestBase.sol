@@ -221,9 +221,19 @@ abstract contract ForkTestBase is Test {
         poolFactory.setInterestRateModel("volatile", address(volatileModel));
         core.setPoolFactory(address(poolFactory));
 
-        // PoolFactory forwards collateral configs to RiskManager and sets the pool reserve factor —
-        // grant it PoolAdmin (createPool) and RiskAdmin (whitelistCollateral/setReserveFactor).
-        aclManager.grantRole(aclManager.POOL_ADMIN(), address(poolFactory));
+        // RISK_ADMIN only, matching DeployBase. The factory needs a role in its own right because
+        // whitelistCollateral and setReserveFactor forward to RiskManager and LendingPool, where
+        // `msg.sender` is the factory rather than whoever called it.
+        //
+        // It does not need POOL_ADMIN, and granting it here ran the suite under a permission set
+        // the deployment does not use, diverging in the permissive direction. createPool's
+        // onlyPoolAdmin checks the *caller* — `deployer` under the prank above — so a role held by
+        // the factory could never satisfy it, and core.registerLendingPool authorises
+        // `msg.sender == poolFactory` directly without consulting a role at all. The cost was not
+        // that the grant was merely redundant: RiskManager's onlyRiskAdmin admits POOL_ADMIN as
+        // well, so the factory reached setCollateralConfig through a branch only the tests
+        // granted, and a deployment that forgot RISK_ADMIN would have bricked collateral
+        // whitelisting on chain while this suite stayed green.
         aclManager.addRiskAdmin(address(poolFactory));
 
         // Create the single shared USDC pool (0 reserve factor by default)
