@@ -107,8 +107,10 @@ refuse to run without them, rather than falling back to the deployer:
 
 `HandoverToDAO.s.sol` additionally reads `ACL_MANAGER_ADDRESS`, `PROTOCOL_CORE_ADDRESS`,
 `FEE_COLLECTOR_ADDRESS` and `DAO_ADDRESS`. `HandoverFinalize` refuses while either fee recipient is
-still the deployer: after that step the deployer no longer holds `POOL_ADMIN`, so redirecting them
-would need a DAO proposal.
+still the deployer, or while the two are the same address: after that step the deployer no longer
+holds `POOL_ADMIN`, so redirecting them would need a DAO proposal. The `FeeCollector` must also be
+bound to the `ProtocolCore` being handed over, or the check would be answering about some other
+deployment.
 
 ## License
 
