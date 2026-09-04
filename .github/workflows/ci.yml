@@ -84,10 +84,13 @@ jobs:
       # through to the entry main leaves behind.
       #
       # Restoring has a second dimension, and it outranks key order. A run searches its own
-      # branch's caches first and consults the default branch only when the branch scope yields
-      # nothing at all. Scope is the outer loop; key order is the inner one. So an entry on the
-      # current branch wins over a main entry that is both strictly fresher and matched by an
-      # earlier restore-key.
+      # branch's caches first, and only when the branch scope yields nothing at all does it widen
+      # to the branches it inherits from — for a pull request that is the base branch, and beyond
+      # that the default branch. Scope is the outer loop; key order is the inner one. So an entry
+      # on the current branch wins over an inherited one that is both strictly fresher and matched
+      # by an earlier restore-key. Every PR here targets main, so base and default are the same
+      # branch today; on a PR stacked on another branch, or targeting a release branch, they are
+      # not, and the entry that decides the restore is the base branch's.
       #
       # That is why there is no compatibility fallback here. A second `forge-fork-` key looks
       # harmless once `forge-shared-` exists on main, and is not: a branch still carrying a
