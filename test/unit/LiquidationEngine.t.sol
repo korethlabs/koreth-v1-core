@@ -1327,11 +1327,17 @@ contract LiquidationEngineTest is Test {
         // Liquidator receives underlying tokens directly
         uint256 usdcAfter = usdc.balanceOf(liquidator);
         uint256 wethAfter = weth.balanceOf(liquidator);
-        // Liquidator spent maxRepay USDC but received USDC + WETH from unwind
         assertGt(wethAfter, wethBefore, "Liquidator must receive WETH from unwind");
-        // Liquidator spent maxRepay USDC but received USDC back from unwind.
-        // Net USDC depends on pool ratio. Check total value increased.
-        assertGt(usdcAfter + wethAfter, 0, "Liquidator must receive tokens from unwind");
+
+        // The USDC leg is the whole point of this case — token0 being the borrow asset must not
+        // cause it to be swallowed by the repayment. Only the gross receipt says that; the net
+        // balance change can go either way depending on the pool ratio, since the liquidator paid
+        // `maxRepay` USDC in. Adding the repayment back isolates what the unwind returned.
+        //
+        // Summing the two balances instead tests nothing: `wethAfter` is already known positive
+        // from the assertion above, so a sum floored at zero holds with the USDC leg missing
+        // entirely — which is precisely the regression this line exists to catch.
+        assertGt(usdcAfter + maxRepay, usdcBefore, "Liquidator must receive USDC from unwind");
     }
 
     // ========== Fuzz Tests ==========

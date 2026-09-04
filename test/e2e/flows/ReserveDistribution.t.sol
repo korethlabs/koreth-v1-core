@@ -119,9 +119,19 @@ contract ReserveDistribution is E2EBase {
         uint256 accFees = feeCollector.accumulatedFees(Constants.USDC);
         assertGt(accFees, 0, "Should have accumulated fees");
 
+        // The split is the whole subject of this test, so the two recipients have to be distinct
+        // accounts. ForkTestBase wires both to `deployer`, under which every balance below is the
+        // same balance read twice and the ratio is arithmetically forced to 50/50 whatever the
+        // contract does.
+        vm.startPrank(deployer);
+        feeCollector.setTreasury(makeAddr("treasury"));
+        feeCollector.setInsuranceFund(makeAddr("insurance"));
+        vm.stopPrank();
+
         // Record treasury and insurance balances before distribution
         address treasuryAddr = feeCollector.treasury();
         address insuranceAddr = feeCollector.insuranceFund();
+        assertTrue(treasuryAddr != insuranceAddr, "Recipients must differ or the split is untestable");
         uint256 treasuryBefore = IERC20(Constants.USDC).balanceOf(treasuryAddr);
         uint256 insuranceBefore = IERC20(Constants.USDC).balanceOf(insuranceAddr);
 
@@ -135,23 +145,20 @@ contract ReserveDistribution is E2EBase {
         uint256 treasuryGain = treasuryAfter - treasuryBefore;
         uint256 insuranceGain = insuranceAfter - insuranceBefore;
 
-        // Both treasury and insurance should receive something
-        // Default insurance share is 10%, treasury gets 90%
-        assertGt(treasuryGain + insuranceGain, 0, "Total distribution should be > 0");
+        // Each leg separately: a sum is satisfied by either one alone, which is exactly the case
+        // where the split is broken and one recipient is paid nothing.
+        assertGt(treasuryGain, 0, "Treasury should receive fees");
+        assertGt(insuranceGain, 0, "Insurance fund should receive fees");
 
-        // If treasury and insurance are different addresses, verify the split
-        if (treasuryAddr != insuranceAddr) {
-            assertGt(treasuryGain, 0, "Treasury should receive fees");
-            assertGt(insuranceGain, 0, "Insurance fund should receive fees");
-            // Verify approximate 90/10 split
-            uint256 totalDist = treasuryGain + insuranceGain;
-            uint256 insuranceShareBps = (insuranceGain * 10_000) / totalDist;
-            assertGt(insuranceShareBps, 800, "Insurance share should be ~10% (min 8%)");
-            assertLt(insuranceShareBps, 1200, "Insurance share should be ~10% (max 12%)");
-        } else {
-            // Treasury and insurance are the same address in test setup
-            assertGt(treasuryGain, 0, "Treasury/insurance should receive all fees");
-        }
+        // The whole distribution is accounted for by the two recipients — nothing is stranded.
+        assertEq(treasuryGain + insuranceGain, accFees, "Distribution must pay out the accumulated fees exactly");
+
+        // Default insurance share is 10%, treasury 90%. Pinned against the configured parameter
+        // rather than a hardcoded 1000, so the assertion follows the setting instead of drifting
+        // from it, and holds for the boundary values the setter admits.
+        uint256 expectedShareBps = feeCollector.insuranceFundShareBps();
+        assertEq(insuranceGain, (accFees * expectedShareBps) / 10_000, "Insurance leg must equal the configured share");
+        assertEq(treasuryGain, accFees - insuranceGain, "Treasury leg must be the remainder");
 
         // Accumulated fees should be cleared
         assertEq(feeCollector.accumulatedFees(Constants.USDC), 0, "Fees should be cleared after distribution");
