@@ -96,9 +96,11 @@ jobs:
       #   Failed to save: Unable to reserve cache with key forge-shared-Linux-…,
       #   another job may be creating this cache.
       #
-      # That is a warning on a successful job and it is the scheme working. It was a real defect
-      # while the two sets differed, because it decided which of two unequal entries got written;
-      # now the entries are equal and the race has no loser.
+      # That is a warning on a successful job and it is the scheme working. The race is still
+      # there and it still has a loser; what changed is that nothing is lost by losing it. While
+      # the two sets differed the race decided which of two *unequal* entries got written, and the
+      # wrong winner froze the other job. The candidates are now identical, so the outcome is
+      # arbitrary and immaterial.
       #
       # `forge-shared-` rather than reusing `forge-`, because restore-keys are tried in order
       # and the first prefix that matches wins even when a later one holds a fresher entry.
