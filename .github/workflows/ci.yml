@@ -63,19 +63,30 @@ jobs:
 
       # Cache the Foundry build so only the first run pays the full via-IR cost.
       #
-      # Shared with the fork job below, deliberately, under one namespace. Both jobs run the
-      # same solc, the same optimiser and the same profile, so their artifacts are
-      # interchangeable — and keeping them in separate namespaces had a failure mode.
+      # Shared with the fork job below, under one namespace. Same solc, same optimiser, same
+      # profile — but that is not enough on its own, and assuming it was is what kept this job
+      # dying. The two jobs do not compile the same set: `forge build` includes script/,
+      # `forge test` does not. Measured on this tree, `forge build --sizes` against a cache
+      # freshly written by `forge test` recompiles 199 files, while the reverse recompiles none.
+      # The relation is containment, not equivalence.
       #
-      # actions/cache writes its entry in a *post* step, which a job killed by a reclaimed
-      # runner never reaches. The stale entry that caused the long compile therefore survives
-      # the kill untouched: the next run restores it again, faces the same or a larger
-      # recompile, and dies the same way. Re-running is not a fix and cannot become one.
-      # That is what happened here — the build namespace stayed frozen for hours across three
-      # kills while the fork job's separate namespace tracked HEAD, because the fork job
-      # survives and so reaches its save. On one commit, on the same runner, the fresher
-      # restore meant 70 files to compile and a job that finished, against 107 files and a job
-      # that did not. One namespace means the job that survives keeps the entry current for both.
+      # The cost is not the thirteen files in script/. Compilation is batched, so adding sources
+      # to a batch recompiles the batch: the price of an entry missing script/ is the whole
+      # project, not the difference between the two sets.
+      #
+      # Left alone, the asymmetry points the wrong way. actions/cache writes its entry in a
+      # *post* step, which a job killed by a reclaimed runner never reaches — so the only job
+      # reliably reaching its save was the fork job, the one compiling the *smaller* set. This
+      # job could therefore never restore something it could use, paid a near-full via-IR
+      # compile every run, and was killed part way through it; the entry that caused the long
+      # compile survived the kill intact, and the next run restored it and died the same way.
+      # Three kills at ~27 minutes across two branches, twelve seconds apart, each preserving
+      # its own cause. Re-running is not a fix and cannot become one.
+      #
+      # The fix is in the fork job below, which now builds before it tests, so the job that
+      # survives is the one saving the larger set. Restoring an exact hit here compiled 50
+      # files and finished in 8m17s; the entry left by the smaller set compiled 120 and did
+      # not finish at all.
       #
       # `forge-shared-` rather than reusing `forge-`, because restore-keys are tried in order
       # and the first prefix that matches wins even when a later one holds a fresher entry.
@@ -252,6 +263,23 @@ jobs:
           key: forge-shared-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'foundry.toml', 'remappings.txt') }}
           restore-keys: |
             forge-shared-${{ runner.os }}-
+
+      # Not this job's own requirement — the fork suite compiles fine without it. It is here
+      # because this is the job that reaches its cache save, and what it saves is what the
+      # build job above has to live with. `forge test` skips script/, so an entry written by
+      # the tests alone leaves the build job a 199-file recompile it cannot afford; building
+      # first makes the saved set the superset, and the build job's restore an exact hit.
+      #
+      # Cheap on this side by the same containment: everything the tests need is already in
+      # what this compiles, so the `Fork tests` step below finds the artifacts present and
+      # compiles nothing. The cost is the thirteen files in script/ on a warm entry, and on a
+      # cold one it is a compile this job was going to pay anyway, moved earlier.
+      #
+      # --sizes rather than a plain build, so the two jobs issue the same command and cannot
+      # drift into compiling different sets again. The EIP-170 check it prints is the build
+      # job's to enforce; here it is only a byproduct of keeping the commands identical.
+      - name: Build (so the cache this job saves covers script/ too)
+        run: forge build --sizes
 
       # The suite reads mainnet at a pinned block, so the responses are identical every run and can
       # be replayed from disk. Without this each run pulls thousands of state slots live, which is
