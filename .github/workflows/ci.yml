@@ -83,10 +83,22 @@ jobs:
       # Three kills at ~27 minutes across two branches, twelve seconds apart, each preserving
       # its own cause. Re-running is not a fix and cannot become one.
       #
-      # The fix is in the fork job below, which now builds before it tests, so the job that
-      # survives is the one saving the larger set. Restoring an exact hit here compiled 50
-      # files and finished in 8m17s; the entry left by the smaller set compiled 120 and did
+      # The fix is the `forge build --sizes` in the fork job below. Framing it as "let the job
+      # that survives save the larger set" is how it was arrived at and is weaker than what it
+      # does: both jobs now compile the same set, so whichever one reaches its save publishes a
+      # complete entry, and neither can freeze the other. Restoring an exact hit here compiled
+      # 50 files and finished in 8m17s; the entry left by the smaller set compiled 120 and did
       # not finish at all.
+      #
+      # A consequence worth recognising before it is investigated as a fault: the two jobs race
+      # for the same key, and the loser logs
+      #
+      #   Failed to save: Unable to reserve cache with key forge-shared-Linux-…,
+      #   another job may be creating this cache.
+      #
+      # That is a warning on a successful job and it is the scheme working. It was a real defect
+      # while the two sets differed, because it decided which of two unequal entries got written;
+      # now the entries are equal and the race has no loser.
       #
       # `forge-shared-` rather than reusing `forge-`, because restore-keys are tried in order
       # and the first prefix that matches wins even when a later one holds a fresher entry.
