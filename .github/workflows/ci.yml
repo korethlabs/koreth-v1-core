@@ -63,40 +63,96 @@ jobs:
 
       # Cache the Foundry build so only the first run pays the full via-IR cost.
       #
-      # Shared with the fork job below, deliberately, under one namespace. Both jobs run the
-      # same solc, the same optimiser and the same profile, so their artifacts are
-      # interchangeable — and keeping them in separate namespaces had a failure mode.
+      # Shared with the fork job below, under one namespace. Same solc, same optimiser, same
+      # profile — but that is not enough on its own, and assuming it was is what kept this job
+      # dying. The two jobs do not compile the same set: `forge build` includes script/,
+      # `forge test` does not. Measured on this tree, `forge build --sizes` against a cache
+      # freshly written by `forge test` recompiles 199 files, while the reverse recompiles none.
+      # The relation is containment, not equivalence.
       #
-      # actions/cache writes its entry in a *post* step, which a job killed by a reclaimed
-      # runner never reaches. The stale entry that caused the long compile therefore survives
-      # the kill untouched: the next run restores it again, faces the same or a larger
-      # recompile, and dies the same way. Re-running is not a fix and cannot become one.
-      # That is what happened here — the build namespace stayed frozen for hours across three
-      # kills while the fork job's separate namespace tracked HEAD, because the fork job
-      # survives and so reaches its save. On one commit, on the same runner, the fresher
-      # restore meant 70 files to compile and a job that finished, against 107 files and a job
-      # that did not. One namespace means the job that survives keeps the entry current for both.
+      # The cost is not the thirteen files in script/. Compilation is batched, so adding sources
+      # to a batch recompiles the batch: the price of an entry missing script/ is the whole
+      # project, not the difference between the two sets.
+      #
+      # Left alone, the asymmetry points the wrong way. actions/cache writes its entry in a
+      # *post* step, which a job killed by a reclaimed runner never reaches — so the only job
+      # reliably reaching its save was the fork job, the one compiling the *smaller* set. This
+      # job could therefore never restore something it could use, paid a near-full via-IR
+      # compile every run, and was killed part way through it; the entry that caused the long
+      # compile survived the kill intact, and the next run restored it and died the same way.
+      # Three kills at ~27 minutes across two branches, twelve seconds apart, each preserving
+      # its own cause. Re-running is not a fix and cannot become one.
+      #
+      # The fix is the `forge build --sizes` in the fork job below. Framing it as "let the job
+      # that survives save the larger set" is how it was arrived at and is weaker than what it
+      # does: both jobs now compile the same set, so whichever one reaches its save publishes a
+      # complete entry, and neither can freeze the other. Restoring an exact hit here compiled
+      # 50 files and finished in 8m17s; the entry left by the smaller set compiled 120 and did
+      # not finish at all.
+      #
+      # A consequence worth recognising before it is investigated as a fault: the two jobs race
+      # for the same key, and the loser logs
+      #
+      #   Failed to save: Unable to reserve cache with key forge-shared-Linux-…,
+      #   another job may be creating this cache.
+      #
+      # That is a warning on a successful job and it is the scheme working. The race is still
+      # there and it still has a loser; what changed is that nothing is lost by losing it. While
+      # the two sets differed the race decided which of two *unequal* entries got written, and the
+      # wrong winner froze the other job. The candidates are now identical, so the outcome is
+      # arbitrary and immaterial.
       #
       # `forge-shared-` rather than reusing `forge-`, because restore-keys are tried in order
       # and the first prefix that matches wins even when a later one holds a fresher entry.
       # Reusing `forge-` would have matched the frozen entry on the very first run and
       # reproduced the failure this is fixing. A namespace with nothing in it falls straight
-      # through to the fallback below.
+      # through to the entry main leaves behind.
+      #
+      # Restoring has a second dimension, and it outranks key order. A run searches its own
+      # branch's caches first, and only when the branch scope yields nothing at all does it widen
+      # to the branches it inherits from — for a pull request that is the base branch, and beyond
+      # that the default branch. Scope is the outer loop; key order is the inner one. So an entry
+      # on the current branch wins over an inherited one that is both strictly fresher and matched
+      # by an earlier restore-key. Every PR here targets main, so base and default are the same
+      # branch today; on a PR stacked on another branch, or targeting a release branch, they are
+      # not, and the entry that decides the restore is the base branch's.
+      #
+      # That is why there is no compatibility fallback here. A second `forge-fork-` key looks
+      # harmless once `forge-shared-` exists on main, and is not: a branch still carrying a
+      # `forge-fork-` entry from before this change matches its own stale copy on the second key
+      # instead of main's current one on the first — reinstating, per branch, exactly the freeze
+      # this scheme removes. Observed rather than theorised: a PR restored a `forge-fork-` entry
+      # written by its own earlier run in preference to a newer `forge-shared-` entry on main,
+      # with `forge-shared-` listed first. A branch that matches nothing starts cold once and is
+      # warm from then on, which is the cheaper failure.
+      #
+      # The practical consequence: which entry warms a run depends on whether the branch has
+      # run before. A pull request's first run has nothing under its own ref and inherits the
+      # entry main left behind; every run after that saves under the PR's ref and restores its
+      # own, because scope is decided before key order. So reading the cache list and expecting
+      # the newest key to win will mislead you, and so will assuming main's is the one in play.
+      # Ask for the `ref=` that actually decides it:
+      #   gh api --paginate repos/korethlabs/koreth-v1-core/actions/caches \
+      #     --jq '.actions_caches[]|"\(.key) \(.created_at) ref=\(.ref)"'
+      #
+      # --paginate is not optional here. The endpoint returns 30 entries per page against a
+      # `total_count` in the hundreds, and the omission is silent: the listing looks complete
+      # and simply lacks the entry being hunted, which reads as "no such cache" — the wrong
+      # conclusion, reached from a command that appeared to answer the question.
       - name: Cache forge build
         uses: actions/cache@v6
         with:
           path: |
             out
             cache
-          key: forge-shared-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'foundry.toml', 'remappings.txt') }}
-          # Second entry is the fork job's old namespace, which is the freshest artifact set
-          # that exists at the moment this lands. It is a one-time bridge so the first run
-          # after the change starts warm instead of cold; once `forge-shared-` has been
-          # written it always matches first and the fallback is dead weight. Safe to delete
-          # after a green run on main, and harmless to leave.
+          # script/ is in the hash because it is in the cached set. Both jobs compile it, and
+          # actions/cache skips its save on an exact key hit — so a commit touching only
+          # script/ would match the existing key, publish nothing, and leave every later run
+          # recompiling those files off a stale entry. The rule is that the key must cover
+          # everything the entry contains, or the entry silently stops tracking part of itself.
+          key: forge-shared-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'script/**/*.sol', 'foundry.toml', 'remappings.txt') }}
           restore-keys: |
             forge-shared-${{ runner.os }}-
-            forge-fork-${{ runner.os }}-
 
       - name: Check formatting
         run: forge fmt --check
@@ -194,6 +250,26 @@ jobs:
         with:
           submodules: recursive
 
+      # Fail rather than skip. A job that exits 0 without an endpoint publishes the same green
+      # tick as one that ran all 314 tests, so a secret that quietly stops resolving — an expired
+      # key, or one moved to an organisation whose plan never injects it into a private repository
+      # — is indistinguishable from a passing build. That is not hypothetical: two consecutive
+      # runs here reported success having executed no fork test at all, and it was caught only
+      # because the job lasted a second. Both repositories are private with no forks, so there is
+      # no outside contributor lacking the secret for a graceful skip to spare a red check.
+      #
+      # First in the job, and its own step rather than a line inside `Fork tests`, because the
+      # build below now sits between the two. A minutes-long compile to reach a conclusion that
+      # was available in a second is waste, and it is the only reason this moved.
+      - name: Require ETH_RPC_URL
+        env:
+          ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+        run: |
+          if [ -z "$ETH_RPC_URL" ]; then
+            echo "::error::ETH_RPC_URL is not set, so the fork suite cannot run. Failing rather than reporting a green run that tested nothing."
+            exit 1
+          fi
+
       # Same via-IR memory problem as the build job: without headroom solc is killed mid-compile
       # before a single test runs, which reads like a test failure. That kill is a SIGKILL (137);
       # the swap prevents it. A SIGTERM (143) here means something else — see the shared cache note.
@@ -212,20 +288,42 @@ jobs:
         with:
           version: v1.7.1
 
-      # One namespace with the build job, not a `forge-fork-` of its own. See the note there
-      # for why, and for what the second restore key is doing: this job survives, so it is the
-      # one that keeps the shared entry current, and the build job stops inheriting whatever
-      # the last kill left frozen.
+      # One namespace with the build job, not a `forge-fork-` of its own. See the note there for
+      # why, and for why there is no second restore key: this job survives, so it is the one that
+      # keeps the shared entry current, and the build job stops inheriting whatever the last kill
+      # left frozen. Keep this identical to the build job's — two jobs that restore differently
+      # do not share a namespace, they take turns overwriting one.
       - name: Cache forge build
         uses: actions/cache@v6
         with:
           path: |
             out
             cache
-          key: forge-shared-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'foundry.toml', 'remappings.txt') }}
+          # script/ is in the hash because it is in the cached set. Both jobs compile it, and
+          # actions/cache skips its save on an exact key hit — so a commit touching only
+          # script/ would match the existing key, publish nothing, and leave every later run
+          # recompiling those files off a stale entry. The rule is that the key must cover
+          # everything the entry contains, or the entry silently stops tracking part of itself.
+          key: forge-shared-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'script/**/*.sol', 'foundry.toml', 'remappings.txt') }}
           restore-keys: |
             forge-shared-${{ runner.os }}-
-            forge-fork-${{ runner.os }}-
+
+      # Not this job's own requirement — the fork suite compiles fine without it. It is here
+      # because this is the job that reaches its cache save, and what it saves is what the
+      # build job above has to live with. `forge test` skips script/, so an entry written by
+      # the tests alone leaves the build job a 199-file recompile it cannot afford; building
+      # first makes the saved set the superset, and the build job's restore an exact hit.
+      #
+      # Cheap on this side by the same containment: everything the tests need is already in
+      # what this compiles, so the `Fork tests` step below finds the artifacts present and
+      # compiles nothing. The cost is the thirteen files in script/ on a warm entry, and on a
+      # cold one it is a compile this job was going to pay anyway, moved earlier.
+      #
+      # --sizes rather than a plain build, so the two jobs issue the same command and cannot
+      # drift into compiling different sets again. The EIP-170 check it prints is the build
+      # job's to enforce; here it is only a byproduct of keeping the commands identical.
+      - name: Build (so the cache this job saves covers script/ too)
+        run: forge build --sizes
 
       # The suite reads mainnet at a pinned block, so the responses are identical every run and can
       # be replayed from disk. Without this each run pulls thousands of state slots live, which is
@@ -276,18 +374,8 @@ jobs:
         env:
           ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
         run: |
-          # Fail rather than skip. A job that exits 0 without an endpoint publishes the same green
-          # tick as one that ran all 314 tests, so a secret that quietly stops resolving — an
-          # expired key, or one moved to an organisation whose plan never injects it into a private
-          # repository — is indistinguishable from a passing build. That is not hypothetical: two
-          # consecutive runs here reported success having executed no fork test at all, and it was
-          # caught only because the job lasted a second. Both repositories are private with no
-          # forks, so there is no outside contributor lacking the secret for a graceful skip to
-          # spare a red check.
-          if [ -z "$ETH_RPC_URL" ]; then
-            echo "::error::ETH_RPC_URL is not set, so the fork suite cannot run. Failing rather than reporting a green run that tested nothing."
-            exit 1
-          fi
+          # The endpoint is guaranteed present by the `Require ETH_RPC_URL` step at the top of
+          # this job, which is where the reasoning for failing rather than skipping lives.
           # Records that reads actually happened, so the save step below knows whether this job has
           # a snapshot worth publishing. Set before the suite runs, not after: a failing run has
           # still fetched everything it reached, and that is exactly what the next run should not
