@@ -131,7 +131,12 @@ jobs:
           path: |
             out
             cache
-          key: forge-shared-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'foundry.toml', 'remappings.txt') }}
+          # script/ is in the hash because it is in the cached set. Both jobs compile it, and
+          # actions/cache skips its save on an exact key hit — so a commit touching only
+          # script/ would match the existing key, publish nothing, and leave every later run
+          # recompiling those files off a stale entry. The rule is that the key must cover
+          # everything the entry contains, or the entry silently stops tracking part of itself.
+          key: forge-shared-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'script/**/*.sol', 'foundry.toml', 'remappings.txt') }}
           restore-keys: |
             forge-shared-${{ runner.os }}-
 
@@ -231,6 +236,26 @@ jobs:
         with:
           submodules: recursive
 
+      # Fail rather than skip. A job that exits 0 without an endpoint publishes the same green
+      # tick as one that ran all 314 tests, so a secret that quietly stops resolving — an expired
+      # key, or one moved to an organisation whose plan never injects it into a private repository
+      # — is indistinguishable from a passing build. That is not hypothetical: two consecutive
+      # runs here reported success having executed no fork test at all, and it was caught only
+      # because the job lasted a second. Both repositories are private with no forks, so there is
+      # no outside contributor lacking the secret for a graceful skip to spare a red check.
+      #
+      # First in the job, and its own step rather than a line inside `Fork tests`, because the
+      # build below now sits between the two. A minutes-long compile to reach a conclusion that
+      # was available in a second is waste, and it is the only reason this moved.
+      - name: Require ETH_RPC_URL
+        env:
+          ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+        run: |
+          if [ -z "$ETH_RPC_URL" ]; then
+            echo "::error::ETH_RPC_URL is not set, so the fork suite cannot run. Failing rather than reporting a green run that tested nothing."
+            exit 1
+          fi
+
       # Same via-IR memory problem as the build job: without headroom solc is killed mid-compile
       # before a single test runs, which reads like a test failure. That kill is a SIGKILL (137);
       # the swap prevents it. A SIGTERM (143) here means something else — see the shared cache note.
@@ -260,7 +285,12 @@ jobs:
           path: |
             out
             cache
-          key: forge-shared-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'foundry.toml', 'remappings.txt') }}
+          # script/ is in the hash because it is in the cached set. Both jobs compile it, and
+          # actions/cache skips its save on an exact key hit — so a commit touching only
+          # script/ would match the existing key, publish nothing, and leave every later run
+          # recompiling those files off a stale entry. The rule is that the key must cover
+          # everything the entry contains, or the entry silently stops tracking part of itself.
+          key: forge-shared-${{ runner.os }}-${{ hashFiles('src/**/*.sol', 'test/**/*.sol', 'script/**/*.sol', 'foundry.toml', 'remappings.txt') }}
           restore-keys: |
             forge-shared-${{ runner.os }}-
 
@@ -330,18 +360,8 @@ jobs:
         env:
           ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
         run: |
-          # Fail rather than skip. A job that exits 0 without an endpoint publishes the same green
-          # tick as one that ran all 314 tests, so a secret that quietly stops resolving — an
-          # expired key, or one moved to an organisation whose plan never injects it into a private
-          # repository — is indistinguishable from a passing build. That is not hypothetical: two
-          # consecutive runs here reported success having executed no fork test at all, and it was
-          # caught only because the job lasted a second. Both repositories are private with no
-          # forks, so there is no outside contributor lacking the secret for a graceful skip to
-          # spare a red check.
-          if [ -z "$ETH_RPC_URL" ]; then
-            echo "::error::ETH_RPC_URL is not set, so the fork suite cannot run. Failing rather than reporting a green run that tested nothing."
-            exit 1
-          fi
+          # The endpoint is guaranteed present by the `Require ETH_RPC_URL` step at the top of
+          # this job, which is where the reasoning for failing rather than skipping lives.
           # Records that reads actually happened, so the save step below knows whether this job has
           # a snapshot worth publishing. Set before the suite runs, not after: a failing run has
           # still fetched everything it reached, and that is exactly what the next run should not
