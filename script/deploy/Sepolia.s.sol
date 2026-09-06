@@ -9,12 +9,20 @@ import {DeployBase} from "../DeployBase.s.sol";
 contract DeploySepolia is DeployBase {
     function _config() internal override returns (ChainConfig memory) {
         address deployer = vm.addr(vm.envUint("DEPLOYER_PRIVATE_KEY"));
+        // Required even on a testnet, where guardian is allowed to fall back to the deployer. A
+        // role can be regranted once someone notices; a fee destination is where the money already
+        // went. Naming them here is also what keeps the testnet exercising the same two-recipient
+        // split production runs on, instead of a degenerate one that always passes.
+        address treasury = vm.envAddress("TREASURY_ADDRESS");
+        address insuranceFund = vm.envAddress("INSURANCE_FUND_ADDRESS");
 
         return ChainConfig({
             // Roles
             deployer: deployer,
             guardian: deployer, // same as deployer on testnet
             riskAdmin: deployer,
+            treasury: treasury,
+            insuranceFund: insuranceFund,
             // V2 — not available on Sepolia
             v2Factory: address(0),
             v2Router: address(0),

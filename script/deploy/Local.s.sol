@@ -21,6 +21,13 @@ contract DeployLocal is DeployBase {
     // Anvil default account #0 ADDRESS (public — the deployer must be this on the local fork)
     address internal constant ANVIL_ACCT0 = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
 
+    // Anvil default accounts #1 and #2 (public), standing in for the treasury and the insurance
+    // fund. Named accounts rather than the deployer because the point of the field is that the two
+    // destinations are distinct and stated; collapsing them here would make the local fork the one
+    // environment where the split silently does nothing, which is where it would be noticed last.
+    address internal constant ANVIL_ACCT1 = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
+    address internal constant ANVIL_ACCT2 = 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC;
+
     /// @dev Start anvil with `--chain-id 1337`. A mainnet fork otherwise inherits chainid 1, and
     ///      every address in this profile is a real mainnet address, so nothing about the script
     ///      itself says "local".
@@ -46,6 +53,8 @@ contract DeployLocal is DeployBase {
             deployer: deployer,
             guardian: deployer,
             riskAdmin: deployer,
+            treasury: ANVIL_ACCT1,
+            insuranceFund: ANVIL_ACCT2,
             // Uniswap V2 (mainnet)
             v2Factory: 0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f,
             v2Router: 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D,

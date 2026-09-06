@@ -60,15 +60,27 @@ contract RevenueFlow is E2EBase {
         uint256 accFees = feeCollector.accumulatedFees(Constants.USDC);
         assertGt(accFees, 0, "Accumulated fees should be tracked");
 
-        uint256 treasuryBefore = IERC20(Constants.USDC).balanceOf(deployer); // treasury = deployer in test
+        // Read the recipients off the contract rather than assuming the deployer. Both used to be
+        // the deployer in this suite, so a single balance stood in for the pair: the assertion
+        // could not tell a working split from all the money going to one side, and the flow this
+        // test is named for was only ever verified as far as "some balance went up".
+        uint256 treasuryBefore = IERC20(Constants.USDC).balanceOf(feeCollector.treasury());
+        uint256 insuranceBefore = IERC20(Constants.USDC).balanceOf(feeCollector.insuranceFund());
 
         vm.prank(deployer);
         feeCollector.distribute(Constants.USDC);
 
-        uint256 treasuryAfter = IERC20(Constants.USDC).balanceOf(deployer);
-        // Since treasury and insurance are both deployer, just check total increased
+        // Assert the increase before subtracting: a balance that failed to move would otherwise
+        // underflow into an arithmetic panic, which reports nothing about which side went wrong.
+        uint256 treasuryAfter = IERC20(Constants.USDC).balanceOf(feeCollector.treasury());
+        uint256 insuranceAfter = IERC20(Constants.USDC).balanceOf(feeCollector.insuranceFund());
         assertGt(treasuryAfter, treasuryBefore, "Treasury should receive fees");
-        console.log("Treasury received: %s USDC", (treasuryAfter - treasuryBefore) / 1e6);
+        assertGt(insuranceAfter, insuranceBefore, "Insurance fund should receive fees");
+
+        uint256 treasuryReceived = treasuryAfter - treasuryBefore;
+        uint256 insuranceReceived = insuranceAfter - insuranceBefore;
+        console.log("Treasury received: %s USDC", treasuryReceived / 1e6);
+        console.log("Insurance received: %s USDC", insuranceReceived / 1e6);
 
         // Accumulated fees should be cleared
         assertEq(feeCollector.accumulatedFees(Constants.USDC), 0, "Fees should be cleared");

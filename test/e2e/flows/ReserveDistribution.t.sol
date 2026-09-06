@@ -120,15 +120,11 @@ contract ReserveDistribution is E2EBase {
         assertGt(accFees, 0, "Should have accumulated fees");
 
         // The split is the whole subject of this test, so the two recipients have to be distinct
-        // accounts. ForkTestBase wires both to `deployer`, under which every balance below is the
-        // same balance read twice and the ratio is arithmetically forced to 50/50 whatever the
-        // contract does.
-        vm.startPrank(deployer);
-        feeCollector.setTreasury(makeAddr("treasury"));
-        feeCollector.setInsuranceFund(makeAddr("insurance"));
-        vm.stopPrank();
-
-        // Record treasury and insurance balances before distribution
+        // accounts: under one address every balance below is the same balance read twice and the
+        // ratio is arithmetically forced whatever the contract does. ForkTestBase used to wire both
+        // to `deployer` and this test corrected it locally; the helper now names two addresses, as
+        // a deployment configures, so the correction is gone and the assertion below is what keeps
+        // a future collapse from passing silently.
         address treasuryAddr = feeCollector.treasury();
         address insuranceAddr = feeCollector.insuranceFund();
         assertTrue(treasuryAddr != insuranceAddr, "Recipients must differ or the split is untestable");

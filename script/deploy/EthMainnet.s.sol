@@ -21,12 +21,20 @@ contract DeployEthMainnet is DeployBase {
         // and HandoverFinalize would then refuse to strip a deployer that never had it. An extra
         // operational risk key can be granted after deploy, and revoked before handover.
         address guardian = vm.envAddress("GUARDIAN_ADDRESS");
+        // Required for the same reason, and more sharply: these are not roles that can be regranted
+        // later without anyone noticing, they are where the money goes. Defaulting either to the
+        // deployer would deploy a protocol whose revenue and whose insurance fund are one EOA, and
+        // nothing downstream — not the handover script, not the tests — would report it.
+        address treasury = vm.envAddress("TREASURY_ADDRESS");
+        address insuranceFund = vm.envAddress("INSURANCE_FUND_ADDRESS");
 
         return ChainConfig({
             // Roles
             deployer: deployer,
             guardian: guardian,
             riskAdmin: deployer,
+            treasury: treasury,
+            insuranceFund: insuranceFund,
             // V2 — Uniswap V2
             v2Factory: 0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f,
             v2Router: 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D,

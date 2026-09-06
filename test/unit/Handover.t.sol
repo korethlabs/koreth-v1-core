@@ -4,8 +4,9 @@ pragma solidity ^0.8.26;
 import "forge-std/Test.sol";
 import {ACLManager} from "../../src/core/ACLManager.sol";
 import {ProtocolCore} from "../../src/core/ProtocolCore.sol";
+import {FeeCollector} from "../../src/core/FeeCollector.sol";
 import {ILPAdapter} from "../../src/interfaces/ILPAdapter.sol";
-import {Handover} from "../../script/HandoverToDAO.s.sol";
+import {Handover, HandoverPropose} from "../../script/HandoverToDAO.s.sol";
 
 /// @notice Stands in for the deploying team's key. The handover runs as a sequence of calls from
 ///         one account, so the tests need one — and routing through it means they exercise the
@@ -24,8 +25,16 @@ contract DeployerAccount {
         Handover.propose(aclManager, core, dao);
     }
 
-    function finalize(ACLManager aclManager, ProtocolCore core, address dao, address deployer) external {
-        Handover.finalize(aclManager, core, dao, deployer);
+    function finalize(
+        ACLManager aclManager,
+        ProtocolCore core,
+        FeeCollector feeCollector,
+        address dao,
+        address deployer
+    )
+        external
+    {
+        Handover.finalize(aclManager, core, feeCollector, dao, deployer);
     }
 }
 
@@ -44,10 +53,13 @@ contract MockDAO {
 contract HandoverTest is Test {
     ACLManager public aclManager;
     ProtocolCore public core;
+    FeeCollector public feeCollector;
     DeployerAccount public deployerAccount;
     MockDAO public dao;
 
     address public deployer;
+    address public treasury = makeAddr("treasury");
+    address public insuranceFund = makeAddr("insuranceFund");
 
     function setUp() public {
         deployerAccount = new DeployerAccount();
@@ -55,6 +67,7 @@ contract HandoverTest is Test {
 
         aclManager = new ACLManager(deployer);
         core = new ProtocolCore(deployer, address(aclManager));
+        feeCollector = new FeeCollector(address(core), treasury, insuranceFund);
 
         deployerAccount.exec(address(aclManager), abi.encodeCall(ACLManager.addRiskAdmin, (deployer)));
 
@@ -94,7 +107,7 @@ contract HandoverTest is Test {
         deployerAccount.propose(aclManager, core, address(dao));
 
         vm.expectRevert("DAO_HAS_NOT_ACCEPTED_OWNERSHIP");
-        deployerAccount.finalize(aclManager, core, address(dao), deployer);
+        deployerAccount.finalize(aclManager, core, feeCollector, address(dao), deployer);
 
         assertTrue(aclManager.isRiskAdmin(deployer), "nothing may be revoked on a refused finalize");
         assertTrue(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), deployer));
@@ -107,7 +120,7 @@ contract HandoverTest is Test {
         dao.accept(core);
 
         vm.expectRevert("DEPLOYER_NOT_ADMIN");
-        deployerAccount.finalize(aclManager, core, address(dao), makeAddr("wrongAddress"));
+        deployerAccount.finalize(aclManager, core, feeCollector, address(dao), makeAddr("wrongAddress"));
 
         assertTrue(aclManager.isRiskAdmin(deployer), "the real deployer must be untouched");
         assertTrue(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), deployer));
@@ -115,7 +128,7 @@ contract HandoverTest is Test {
 
     function test_finalize_revertsIfDaoWasNeverProposed() public {
         vm.expectRevert("DAO_HAS_NOT_ACCEPTED_OWNERSHIP");
-        deployerAccount.finalize(aclManager, core, address(dao), deployer);
+        deployerAccount.finalize(aclManager, core, feeCollector, address(dao), deployer);
     }
 
     function test_fullHandover_leavesDeployerWithNothing() public {
@@ -124,7 +137,7 @@ contract HandoverTest is Test {
         dao.accept(core);
         assertEq(core.owner(), address(dao));
 
-        deployerAccount.finalize(aclManager, core, address(dao), deployer);
+        deployerAccount.finalize(aclManager, core, feeCollector, address(dao), deployer);
 
         assertFalse(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), deployer));
         assertFalse(aclManager.isPoolAdmin(deployer));
@@ -133,6 +146,73 @@ contract HandoverTest is Test {
         assertTrue(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), address(dao)));
         assertTrue(aclManager.isPoolAdmin(address(dao)));
         assertTrue(aclManager.isRiskAdmin(address(dao)));
+    }
+
+    /// @dev Every deploy profile used to pass the deployer as both fee recipients, and nothing
+    ///      downstream noticed: the handover reported success while all protocol revenue kept
+    ///      flowing to the deploying EOA. It is only after this step that the state becomes a trap —
+    ///      moving either address needs POOL_ADMIN, which the deployer has just given up, so the
+    ///      only remaining route is a DAO proposal nobody knows to write.
+    function test_finalize_revertsIfTreasuryIsStillTheDeployer() public {
+        deployerAccount.exec(address(feeCollector), abi.encodeCall(FeeCollector.setTreasury, (deployer)));
+
+        deployerAccount.propose(aclManager, core, address(dao));
+        dao.accept(core);
+
+        vm.expectRevert("TREASURY_IS_DEPLOYER");
+        deployerAccount.finalize(aclManager, core, feeCollector, address(dao), deployer);
+
+        // The check sits ahead of every revocation, so a refusal strands nothing: the deployer can
+        // still call setTreasury and run the step again.
+        assertTrue(aclManager.isPoolAdmin(deployer), "a refused finalize must revoke nothing");
+        assertTrue(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), deployer));
+    }
+
+    function test_finalize_revertsIfInsuranceFundIsStillTheDeployer() public {
+        deployerAccount.exec(address(feeCollector), abi.encodeCall(FeeCollector.setInsuranceFund, (deployer)));
+
+        deployerAccount.propose(aclManager, core, address(dao));
+        dao.accept(core);
+
+        vm.expectRevert("INSURANCE_FUND_IS_DEPLOYER");
+        deployerAccount.finalize(aclManager, core, feeCollector, address(dao), deployer);
+
+        assertTrue(aclManager.isPoolAdmin(deployer), "a refused finalize must revoke nothing");
+    }
+
+    /// @dev FeeCollector accepts the two addresses being equal, and the deploy scripts refuse it;
+    ///      but both are settable afterwards, so the handover is where the guarantee has to hold.
+    ///      Collapsed, the insurance fund is not segregated from revenue and the split the contract
+    ///      performs is arithmetic with no effect.
+    function test_finalize_revertsIfFeeRecipientsCollapsed() public {
+        address shared = makeAddr("shared");
+        deployerAccount.exec(address(feeCollector), abi.encodeCall(FeeCollector.setTreasury, (shared)));
+        deployerAccount.exec(address(feeCollector), abi.encodeCall(FeeCollector.setInsuranceFund, (shared)));
+
+        deployerAccount.propose(aclManager, core, address(dao));
+        dao.accept(core);
+
+        vm.expectRevert("TREASURY_EQUALS_INSURANCE_FUND");
+        deployerAccount.finalize(aclManager, core, feeCollector, address(dao), deployer);
+
+        assertTrue(aclManager.isPoolAdmin(deployer), "a refused finalize must revoke nothing");
+    }
+
+    /// @dev The FeeCollector address is read from the environment and nothing else ties it to the
+    ///      core being handed over. A second, correctly-configured FeeCollector passes every
+    ///      recipient check while saying nothing about this deployment — and the revocations would
+    ///      run regardless, so the step would report destinations as verified that it never read.
+    function test_finalize_revertsIfFeeCollectorBelongsToAnotherCore() public {
+        ProtocolCore otherCore = new ProtocolCore(deployer, address(aclManager));
+        FeeCollector foreign = new FeeCollector(address(otherCore), treasury, insuranceFund);
+
+        deployerAccount.propose(aclManager, core, address(dao));
+        dao.accept(core);
+
+        vm.expectRevert("FEE_COLLECTOR_WRONG_CORE");
+        deployerAccount.finalize(aclManager, core, foreign, address(dao), deployer);
+
+        assertTrue(aclManager.isPoolAdmin(deployer), "a refused finalize must revoke nothing");
     }
 
     /// @dev On a deployment where the deploying key was also the guardian, leaving it able to pause
@@ -144,7 +224,7 @@ contract HandoverTest is Test {
 
         deployerAccount.propose(aclManager, core, address(dao));
         dao.accept(core);
-        deployerAccount.finalize(aclManager, core, address(dao), deployer);
+        deployerAccount.finalize(aclManager, core, feeCollector, address(dao), deployer);
 
         assertFalse(aclManager.isEmergencyAdmin(deployer), "deployer must not keep the pause lever");
     }
@@ -157,7 +237,7 @@ contract HandoverTest is Test {
 
         deployerAccount.propose(aclManager, core, address(dao));
         dao.accept(core);
-        deployerAccount.finalize(aclManager, core, address(dao), deployer);
+        deployerAccount.finalize(aclManager, core, feeCollector, address(dao), deployer);
 
         assertTrue(aclManager.isEmergencyAdmin(guardian), "the guardian is not the deployer's role to lose");
     }
@@ -167,7 +247,7 @@ contract HandoverTest is Test {
     function test_afterHandover_deployerCannotReplaceTheACL() public {
         deployerAccount.propose(aclManager, core, address(dao));
         dao.accept(core);
-        deployerAccount.finalize(aclManager, core, address(dao), deployer);
+        deployerAccount.finalize(aclManager, core, feeCollector, address(dao), deployer);
 
         ACLManager hostile = new ACLManager(deployer);
 
@@ -331,5 +411,42 @@ contract HandoverTest is Test {
             address(core),
             abi.encodeCall(ProtocolCore.whitelistLpPool, (makeAddr("pool2"), ILPAdapter.LPType.UniswapV2))
         );
+    }
+}
+
+/// @title HandoverProposeScriptTest
+/// @notice That the propose step does not require an environment variable it never reads.
+/// @dev Separate contract because it drives the script rather than the library, so the fixture has
+///      to hand the roles to the broadcast key the script derives from the environment.
+///
+///      The regression this guards is narrow and silent in the other direction: loading the
+///      FeeCollector in the shared env step made propose revert on a missing FEE_COLLECTOR_ADDRESS.
+///      Propose is the reversible half and the one most likely to be run from a runbook written
+///      before the fee checks existed, so failing it there costs liveness and buys no safety.
+contract HandoverProposeScriptTest is Test {
+    uint256 internal constant DEPLOYER_KEY = 0xA11CE;
+
+    function test_propose_runsWithoutFeeCollectorInTheEnvironment() public {
+        HandoverPropose script = new HandoverPropose();
+
+        // Owner and admin are the broadcast key: vm.startBroadcast makes the script's calls
+        // originate there, so a fixture that granted the script itself would fail on the first
+        // grant with the roles sitting on the wrong address.
+        address broadcaster = vm.addr(DEPLOYER_KEY);
+        ACLManager aclManager = new ACLManager(broadcaster);
+        ProtocolCore core = new ProtocolCore(broadcaster, address(aclManager));
+        MockDAO dao = new MockDAO();
+
+        vm.setEnv("DEPLOYER_PRIVATE_KEY", vm.toString(DEPLOYER_KEY));
+        vm.setEnv("ACL_MANAGER_ADDRESS", vm.toString(address(aclManager)));
+        vm.setEnv("PROTOCOL_CORE_ADDRESS", vm.toString(address(core)));
+        vm.setEnv("DAO_ADDRESS", vm.toString(address(dao)));
+        // FEE_COLLECTOR_ADDRESS is deliberately never set. vm.envAddress reverts on a missing
+        // variable, so reading it in the shared loader would fail this before a single grant.
+
+        script.run();
+
+        assertTrue(aclManager.hasRole(aclManager.DEFAULT_ADMIN_ROLE(), address(dao)), "DAO missing admin");
+        assertEq(core.pendingOwner(), address(dao), "ownership transfer was not proposed");
     }
 }

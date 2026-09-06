@@ -96,6 +96,24 @@ than being re-read, so nothing self-corrects on the next query.
 `script/deploy/` — chain-specific deploys (`Sepolia`, `EthMainnet`, `BSCTestnet`) on top of
 `DeployBase`. `script/local/` — forked-anvil deploy + seed for local development.
 
+Besides `DEPLOYER_PRIVATE_KEY`, the on-chain profiles read addresses from the environment and
+refuse to run without them, rather than falling back to the deployer:
+
+| Variable | Used by | Why it is required |
+|---|---|---|
+| `GUARDIAN_ADDRESS` | `EthMainnet` | The guardian being a separate key is the point of having one. |
+| `TREASURY_ADDRESS` | all on-chain profiles | Where protocol revenue goes. A default would send it to the deploying EOA. |
+| `INSURANCE_FUND_ADDRESS` | all on-chain profiles | Must differ from the treasury, or `FeeCollector`'s split does nothing. |
+
+`HandoverToDAO.s.sol` additionally reads `ACL_MANAGER_ADDRESS`, `PROTOCOL_CORE_ADDRESS` and
+`DAO_ADDRESS`, plus `FEE_COLLECTOR_ADDRESS` in `HandoverFinalize` only — the propose step never
+looks at the fee destinations, and requiring the variable there would fail the reversible half of
+the handover on an address it does not use. `HandoverFinalize` refuses while either fee recipient is
+still the deployer, or while the two are the same address: after that step the deployer no longer
+holds `POOL_ADMIN`, so redirecting them would need a DAO proposal. The `FeeCollector` must also be
+bound to the `ProtocolCore` being handed over, or the check would be answering about some other
+deployment.
+
 ## License
 
 `BUSL-1.1` (see [LICENSE](./LICENSE)) — converts to `GPL-2.0-or-later` on the Change Date.

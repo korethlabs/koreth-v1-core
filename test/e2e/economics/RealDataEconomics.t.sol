@@ -17,11 +17,10 @@ contract RealDataEconomics is E2EBase {
     function setUp() public override {
         super.setUp();
 
-        // Wire FeeCollector + set reserve factor + separate treasury/insurance
+        // Wire FeeCollector + set reserve factor. The treasury and insurance fund are already two
+        // distinct addresses from the base helper, so this no longer overrides them locally.
         vm.startPrank(deployer);
         liquidationEngine.setFeeCollector(address(feeCollector));
-        feeCollector.setTreasury(makeAddr("treasury"));
-        feeCollector.setInsuranceFund(makeAddr("insurance"));
         ILendingPool(address(usdcPool)).setReserveFactor(2000); // 20%
         ILendingPool(address(usdcPool)).setFeeCollector(address(feeCollector));
         vm.stopPrank();
