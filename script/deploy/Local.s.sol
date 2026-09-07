@@ -88,7 +88,15 @@ contract DeployLocal is DeployBase {
             liquidationThreshold: 7500, // 75%
             liquidationBonus: 500, // 5%
             haircut: 500, // 5% discount on collateral value
-            borrowCap: 100_000e18 // $100K (18-dec USD, not borrow-asset decimals)
+            borrowCap: 100_000e18, // $100K (18-dec USD, not borrow-asset decimals)
+            // $100 floor, deliberately far below mainnet's. script/SeedBorrow.s.sol borrows as
+            // little as $2,000 per seeded account, and the floor binds repayment as well as
+            // borrowing, so a mainnet-sized floor here would leave the seeded positions unable to
+            // part-repay — the fork would exercise a protocol nobody can use.
+            minBorrowUsd: 100e18,
+            // Same $10M window as mainnet: the throttle is a rate control, and keeping it identical
+            // means the fork exercises the production setting rather than a permissive stand-in.
+            dailyBorrowIncreaseLimit: 10_000_000e18
         });
     }
 

@@ -59,7 +59,15 @@ contract DeployEthMainnet is DeployBase {
             liquidationThreshold: 7500,
             liquidationBonus: 500,
             haircut: 500, // 5% discount on collateral value
-            borrowCap: 10_000_000e18 // $10M (18-dec USD, not borrow-asset decimals)
+            borrowCap: 10_000_000e18, // $10M (18-dec USD, not borrow-asset decimals)
+            // $10K debt floor. Sized against mainnet gas: a liquidation seizes an LP, unwinds it
+            // through the adapter and pays the liquidator in one transaction, so a position much
+            // smaller than this is not worth liquidating and would sit as bad debt instead.
+            minBorrowUsd: 10_000e18,
+            // $10M of new principal per 24h. Clears the $6.5M a single maximum position can draw
+            // (RiskManager.maxPositionValue at the 6500 bps maxLtv above) with room to spare, so the
+            // throttle bounds an attack's rate without a legitimate large borrower ever meeting it.
+            dailyBorrowIncreaseLimit: 10_000_000e18
         });
     }
 }
