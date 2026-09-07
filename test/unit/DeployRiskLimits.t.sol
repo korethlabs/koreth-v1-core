@@ -95,28 +95,29 @@ contract DeployRiskLimitsTest is Test {
         assertEq(rm.dailyBorrowIncreaseLimit(), 10_000_000e18, "daily limit did not come from the config");
     }
 
-    /// @dev The limits have to be in force before any market exists, or the window between market
+    /// @dev The limits have to be in force before any market exists, or the gap between market
     ///      creation and the risk step is a window in which borrowing is unthrottled.
+    ///
+    ///      Both limits are tracked, not just the floor. They are two independent setter calls, so
+    ///      one of them drifting past _createPools — while the other stays put — is a real way for
+    ///      this to regress, and a test watching a single event could not see it.
     function test_limitsAreSetBeforeAnyMarketExists() public {
-        uint256 riskStep = type(uint256).max;
-        uint256 poolStep = type(uint256).max;
-
-        // A second deploy, run under log recording, so the two events can be ordered within one run.
+        // A second deploy, run under log recording, so the events can be ordered within one run.
         vm.recordLogs();
         StubProfile fresh = _freshProfile();
         fresh.run();
         Vm.Log[] memory entries = vm.getRecordedLogs();
 
-        bytes32 minBorrowTopic = keccak256("MinBorrowUsdUpdated(uint256,uint256)");
-        bytes32 poolTopic = keccak256("LendingPoolRegistered(address,address)");
-        for (uint256 i = 0; i < entries.length; i++) {
-            if (entries[i].topics[0] == minBorrowTopic && riskStep == type(uint256).max) riskStep = i;
-            if (entries[i].topics[0] == poolTopic && poolStep == type(uint256).max) poolStep = i;
-        }
+        uint256 floorStep = _firstLog(entries, keccak256("MinBorrowUsdUpdated(uint256,uint256)"));
+        uint256 throttleStep = _firstLog(entries, keccak256("DailyBorrowIncreaseLimitUpdated(uint256,uint256)"));
+        uint256 poolStep = _firstLog(entries, keccak256("LendingPoolRegistered(address,address)"));
 
-        assertTrue(riskStep != type(uint256).max, "deploy emitted no debt-floor update");
+        assertTrue(floorStep != type(uint256).max, "deploy emitted no debt-floor update");
+        assertTrue(throttleStep != type(uint256).max, "deploy emitted no daily-throttle update");
         assertTrue(poolStep != type(uint256).max, "deploy registered no lending pool");
-        assertLt(riskStep, poolStep, "a market was created before the risk limits were in force");
+
+        assertLt(floorStep, poolStep, "a market was created before the debt floor was in force");
+        assertLt(throttleStep, poolStep, "a market was created before the daily throttle was in force");
     }
 
     // --- The shipped profiles ---
@@ -172,6 +173,14 @@ contract DeployRiskLimitsTest is Test {
             largestSingleBorrow,
             string.concat(name, ": daily limit is below one maximum position's borrow")
         );
+    }
+
+    /// @notice Index of the first recorded log with this topic0, or type(uint256).max if absent.
+    function _firstLog(Vm.Log[] memory entries, bytes32 topic) internal pure returns (uint256) {
+        for (uint256 i = 0; i < entries.length; i++) {
+            if (entries[i].topics[0] == topic) return i;
+        }
+        return type(uint256).max;
     }
 
     function _withFeeRecipients() internal {
