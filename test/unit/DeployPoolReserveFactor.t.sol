@@ -68,7 +68,12 @@ contract StubProfile is DeployBase {
             liquidationThreshold: 7500,
             liquidationBonus: 500,
             haircut: 0,
-            borrowCap: 1_000_000e18
+            borrowCap: 1_000_000e18,
+            // Nonzero on purpose. A stub profile states what this file treats as a normal
+            // deployment, and 0 here would mean "both risk checks off" — the exact state the
+            // required fields exist to make impossible to reach by omission.
+            minBorrowUsd: 100e18,
+            dailyBorrowIncreaseLimit: 10_000_000e18
         });
     }
 }

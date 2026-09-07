@@ -77,6 +77,23 @@ abstract contract DeployBase is Script {
         // this against amounts converted by LendingEngine._toUsd, so a 6-dec value would cap the
         // type 1e12 too low and revert every borrow.
         uint256 borrowCap;
+        // Protocol-wide risk limits, also 18-dec USD. Required fields for the reason given above for
+        // clSequencerUptime: RiskManager starts both at 0, 0 means the check does not run, and no
+        // deploy script ever set either — so every deployment to date shipped with both silently off.
+        //
+        // minBorrowUsd is the debt floor (MakerDAO's `dust`, Compound III's `baseBorrowMin`): it
+        // keeps positions from settling at a size where the collateral recoverable in a liquidation
+        // is worth less than the gas to seize it. The part that surprises: it binds repayment too,
+        // not just borrowing — LendingEngine rejects a voluntary repay that would leave a remainder
+        // below the floor, so a borrower must clear the debt entirely or stay above it. Set it below
+        // the smallest borrow the chain is expected to serve, or ordinary users cannot part-repay.
+        //
+        // dailyBorrowIncreaseLimit throttles new borrow principal per 24h window. It must sit above
+        // what a single legitimate maximum position can draw — RiskManager.maxPositionValue at
+        // maxLtv — or the throttle spends its whole budget on one honest borrower rather than on an
+        // attack.
+        uint256 minBorrowUsd;
+        uint256 dailyBorrowIncreaseLimit;
     }
 
     /// @notice Share of borrower interest the protocol retains as reserves on every lending pool.
@@ -140,6 +157,7 @@ abstract contract DeployBase is Script {
         _deployAdapters(cfg);
         _deployPoolFactory(cfg);
         _configureRoles(cfg);
+        _configureRiskLimits(cfg);
         _createPools(cfg);
         _afterDeploy(cfg);
 
@@ -337,6 +355,21 @@ abstract contract DeployBase is Script {
         // need POOL_ADMIN — core.registerLendingPool authorizes `msg.sender == poolFactory` directly,
         // so granting it would only widen the factory's blast radius if it were compromised.
         aclManager.addRiskAdmin(address(poolFactory));
+    }
+
+    /// @notice Apply the protocol-wide risk limits the chain profile states.
+    /// @dev Ordered after _configureRoles, which points ProtocolCore at this RiskManager, and before
+    ///      _createPools, so no market exists that could be borrowed against while the limits are
+    ///      still at their defaults. The deployer satisfies RiskManager's onlyRiskAdmin through its
+    ///      POOL_ADMIN half (granted by the ACLManager constructor), so this holds even on a profile
+    ///      whose riskAdmin is a different key.
+    ///
+    ///      Both setters are called unconditionally, including with 0, so a chain that deliberately
+    ///      runs without a limit leaves an event saying so — the same reason setSequencerUptimeFeed
+    ///      is not skipped when disabled.
+    function _configureRiskLimits(ChainConfig memory cfg) internal {
+        riskManager.setMinBorrowUsd(cfg.minBorrowUsd);
+        riskManager.setDailyBorrowIncreaseLimit(cfg.dailyBorrowIncreaseLimit);
     }
 
     function _createPools(ChainConfig memory cfg) internal {

@@ -45,7 +45,14 @@ contract DeployBSCTestnet is DeployBase {
             liquidationThreshold: 7500,
             liquidationBonus: 500,
             haircut: 500, // 5% discount on collateral value
-            borrowCap: 100_000e18 // $100K (18-dec USD, not borrow-asset decimals)
+            borrowCap: 100_000e18, // $100K (18-dec USD, not borrow-asset decimals)
+            // $100 floor rather than mainnet's $10K. Testnet balances are faucet-sized, and the
+            // floor binds repayment as much as borrowing, so a production-sized floor would leave
+            // ordinary test positions unable to part-repay.
+            minBorrowUsd: 100e18,
+            // Same $10M window as mainnet, so the testnet exercises the production throttle rather
+            // than a permissive stand-in that could never trip.
+            dailyBorrowIncreaseLimit: 10_000_000e18
         });
     }
 }
