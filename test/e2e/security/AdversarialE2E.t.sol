@@ -309,16 +309,27 @@ contract AdversarialE2E is E2EBase {
             vm.stopPrank();
         }
 
-        // After repaying, check position state
+        // After repaying, the position must still be Active with collateral behind it, and the
+        // withdraw that was refused above must now go through.
+        //
+        // Asserted rather than guarded: the partial repay leaves the position alive by
+        // construction, so an `if` here would let a regression that consumed the whole position
+        // silently skip the withdraw and still report green.
         IPositionManager.Position memory posAfter = positionManager.getPosition(positionId);
-        // If position still has amount and is Active, withdraw should work
-        if (posAfter.status == IPositionManager.PositionStatus.Active && posAfter.amount > 0) {
-            vm.prank(alice);
-            positionManager.withdraw(positionId);
-            console.log("=== Withdraw After Repay: Succeeded ===");
-        } else {
-            console.log("=== Position fully consumed during liquidation ===");
-        }
+        assertEq(
+            uint8(posAfter.status),
+            uint8(IPositionManager.PositionStatus.Active),
+            "Partially liquidated and fully repaid position must be Active"
+        );
+        assertGt(posAfter.amount, 0, "Partial liquidation must leave LP in the position");
+
+        vm.prank(alice);
+        positionManager.withdraw(positionId);
+        assertEq(
+            uint8(positionManager.getPosition(positionId).status),
+            uint8(IPositionManager.PositionStatus.Closed),
+            "Withdraw after full repayment must close the position"
+        );
 
         console.log("=== Withdraw During Liquidation Blocked: Passed ===");
     }

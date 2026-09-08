@@ -360,11 +360,16 @@ contract FullLifecycleTest is Test {
         // Position marked liquidated
         assertEq(uint8(pm.getPosition(posId).status), uint8(IPositionManager.PositionStatus.Liquidated));
 
-        // Remaining LP returned to alice (if collateral > debt)
+        // Remaining LP returned to alice (collateral > debt here).
+        //
+        // Asserted unconditionally, because `pos.amount > 0` is never true at this point and a
+        // guard on it would skip the check entirely. Returning the LP is precisely what zeroes
+        // the stored amount: the engine unlocks the remainder to the borrower and then reduces
+        // `amount` by the whole of it. The field is also 0 by construction for NFT collateral,
+        // which the engine never maintains, so it cannot serve as "is there collateral left".
         IPositionManager.Position memory pos = pm.getPosition(posId);
-        if (pos.amount > 0) {
-            assertGt(adapter.unlockCallCount(), unlocksBefore, "Remaining LP must be returned");
-        }
+        assertGt(adapter.unlockCallCount(), unlocksBefore, "Remaining LP must be returned");
+        assertEq(pos.amount, 0, "Returning the remaining LP must zero the stored amount");
     }
 
     // ========================================================
