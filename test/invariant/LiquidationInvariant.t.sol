@@ -269,7 +269,8 @@ contract LiquidationInvariantTest is Test {
 
     // ================================================================
     // INVARIANT 6: Below the critical health threshold the whole debt is
-    //              repayable, and a position left with no debt is closed
+    //              repayable, and a position cleared that way ends as
+    //              Liquidated — not Closed, which is the withdrawal status
     // ================================================================
 
     function testFuzz_fullLiquidationClosesPosition(uint256 borrowRatio) public {
