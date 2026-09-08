@@ -301,13 +301,17 @@ contract LiquidationInvariantTest is Test {
         // A max-allowed liquidation must either fully close the position or measurably reduce its debt.
         assertTrue(closed || debtReduced, "Liquidation must close the position or reduce its debt");
 
-        // A fully-drained position (no collateral left) must be marked Liquidated.
-        if (pos.amount == 0) {
-            assertEq(
-                uint8(pos.status),
-                uint8(IPositionManager.PositionStatus.Liquidated),
-                "Zero-amount position must be Liquidated"
-            );
-        }
+        // A position with nothing left to repay must have been closed out.
+        //
+        // Keyed on the debt rather than on `pos.amount`. The collateral here is an NFT LP type,
+        // for which `amount` is 0 by construction and the engine leaves it untouched — it only
+        // reduces `amount` for ERC-20 LP. So `amount` says nothing about how much collateral is
+        // left, and a check guarded on it never runs on the NFT path in either polarity.
+        assertEq(le.getDebt(posId), 0, "A max-allowed liquidation at this crash depth must clear the debt");
+        assertEq(
+            uint8(pos.status),
+            uint8(IPositionManager.PositionStatus.Liquidated),
+            "A position with no debt left must be marked Liquidated"
+        );
     }
 }

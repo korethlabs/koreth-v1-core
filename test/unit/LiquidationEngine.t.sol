@@ -791,15 +791,18 @@ contract LiquidationEngineTest is Test {
 
         assertEq(le.getDebt(posId), 0);
 
-        // Position amount was partially reduced but not to 0
-        // (collateralToSeize < positionValue because debt is small vs collateral)
+        // The seize only takes part of the collateral (collateralToSeize < positionValue, because
+        // the debt is small next to it), so the remainder is unlocked back to the borrower.
         IPositionManager.Position memory pos = pm.getPosition(posId);
 
-        // If there's remaining LP, unlock should have been called
-        if (pos.amount > 0) {
-            uint256 unlocksAfter = adapter.unlockCallCount();
-            assertEq(unlocksAfter, unlocksBefore + 1, "Remaining LP must be returned");
-        }
+        // Asserted unconditionally, because `pos.amount > 0` is never true at this point and a
+        // guard on it would skip the check entirely. The return is what zeroes the stored amount:
+        // the engine unlocks the remainder and then reduces `amount` by the whole of it. The field
+        // is also 0 by construction for NFT collateral, which the engine never maintains, so it
+        // cannot serve as "is there collateral left".
+        uint256 unlocksAfter = adapter.unlockCallCount();
+        assertEq(unlocksAfter, unlocksBefore + 1, "Remaining LP must be returned");
+        assertEq(pos.amount, 0, "Returning the remaining LP must zero the stored amount");
 
         // Position should be marked liquidated
         assertEq(uint8(pos.status), uint8(IPositionManager.PositionStatus.Liquidated));
