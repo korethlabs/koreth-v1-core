@@ -205,8 +205,13 @@ contract LiquidationInvariantTest is Test {
         // Crash price to make liquidatable
         oracle.setPrice(70_000e18);
 
+        // Asserted rather than returned on: the setup is deterministic in everything that decides
+        // liquidatability — the borrow is a fixed 60_000e18 and the crash a fixed 70_000e18, with
+        // the fuzzed input only sizing the repay afterwards — so an early return here would be a
+        // silent pass, not a skipped edge case.
         (bool liquidatable, uint256 maxRepay) = liq.isLiquidatable(posId);
-        if (!liquidatable || maxRepay == 0) return;
+        assertTrue(liquidatable, "Crashed position must be liquidatable");
+        assertGt(maxRepay, 0, "Liquidatable position must allow a non-zero repay");
 
         repayAmt = bound(repayAmt, 1e18, maxRepay);
         uint256 debtBefore = le.getDebt(posId);
@@ -263,8 +268,8 @@ contract LiquidationInvariantTest is Test {
     }
 
     // ================================================================
-    // INVARIANT 6: After full liquidation, position amount must be 0
-    //              or position must be marked Liquidated
+    // INVARIANT 6: Below the critical health threshold the whole debt is
+    //              repayable, and a position left with no debt is closed
     // ================================================================
 
     function testFuzz_fullLiquidationClosesPosition(uint256 borrowRatio) public {
@@ -283,8 +288,12 @@ contract LiquidationInvariantTest is Test {
         // Crash price severely
         oracle.setPrice(50_000e18);
 
+        // Asserted rather than returned on: every input in the fuzzed range crashes the position
+        // past the liquidation threshold, so an early return here would be a silent pass rather
+        // than a skipped edge case.
         (bool liquidatable, uint256 maxRepay) = liq.isLiquidatable(posId);
-        if (!liquidatable || maxRepay == 0) return;
+        assertTrue(liquidatable, "Crashed position must be liquidatable");
+        assertGt(maxRepay, 0, "Liquidatable position must allow a non-zero repay");
 
         uint256 debtBefore = le.getDebt(posId);
 
@@ -296,18 +305,22 @@ contract LiquidationInvariantTest is Test {
         liq.liquidate(posId, maxRepay, block.timestamp + 300, 0, 0);
 
         IPositionManager.Position memory pos = pm.getPosition(posId);
-        bool closed = uint8(pos.status) == uint8(IPositionManager.PositionStatus.Liquidated);
-        bool debtReduced = le.getDebt(posId) < debtBefore;
-        // A max-allowed liquidation must either fully close the position or measurably reduce its debt.
-        assertTrue(closed || debtReduced, "Liquidation must close the position or reduce its debt");
 
-        // A position with nothing left to repay must have been closed out.
-        //
         // Keyed on the debt rather than on `pos.amount`. The collateral here is an NFT LP type,
         // for which `amount` is 0 by construction and the engine leaves it untouched — it only
         // reduces `amount` for ERC-20 LP. So `amount` says nothing about how much collateral is
         // left, and a check guarded on it never runs on the NFT path in either polarity.
-        assertEq(le.getDebt(posId), 0, "A max-allowed liquidation at this crash depth must clear the debt");
+        //
+        // The full repay below is a property of these inputs, not of liquidation in general. The
+        // engine only lets a liquidator take the whole debt once health is under
+        // CRITICAL_HF_THRESHOLD; above it, and still under 1.0, maxRepay is capped by the close
+        // factor and residual debt survives on purpose. This setup deliberately crashes past that
+        // threshold — halving the price against a borrow of 80-95% of max LTV puts health in
+        // [0.607, 0.721] across the whole bound, far below 0.95 — so maxRepay is the entire debt
+        // and clearing it is the only correct outcome. Widen the bound or soften the crash and
+        // that stops holding: the assertion is then failing accurately, not spuriously.
+        assertGt(debtBefore, 0, "Setup must leave debt for the liquidation to clear");
+        assertEq(le.getDebt(posId), 0, "A full repay below the critical health threshold must clear the debt");
         assertEq(
             uint8(pos.status),
             uint8(IPositionManager.PositionStatus.Liquidated),
