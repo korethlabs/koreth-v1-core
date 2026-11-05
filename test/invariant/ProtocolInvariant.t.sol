@@ -140,9 +140,10 @@ contract ProtocolInvariantTest is Test {
     // Debt is allowed to sit above totalBorrow. Each accrual floors the interest added to
     // totalBorrow to a whole base unit while debt derives from borrowIndex at RAY precision, so
     // debt gains just under one base unit on totalBorrow per accrual, and that gap then compounds
-    // at the same rate as the debt. What must hold is that the gap never exceeds that bound, that
-    // totalBorrow never gets ahead of the debt, and that settling across the gap keeps
-    // `balance + totalBorrow == totalSupply + protocolReserves`.
+    // at the same rate as the debt. What must hold, for the single position here, is that the gap
+    // never exceeds that bound, that totalBorrow never gets ahead of the debt, and that settling
+    // across the gap keeps `balance + totalBorrow == totalSupply + protocolReserves`. With several
+    // positions each debt floors on its own, so totalBorrow can sit a few base units above their sum.
     // ================================================================
 
     function testFuzz_debtTracksMarketBorrowAcrossAccruals(

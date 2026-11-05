@@ -141,10 +141,10 @@ contract ProtocolInvariantE2E is E2EBase {
     }
 
     // ================================================================
-    // 5. Individual debt never exceeds market totalBorrow
+    // 5. After one accrual a lone position's debt stays within rounding of market totalBorrow
     // ================================================================
 
-    function test_invariant_debtNeverExceedsMarketBorrow() public {
+    function test_invariant_singleAccrualDebtTracksMarketBorrow() public {
         uint256 tokenId = _createV3Position(alice, 2 ether, 5000e6);
         uint256 posId = _depositV3(alice, tokenId);
         vm.roll(block.number + 2);
