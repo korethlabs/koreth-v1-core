@@ -180,6 +180,10 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
         }
         uint256 borrowRatePerSecond = interestRateModel.getBorrowRate(currentUtilization);
 
+        // Floors to a whole base unit, while the borrowIndex below keeps RAY precision. Position debt
+        // derives from the index, so debt gains just under one base unit on totalBorrow per accrual
+        // and the sum of position debts can sit above totalBorrow. transferIn and recordDeficit are
+        // written for that: neither treats debt above totalBorrow as an error.
         uint256 interestAccrued = (state.totalBorrow * borrowRatePerSecond * elapsed) / 1e18;
 
         // Split interest: protocol keeps reserveFactorBps%, lenders get the rest.
@@ -290,9 +294,18 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
         OZIERC20(config.borrowAsset).safeTransfer(to, amount);
     }
 
+    /// @dev `amount` may exceed totalBorrow: it is position debt, which derives from borrowIndex and
+    ///      carries the interest accrueInterest() floored off totalBorrow. Whoever repays last holds
+    ///      that gap, so bounding `amount` by totalBorrow would make the last borrower unable to repay
+    ///      and unable to be liquidated. As in Morpho Blue, which floors totalBorrowAssets at zero in
+    ///      repay() and liquidate() (UtilsLib.zeroFloorSub), totalBorrow saturates at zero here.
+    ///      Morpho leaves the difference unaccounted in the contract. Here it is booked to
+    ///      protocolReserves, because `balance + totalBorrow == totalSupply + protocolReserves` has to
+    ///      keep holding and these tokens are interest no one was credited with. Reserves rather than
+    ///      totalSupply so a repayment can never move the share price.
+    ///      `amount` is bounded by the caller, which refuses to repay more than the position owes.
     function transferIn(address from, uint256 amount) external onlyLendingEngine nonReentrant {
         require(from != address(0), "ZERO_SENDER");
-        require(amount <= state.totalBorrow, "REPAY_EXCEEDS_BORROW");
 
         uint256 balBefore = IERC20(config.borrowAsset).balanceOf(address(this));
         OZIERC20(config.borrowAsset).safeTransferFrom(from, address(this), amount);
@@ -305,8 +318,14 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
         // arithmetic panic. LiquidationEngine's repayment path refuses the same thing the same way.
         require(balAfter >= balBefore && balAfter - balBefore == amount, "FEE_ON_TRANSFER_UNSUPPORTED");
 
-        // The delivery is now proven exact, so subtract the value the caller's own accounting used.
-        state.totalBorrow -= amount;
+        // The delivery is now proven exact, so settle the value the caller's own accounting used.
+        uint256 borrowed = state.totalBorrow;
+        if (amount > borrowed) {
+            protocolReserves += amount - borrowed;
+            state.totalBorrow = 0;
+        } else {
+            state.totalBorrow = borrowed - amount;
+        }
         _updateRates();
     }
 
@@ -382,11 +401,14 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
     ///      the only part eliminateDeficit() can later refund. The reserves-funded portion is already
     ///      final — lenders never lost it, so there is nothing to refund.
     ///      The burn is clamped to totalBorrow — more debt can never be written off than the pool
-    ///      believes exists.
+    ///      believes exists. That makes a burn of zero a valid outcome rather than an error: the
+    ///      part of the debt above totalBorrow was never credited to anyone (see transferIn), so the
+    ///      clamp discards nothing the pool holds, and this call runs inside liquidate(), which must
+    ///      not revert over it.
+    ///      Morpho Blue takes the same `min` in liquidate() and carries on when it comes to zero.
     function recordDeficit(uint256 amount) external onlyLendingEngine {
         require(amount > 0, "ZERO_AMOUNT");
         uint256 burn = amount > state.totalBorrow ? state.totalBorrow : amount;
-        require(burn > 0, "NO_BORROW_TO_BURN");
         state.totalBorrow -= burn;
 
         uint256 reservesUsed = burn > protocolReserves ? protocolReserves : burn;
