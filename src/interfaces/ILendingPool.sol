@@ -49,12 +49,14 @@ interface ILendingPool {
     function transferOut(address to, uint256 amount) external;
 
     /// @notice Transfer borrow asset in (called by LendingEngine)
+    /// @dev `amount` may exceed totalBorrow, which then floors at zero with the excess going to reserves.
     function transferIn(address from, uint256 amount) external;
 
     /// @notice Cumulative borrow interest index (RAY = 1e27 precision)
     function borrowIndex() external view returns (uint256);
 
     /// @notice Record bad debt from underwater liquidation (called by LendingEngine)
+    /// @dev The burn is clamped to totalBorrow and may be zero; that is not an error.
     function recordDeficit(uint256 amount) external;
 
     /// @notice Cover deficit using protocol reserves (callable by RiskAdmin)

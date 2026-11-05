@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ProtocolCore} from "../../src/core/ProtocolCore.sol";
 import {ACLManager} from "../../src/core/ACLManager.sol";
 import {PositionManager} from "../../src/core/PositionManager.sol";
@@ -132,11 +133,26 @@ contract ProtocolInvariantTest is Test {
     }
 
     // ================================================================
-    // INVARIANT 1: Total debt across all positions must never exceed
-    //              Market.totalBorrow (after accrual)
+    // INVARIANT 1: Position debt tracks Market.totalBorrow to within the
+    //              rounding of the accruals between them, the books always
+    //              balance, and the debt stays fully repayable
+    //
+    // Debt is allowed to sit above totalBorrow. Each accrual floors the interest added to
+    // totalBorrow to a whole base unit while debt derives from borrowIndex at RAY precision, so
+    // debt gains just under one base unit on totalBorrow per accrual, and that gap then compounds
+    // at the same rate as the debt. What must hold is that the gap never exceeds that bound, that
+    // totalBorrow never gets ahead of the debt, and that settling across the gap keeps
+    // `balance + totalBorrow == totalSupply + protocolReserves`.
     // ================================================================
 
-    function testFuzz_debtNeverExceedsMarketBorrow(uint256 price, uint256 borrowAmt, uint256 timeElapsed) public {
+    function testFuzz_debtTracksMarketBorrowAcrossAccruals(
+        uint256 price,
+        uint256 borrowAmt,
+        uint256 accruals,
+        uint256 step
+    )
+        public
+    {
         price = bound(price, 10_000e18, 1_000_000e18);
         oracle.setPrice(price);
 
@@ -144,7 +160,7 @@ contract ProtocolInvariantTest is Test {
         address user = makeAddr("user");
         vm.prank(user);
         uint256 posId = pm.deposit(lpToken, 1, 100e18, borrowAsset);
-        vm.roll(block.number + 2);
+        vm.roll(vm.getBlockNumber() + 2);
 
         // Borrow within LTV
         uint256 maxBorrow = (price * 6500) / 10_000;
@@ -153,16 +169,52 @@ contract ProtocolInvariantTest is Test {
         vm.prank(user);
         le.borrow(posId, borrowAmt);
 
-        // Advance time
-        timeElapsed = bound(timeElapsed, 0, 365 days);
-        vm.warp(block.timestamp + timeElapsed);
-        market.accrueInterest();
+        // Advance through separate accruals: a single one cannot show the drift. Read the clock
+        // through vm: under via_ir a `block.timestamp + step` in a loop can stop advancing.
+        accruals = bound(accruals, 1, 64);
+        step = bound(step, 1, 30 days);
+        uint256 start = vm.getBlockTimestamp();
+        uint256 rate = market.getPoolState().borrowRate;
+        for (uint256 i; i < accruals; ++i) {
+            vm.warp(vm.getBlockTimestamp() + step);
+            market.accrueInterest();
+        }
+        assertEq(vm.getBlockTimestamp(), start + accruals * step, "clock stalled");
 
-        // INVARIANT: individual debt <= market totalBorrow
         uint256 posDebt = le.getDebt(posId);
-        ILendingPool.PoolState memory mState = market.getPoolState();
+        uint256 totalBorrow = market.getPoolState().totalBorrow;
 
-        assertLe(posDebt, mState.totalBorrow + 1, "Position debt must not exceed market totalBorrow");
+        // A stalled accrual would leave debt and totalBorrow equal and satisfy everything below.
+        uint256 simpleInterest = (borrowAmt * rate * accruals * step) / 1e18;
+        assertGe(posDebt, borrowAmt + simpleInterest, "interest not booked");
+
+        // INVARIANT: each accrual loses under one base unit, grown by what the debt has grown since.
+        uint256 maxGap = Math.mulDiv(accruals, posDebt, borrowAmt, Math.Rounding.Ceil);
+        assertLe(posDebt, totalBorrow + maxGap, "Position debt drifted past the rounding bound");
+        assertLe(totalBorrow, posDebt + 1, "totalBorrow must not run ahead of the debt");
+        _assertBooksBalance();
+
+        // INVARIANT: the whole debt settles, and the part totalBorrow never held lands in reserves.
+        uint256 reserves = market.protocolReserves();
+        usdc.mint(user, posDebt);
+        vm.startPrank(user);
+        usdc.approve(address(market), posDebt);
+        le.repay(posId, type(uint256).max);
+        vm.stopPrank();
+
+        assertEq(le.getDebt(posId), 0, "debt settled");
+        assertEq(market.getPoolState().totalBorrow, totalBorrow > posDebt ? totalBorrow - posDebt : 0, "totalBorrow");
+        assertEq(market.protocolReserves() - reserves, posDebt > totalBorrow ? posDebt - totalBorrow : 0, "excess");
+        _assertBooksBalance();
+    }
+
+    function _assertBooksBalance() internal view {
+        ILendingPool.PoolState memory s = market.getPoolState();
+        assertEq(
+            usdc.balanceOf(address(market)) + s.totalBorrow,
+            s.totalSupply + market.protocolReserves(),
+            "balance + totalBorrow != totalSupply + protocolReserves"
+        );
     }
 
     // ================================================================
