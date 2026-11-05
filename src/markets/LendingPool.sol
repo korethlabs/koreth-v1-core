@@ -302,8 +302,7 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
     ///      Morpho leaves the difference unaccounted in the contract. Here it is booked to
     ///      protocolReserves, because `balance + totalBorrow == totalSupply + protocolReserves` has to
     ///      keep holding and these tokens are interest no one was credited with. Reserves rather than
-    ///      totalSupply so a repayment can never move the share price, and so the amount stays
-    ///      available to eliminateDeficit() while lenders are owed one.
+    ///      totalSupply so a repayment can never move the share price.
     ///      `amount` is bounded by the caller, which refuses to repay more than the position owes.
     function transferIn(address from, uint256 amount) external onlyLendingEngine nonReentrant {
         require(from != address(0), "ZERO_SENDER");
@@ -402,9 +401,10 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
     ///      the only part eliminateDeficit() can later refund. The reserves-funded portion is already
     ///      final — lenders never lost it, so there is nothing to refund.
     ///      The burn is clamped to totalBorrow — more debt can never be written off than the pool
-    ///      believes exists. That makes a burn of zero a valid outcome rather than an error: debt
-    ///      above totalBorrow was never credited to anyone (see transferIn), so writing it off costs
-    ///      no one anything, and this call runs inside liquidate(), which must not revert over it.
+    ///      believes exists. That makes a burn of zero a valid outcome rather than an error: the
+    ///      part of the debt above totalBorrow was never credited to anyone (see transferIn), so the
+    ///      clamp discards nothing the pool holds, and this call runs inside liquidate(), which must
+    ///      not revert over it.
     ///      Morpho Blue takes the same `min` in liquidate() and carries on when it comes to zero.
     function recordDeficit(uint256 amount) external onlyLendingEngine {
         require(amount > 0, "ZERO_AMOUNT");
