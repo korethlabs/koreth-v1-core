@@ -13,8 +13,6 @@ import {MockERC20} from "../mocks/MockERC20.sol";
 import {MockFeeOnTransferERC20} from "../mocks/MockFeeOnTransferERC20.sol";
 
 contract LendingPoolTest is Test {
-    using stdStorage for StdStorage;
-
     ProtocolCore public core;
     ACLManager public aclManager;
     LendingPool public pool;
@@ -421,7 +419,6 @@ contract LendingPoolTest is Test {
     // ========== Bad Debt Socialization (Method A) ==========
 
     event DeficitRecorded(uint256 burned, uint256 reservesUsed, uint256 supplierLoss, uint256 totalDeficit);
-    event DeficitEliminated(uint256 covered, uint256 refundedToSuppliers, uint256 remaining);
 
     /// @dev Redeemable value of a supplier's shares at the current share price.
     function _shareValue(address user) internal view returns (uint256) {
@@ -561,59 +558,6 @@ contract LendingPoolTest is Test {
         assertEq(pool.getPoolState().totalSupply, sBefore.totalSupply - extraSupplierLoss, "supply drops by remainder");
     }
 
-    /// @notice eliminateDeficit credits reserves back into totalSupply, restoring the share price for
-    ///         the suppliers who ate the loss (the symmetric inverse of socialization).
-    function test_eliminateDeficit_refundsSuppliers() public {
-        vm.prank(owner);
-        aclManager.addRiskAdmin(owner);
-
-        _fundAndApprove(alice, 100_000e6);
-        vm.prank(alice);
-        pool.supply(100_000e6);
-        vm.prank(le);
-        pool.transferOut(makeAddr("borrower"), 60_000e6);
-
-        // Socialize a loss while there are no reserves.
-        vm.prank(le);
-        pool.recordDeficit(40_000e6);
-        assertEq(pool.deficit(), 40_000e6, "loss socialized");
-
-        // Now let interest build reserves that can repay the socialized loss.
-        vm.prank(owner);
-        pool.setReserveFactor(2000);
-        vm.warp(block.timestamp + 365 days);
-        pool.accrueInterest();
-
-        uint256 reservesBefore = pool.protocolReserves();
-        uint256 deficitBefore = pool.deficit();
-        uint256 supplyBefore = pool.getPoolState().totalSupply;
-        uint256 coverage = reservesBefore < deficitBefore ? reservesBefore : deficitBefore;
-        assertGt(coverage, 0, "reserves available to refund");
-
-        vm.expectEmit(false, false, false, true, address(pool));
-        emit DeficitEliminated(coverage, coverage, deficitBefore - coverage);
-        vm.prank(owner);
-        pool.eliminateDeficit();
-
-        assertEq(pool.getPoolState().totalSupply, supplyBefore + coverage, "supply credited back to lenders");
-        assertEq(pool.deficit(), deficitBefore - coverage, "deficit reduced by coverage");
-        assertEq(pool.protocolReserves(), reservesBefore - coverage, "reserves spent on refund");
-    }
-
-    function test_eliminateDeficit_revertsNoDeficit() public {
-        vm.prank(owner);
-        aclManager.addRiskAdmin(owner);
-        vm.prank(owner);
-        vm.expectRevert("NO_DEFICIT");
-        pool.eliminateDeficit();
-    }
-
-    function test_eliminateDeficit_revertsNotRiskAdmin() public {
-        vm.prank(alice);
-        vm.expectRevert("NOT_RISK_ADMIN");
-        pool.eliminateDeficit();
-    }
-
     function test_recordDeficit_revertsNotLendingEngine() public {
         vm.prank(alice);
         vm.expectRevert("NOT_LENDING_ENGINE");
@@ -701,8 +645,8 @@ contract LendingPoolTest is Test {
 
     /// @notice A withdrawal that redeems to zero must revert instead of burning the shares.
     ///         Pre-fix this call succeeded: it burned every share, transferred nothing and emitted
-    ///         Withdraw(alice, 0, shares) — silently forfeiting the lender's claim on any later
-    ///         eliminateDeficit() recovery. `supply` already refuses this same state; `withdraw` did not.
+    ///         Withdraw(alice, 0, shares) — silently forfeiting the lender's shares for nothing.
+    ///         `supply` already refuses this same state; `withdraw` did not.
     function test_withdraw_insolventMarket_revertsInsteadOfBurningSharesForNothing() public {
         uint256 aliceShares = _wipeMarket();
 
@@ -719,42 +663,6 @@ contract LendingPoolTest is Test {
 
         assertEq(pool.shares(alice), aliceShares, "alice keeps her shares");
         assertEq(usdc.balanceOf(alice), 0, "and received nothing, as expected");
-    }
-
-    /// @notice The point of reverting: the blocked lender's claim survives, so when eliminateDeficit()
-    ///         credits recovered reserves back into totalSupply she can withdraw a non-zero amount.
-    ///         Pre-fix her shares would already be gone and the whole recovery would accrue to holders
-    ///         who happened not to call withdraw.
-    function test_withdraw_insolventMarket_claimSurvivesEliminateDeficit() public {
-        vm.prank(owner);
-        aclManager.addRiskAdmin(owner);
-
-        uint256 aliceShares = _wipeMarket();
-        uint256 outstandingDeficit = pool.deficit();
-
-        // The withdrawal is refused while insolvent.
-        vm.prank(alice);
-        vm.expectRevert("ZERO_REDEEM_VALUE");
-        pool.withdraw(aliceShares);
-
-        // Recovery arrives. A fully wiped pool holds no cash and no outstanding debt, so it cannot
-        // rebuild reserves from interest on its own, and the pool has no entrypoint for external
-        // recapitalisation — so credit the reserves directly (slot resolved via the getter, not
-        // hardcoded) and fund the matching cash.
-        uint256 recovered = 30_000e6;
-        stdstore.target(address(pool)).sig(pool.protocolReserves.selector).checked_write(recovered);
-        assertEq(pool.protocolReserves(), recovered, "reserves credited");
-        usdc.mint(address(pool), recovered);
-
-        vm.prank(owner);
-        pool.eliminateDeficit();
-        assertEq(pool.getPoolState().totalSupply, recovered, "recovery lands back in totalSupply");
-        assertEq(pool.deficit(), outstandingDeficit - recovered, "deficit reduced by the recovery");
-
-        vm.prank(alice);
-        uint256 received = pool.withdraw(aliceShares);
-        assertGt(received, 0, "the preserved claim now redeems for real tokens");
-        assertEq(usdc.balanceOf(alice), received, "tokens actually reached alice");
     }
 
     /// @notice The same check also covers dust rounding down to zero in a market that is still

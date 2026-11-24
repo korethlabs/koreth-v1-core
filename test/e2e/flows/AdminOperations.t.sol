@@ -13,7 +13,7 @@ import {RiskConfig} from "../../helpers/RiskConfig.sol";
 /// @notice E2E tests for admin/governance operations on forked mainnet.
 /// @dev Covers: RiskManager collateral config and caps, LiquidationEngine admin setters,
 ///      FeeCollector setters and sweepExcess, interest rate model hot-swap, borrow cooldown,
-///      bad debt write-off and deficit elimination.
+///      bad debt write-off and the deficit refund from interest.
 contract AdminOperations is E2EBase {
     event DebtWrittenOff(uint256 indexed positionId, address indexed borrowAsset, uint256 amount, address caller);
 
@@ -85,17 +85,6 @@ contract AdminOperations is E2EBase {
         vm.prank(alice);
         vm.expectRevert("NOT_RISK_ADMIN");
         riskManager.setCollateralConfig(ILPAdapter.LPType.UniswapV3, RiskConfig.config(5000, 6000, 500, 0, noCap, true));
-    }
-
-    // ========== Market.eliminateDeficit ==========
-
-    /// @notice eliminateDeficit when no deficit reverts
-    function test_revert_eliminateDeficit_noDeficit() public {
-        address poolAddr = address(usdcPool);
-
-        vm.prank(deployer);
-        vm.expectRevert("NO_DEFICIT");
-        LendingPool(poolAddr).eliminateDeficit();
     }
 
     // ========== RiskManager supply cap ==========
@@ -431,23 +420,23 @@ contract AdminOperations is E2EBase {
         console.log("Deficit recorded: %s USDC", deficitRecorded / 1e6);
     }
 
-    /// @notice Reserves accrued after a write-off refund the socialized loss: eliminateDeficit
-    ///         draws the reserves down, shrinks the deficit and credits the suppliers back.
-    function test_eliminateDeficit() public {
+    /// @notice Interest accrued after a write-off pays the socialized loss back: the protocol's cut
+    ///         goes to the suppliers and shrinks the deficit, and no reserves build while it is open.
+    function test_deficit_refundedFromProtocolInterestCut() public {
         LendingPool market = LendingPool(address(usdcPool));
 
         _liquidateIntoBadDebt();
 
         uint256 deficitBefore = market.deficit();
-        assertGt(deficitBefore, 0, "Scenario must leave a deficit to eliminate");
+        assertGt(deficitBefore, 0, "Scenario must leave a deficit to refund");
+        assertEq(market.protocolReserves(), 0, "Write-off spends the reserves first");
 
-        // Reserves have to be rebuilt after the write-off, not before: recordDeficit spends them
-        // first and only socializes what they could not absorb. The deployed pool runs a 0 reserve
-        // factor, so state the factor here instead of relying on the deployment.
+        // The deployed pool runs a 0 reserve factor, so state the factor here instead of relying on
+        // the deployment. With no protocol cut there is nothing to refund from.
         vm.prank(deployer);
         market.setReserveFactor(2000); // 20% of interest kept by the protocol
 
-        // A second borrower pays the interest that refills the reserves.
+        // A second borrower pays the interest the refund comes from.
         uint256 tokenId = _createV3Position(alice, 2 ether, 4000e6);
         uint256 positionId = _depositV3(alice, tokenId);
         vm.roll(block.number + 2);
@@ -456,28 +445,31 @@ contract AdminOperations is E2EBase {
         vm.prank(alice);
         lendingEngine.borrow(positionId, (maxBorrow * 90) / 100);
 
-        _advanceTime(180 days);
+        ILendingPool.PoolState memory stateBefore = market.getPoolState();
+
+        _advanceTime(1 days);
         market.accrueInterest();
 
-        uint256 reservesBefore = market.protocolReserves();
-        assertGt(reservesBefore, 0, "Reserves must be funded before elimination");
-
-        uint256 supplyBefore = market.getPoolState().totalSupply;
-
-        vm.prank(deployer);
-        market.eliminateDeficit();
-
-        uint256 reservesAfter = market.protocolReserves();
-        assertLt(reservesAfter, reservesBefore, "Elimination must draw reserves down");
-        uint256 covered = reservesBefore - reservesAfter;
+        ILendingPool.PoolState memory stateAfter = market.getPoolState();
+        uint256 interest = stateAfter.totalBorrow - stateBefore.totalBorrow;
+        uint256 protocolCut = (interest * 2000) / 10_000;
+        assertGt(protocolCut, 0, "Scenario must accrue a protocol cut");
 
         uint256 deficitAfter = market.deficit();
-        assertLt(deficitAfter, deficitBefore, "Deficit must shrink");
-        assertEq(deficitAfter, deficitBefore - covered, "Deficit reduced by exactly what reserves covered");
-        assertEq(market.getPoolState().totalSupply, supplyBefore + covered, "Suppliers credited back the coverage");
+        assertGt(deficitAfter, 0, "Scenario must keep the deficit open");
+        assertEq(deficitAfter, deficitBefore - protocolCut, "Deficit drops by the whole protocol cut");
+        assertEq(
+            stateAfter.totalSupply,
+            stateBefore.totalSupply + interest,
+            "Suppliers get all the interest while it is open"
+        );
+
+        assertEq(market.protocolReserves(), 0, "No reserves build while the deficit is open");
+        vm.expectRevert("NO_RESERVES");
+        market.distributeReserves();
 
         console.log("Deficit: %s -> %s USDC", deficitBefore / 1e6, deficitAfter / 1e6);
-        console.log("Reserves spent on the refund: %s USDC", covered / 1e6);
+        console.log("Refunded from the protocol cut: %s USDC", protocolCut / 1e6);
     }
 
     // ========== setLPTypeBorrowCap ==========

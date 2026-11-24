@@ -198,6 +198,14 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
             lenderShare = interestAccrued - protocolShare;
         }
 
+        // An open deficit is paid back to lenders from the protocol's cut before reserves build again.
+        if (deficit > 0 && protocolShare > 0) {
+            uint256 refund = protocolShare > deficit ? deficit : protocolShare;
+            protocolShare -= refund;
+            lenderShare += refund;
+            deficit -= refund;
+        }
+
         state.totalBorrow += interestAccrued; // Borrowers owe full interest
         state.totalSupply += lenderShare; // Lenders earn less than 100%
         protocolReserves += protocolShare; // Protocol's cut stored separately
@@ -234,8 +242,8 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
             // A full-pool default can socialize losses all the way down to totalSupply == 0 while
             // shares are still outstanding (they now redeem to nothing). Refuse new deposits in that
             // insolvent state: minting against a zero share price would both divide-by-zero and, worse,
-            // hand the fresh deposit straight to the holders of the now-worthless legacy shares. The
-            // market recovers only when eliminateDeficit() credits reserves back into totalSupply.
+            // hand the fresh deposit straight to the holders of the now-worthless legacy shares. A
+            // fully wiped pool does not recover: it has no debt left, so no interest to refund from.
             require(state.totalSupply > 0, "MARKET_INSOLVENT");
             sharesToMint = (received * totalShares) / state.totalSupply;
             require(sharesToMint > 0, "DEPOSIT_TOO_SMALL");
@@ -259,8 +267,8 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
         // Two ways this lands on zero: an insolvent market (recordDeficit socialized totalSupply down
         // to 0 while shares stayed outstanding) and dust rounding down in a healthy one. Reverting is
         // the policy rather than a guard — the caller would receive no tokens either way, and failing
-        // closed keeps their shares alive so a later eliminateDeficit() still refunds them. Burning
-        // them for nothing would irreversibly hand that recovery to the holders who did not exit.
+        // closed keeps their shares alive for whatever accrueInterest() later refunds. Burning them
+        // for nothing would irreversibly hand that recovery to the holders who did not exit.
         require(amount > 0, "ZERO_REDEEM_VALUE");
 
         uint256 availableLiquidity = IERC20(config.borrowAsset).balanceOf(address(this));
@@ -376,10 +384,6 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
     /// @param supplierLoss   Portion socialized onto suppliers by reducing totalSupply
     /// @param totalDeficit   Running total of socialized loss still owed back to suppliers
     event DeficitRecorded(uint256 burned, uint256 reservesUsed, uint256 supplierLoss, uint256 totalDeficit);
-    /// @param covered              Deficit reduced this call
-    /// @param refundedToSuppliers  Amount credited back to totalSupply (restores share price)
-    /// @param remaining            Deficit still outstanding after this call
-    event DeficitEliminated(uint256 covered, uint256 refundedToSuppliers, uint256 remaining);
 
     // --- Bad Debt Management ---
 
@@ -398,7 +402,7 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
     ///           guarantees the uncovered remainder can never exceed totalSupply, but we clamp anyway
     ///           so a hypothetical accounting bug can never underflow here and brick every liquidation.
     ///      Only `supplierLoss` is tracked in `deficit`: it is the lender principal owed back and thus
-    ///      the only part eliminateDeficit() can later refund. The reserves-funded portion is already
+    ///      the only part accrueInterest() later refunds. The reserves-funded portion is already
     ///      final — lenders never lost it, so there is nothing to refund.
     ///      The burn is clamped to totalBorrow — more debt can never be written off than the pool
     ///      believes exists. That makes a burn of zero a valid outcome rather than an error: the
@@ -421,23 +425,6 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
 
         _updateRates();
         emit DeficitRecorded(burn, reservesUsed, supplierLoss, deficit);
-    }
-
-    /// @notice Cover deficit using protocol reserves (callable by RiskAdmin)
-    /// @dev Partial coverage is fine — covers min(deficit, protocolReserves) and leaves the rest
-    ///      outstanding. `deficit` only ever holds the socialized supplier loss (see recordDeficit),
-    ///      so covering it means crediting that amount back into totalSupply: the share price rises
-    ///      pro-rata and suppliers are made whole. This is the symmetric inverse of the socialization
-    ///      in recordDeficit — reserves that later become available flow back to the lenders who ate
-    ///      the loss, not to new depositors.
-    function eliminateDeficit() external onlyRiskAdmin {
-        require(deficit > 0, "NO_DEFICIT");
-        uint256 coverage = deficit > protocolReserves ? protocolReserves : deficit;
-        protocolReserves -= coverage;
-        deficit -= coverage;
-        state.totalSupply += coverage;
-        _updateRates();
-        emit DeficitEliminated(coverage, coverage, deficit);
     }
 
     // --- Storage Gap ---
