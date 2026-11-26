@@ -501,10 +501,12 @@ contract LiquidationEngine is ILiquidationEngine, Initializable, UUPSUpgradeable
                 lendingEngine.writeOffDebt(positionId);
                 supplyRemovedUsd = positionValue; // full position value leaves the market
                 positionManager.markLiquidated(positionId, msg.sender, repayAmount);
-                // The writeoff IS the loss: whatever debt is left is charged to the lenders, so the
-                // leftovers below are theirs regardless of how the two sides compare. Asserted here
-                // rather than derived from the comparison because a writeoff of debt worth less than
-                // the sub-dollar residue would otherwise read as solvent and pay the defaulter.
+                // The writeoff IS the loss: debt left here is charged to reserves and then the lenders,
+                // so the leftovers below are theirs regardless of how the two sides compare. Asserted
+                // here rather than derived from the comparison because a writeoff of debt worth less
+                // than the sub-dollar residue would otherwise read as solvent and pay the defaulter.
+                // Debt that sits entirely above totalBorrow burns nothing in the pool and is routed
+                // the same way, even though no one lost anything on it.
                 lendersAtLoss = true;
             } else {
                 // Position still has debt AND collateral above dust after a capped partial

@@ -341,7 +341,9 @@ contract LendingEngine is ILendingEngine, Initializable, UUPSUpgradeable, Reentr
         debtInfo[positionId] = DebtInfo({principal: 0, borrowIndex: pool.borrowIndex()});
         positionManager.updateDebt(positionId, 0);
 
-        // Record deficit on the shared pool (burns from totalBorrow, tracks as deficit)
+        // Record deficit on the shared pool (burns from totalBorrow, tracks as deficit). The pool
+        // burns at most its totalBorrow, but the position's debt is gone in full either way, so the
+        // RiskManager counters below shed all of currentDebt rather than what the pool burned.
         pool.recordDeficit(currentDebt);
 
         // Update RiskManager to prevent ghost debt from blocking new borrows

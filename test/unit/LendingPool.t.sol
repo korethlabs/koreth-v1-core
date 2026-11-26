@@ -259,6 +259,33 @@ contract LendingPoolTest is Test {
         assertEq(usdc.balanceOf(repayer), 0);
     }
 
+    /// @notice Debt derives from borrowIndex and can exceed totalBorrow by the interest each accrual
+    ///         floored away. Delivering it zeroes totalBorrow, and the part totalBorrow never held goes
+    ///         to reserves, so `balance + totalBorrow == totalSupply + protocolReserves` still holds.
+    function test_transferIn_aboveTotalBorrow_creditsExcessToReserves() public {
+        _fundAndApprove(alice, 10_000e6);
+        vm.prank(alice);
+        pool.supply(10_000e6);
+
+        vm.prank(le);
+        pool.transferOut(makeAddr("b"), 5000e6);
+
+        address repayer = makeAddr("repayer");
+        usdc.mint(repayer, 5000e6 + 7);
+        vm.prank(repayer);
+        usdc.approve(address(pool), 5000e6 + 7);
+
+        vm.prank(le);
+        pool.transferIn(repayer, 5000e6 + 7);
+
+        ILendingPool.PoolState memory s = pool.getPoolState();
+        assertEq(usdc.balanceOf(repayer), 0, "full amount delivered");
+        assertEq(s.totalBorrow, 0, "totalBorrow floors at zero");
+        assertEq(pool.protocolReserves(), 7, "excess into reserves");
+        assertEq(s.totalSupply, 10_000e6, "suppliers untouched");
+        assertEq(usdc.balanceOf(address(pool)) + s.totalBorrow, s.totalSupply + pool.protocolReserves(), "identity");
+    }
+
     function test_transferIn_revertsNotLendingEngine() public {
         vm.prank(alice);
         vm.expectRevert("NOT_LENDING_ENGINE");
@@ -599,14 +626,20 @@ contract LendingPoolTest is Test {
         pool.recordDeficit(0);
     }
 
-    function test_recordDeficit_revertsNoBorrowToBurn() public {
+    /// @notice A write-off that finds totalBorrow empty changes nothing and does not revert: it runs
+    ///         inside liquidate(), and the debt it was handed was never on the pool's books.
+    function test_recordDeficit_nothingToBurn_isNoOp() public {
         _fundAndApprove(alice, 100_000e6);
         vm.prank(alice);
         pool.supply(100_000e6);
-        // No borrows outstanding → nothing to write off.
+
+        vm.expectEmit(address(pool));
+        emit LendingPool.DeficitRecorded(0, 0, 0, 0);
         vm.prank(le);
-        vm.expectRevert("NO_BORROW_TO_BURN");
         pool.recordDeficit(1000e6);
+
+        assertEq(pool.deficit(), 0, "no deficit");
+        assertEq(pool.getPoolState().totalSupply, 100_000e6, "suppliers untouched");
     }
 
     /// @notice A total default (100% utilization, no reserves) can socialize the loss all the way to
