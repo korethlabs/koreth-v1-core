@@ -627,9 +627,9 @@ contract RepayGapLastBorrowerTest is Test {
 
     // --- Interaction with deficit ---
 
-    /// @dev An over-delivery is ordinary reserves: it leaves `deficit` alone, and eliminateDeficit() can
-    ///      then hand it back to the suppliers who took the loss.
-    function test_overDelivery_reachesSuppliersThroughEliminateDeficit() public {
+    /// @dev An over-delivery is ordinary reserves: it leaves `deficit` alone and is not part of the
+    ///      refund, which comes only from the protocol's interest cut in accrueInterest().
+    function test_overDelivery_staysInReservesWhileDeficitIsOpen() public {
         _wire(6);
         uint256 a = _open(bob);
         uint256 b = _open(carol);
@@ -654,10 +654,11 @@ contract RepayGapLastBorrowerTest is Test {
         _assertBooksBalance();
 
         uint256 supply = pool.getPoolState().totalSupply;
-        vm.prank(owner);
-        pool.eliminateDeficit();
-        assertEq(pool.deficit(), deficit - excess, "deficit covered");
-        assertEq(pool.getPoolState().totalSupply, supply + excess, "credited back to suppliers");
+        vm.warp(vm.getBlockTimestamp() + 30 days);
+        pool.accrueInterest();
+        assertEq(pool.protocolReserves(), excess, "the excess stays in reserves");
+        assertEq(pool.deficit(), deficit, "no debt left, so nothing refunds the deficit");
+        assertEq(pool.getPoolState().totalSupply, supply, "suppliers untouched");
         _assertBooksBalance();
     }
 }

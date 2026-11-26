@@ -59,9 +59,6 @@ interface ILendingPool {
     /// @dev The burn is clamped to totalBorrow and may be zero; that is not an error.
     function recordDeficit(uint256 amount) external;
 
-    /// @notice Cover deficit using protocol reserves (callable by RiskAdmin)
-    function eliminateDeficit() external;
-
     /// @notice Distribute accumulated protocol reserves to FeeCollector
     function distributeReserves() external;
 

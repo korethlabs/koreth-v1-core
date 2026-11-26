@@ -180,12 +180,6 @@ contract AccessControlNegativeTest is Test {
         market.setReserveFactor(2000);
     }
 
-    function test_eliminateDeficit_revertsUnauthorized() public {
-        vm.prank(attacker);
-        vm.expectRevert("NOT_RISK_ADMIN");
-        market.eliminateDeficit();
-    }
-
     // ========== Market — onlyPoolAdmin ==========
 
     function test_setInterestRateModel_revertsUnauthorized() public {

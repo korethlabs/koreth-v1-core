@@ -72,8 +72,6 @@ contract MockLendingPool is ILendingPool {
         _state.totalSupply -= supplierLoss;
     }
 
-    function eliminateDeficit() external {}
-
     function distributeReserves() external {}
 
     function setReserveFactor(uint256) external {}
