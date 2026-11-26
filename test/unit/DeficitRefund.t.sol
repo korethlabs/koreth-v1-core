@@ -93,7 +93,9 @@ contract DeficitRefundTest is Test {
             s.totalSupply + pool.protocolReserves(),
             "cash + debt == supply + reserves"
         );
-        assertTrue(pool.deficit() == 0 || pool.protocolReserves() == 0, "deficit and reserves never both open");
+        assertTrue(
+            pool.deficit() == 0 || pool.protocolReserves() == 0, "interest builds no reserves while a deficit is open"
+        );
     }
 
     // ========== The refund ==========
@@ -207,7 +209,7 @@ contract DeficitRefundTest is Test {
         assertEq(pool.protocolReserves(), 0);
     }
 
-    // ========== Deficit and reserves are never both open ==========
+    // ========== Interest builds no reserves while a deficit is open ==========
 
     function test_recordDeficit_spendsReservesFirstAfterDeficitClosed() public {
         _open(800_000e6);
@@ -229,8 +231,9 @@ contract DeficitRefundTest is Test {
         _checkBooks();
     }
 
-    /// @dev Random walk over every call that moves reserves, deficit, supply or debt.
-    function testFuzz_deficitAndReservesNeverBothOpen(uint256 seed) public {
+    /// @dev Random walk over every call that moves reserves, deficit, supply or debt. The repay stays
+    ///      within totalBorrow: a repay above it books the excess to reserves, see RepayGapLastBorrower.
+    function testFuzz_interestBuildsNoReservesWhileDeficitIsOpen(uint256 seed) public {
         _open(500_000e6);
         for (uint256 i = 0; i < 60; i++) {
             seed = uint256(keccak256(abi.encode(seed, i)));
