@@ -267,8 +267,8 @@ contract LendingPool is ILendingPool, Initializable, UUPSUpgradeable, Reentrancy
         // Two ways this lands on zero: an insolvent market (recordDeficit socialized totalSupply down
         // to 0 while shares stayed outstanding) and dust rounding down in a healthy one. Reverting is
         // the policy rather than a guard — the caller would receive no tokens either way, and failing
-        // closed keeps their shares alive for whatever accrueInterest() later refunds. Burning them
-        // for nothing would irreversibly hand that recovery to the holders who did not exit.
+        // closed keeps their shares instead of burning them for nothing. In a healthy market the shares
+        // keep earning. A fully wiped pool does not recover, see supply().
         require(amount > 0, "ZERO_REDEEM_VALUE");
 
         uint256 availableLiquidity = IERC20(config.borrowAsset).balanceOf(address(this));

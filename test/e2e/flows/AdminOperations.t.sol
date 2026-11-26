@@ -338,7 +338,7 @@ contract AdminOperations is E2EBase {
         console.log("=== Borrow Cooldown (5 blocks) Test Passed ===");
     }
 
-    // ========== bad debt write-off and deficit elimination ==========
+    // ========== bad debt write-off and the deficit refund from interest ==========
 
     /// @dev Drives a position into genuine bad debt and liquidates it.
     ///
